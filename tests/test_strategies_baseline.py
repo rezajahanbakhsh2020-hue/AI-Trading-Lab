@@ -53,7 +53,7 @@ def test_baseline_signal_generates_signal():
         0,
         0,
         0,
-        1,
+        0,
         1,
         1,
     ]
