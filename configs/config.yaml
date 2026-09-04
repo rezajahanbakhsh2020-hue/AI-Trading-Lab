@@ -1,1 +1,15 @@
+project:
+  name: AI-Trading-Lab
+  version: 0.1.0
 
+market:
+  symbol: XAUUSD
+  timeframe: 1h
+
+strategy:
+  name: baseline
+  fast_window: 20
+  slow_window: 50
+
+backtest:
+  initial_capital: 10000
