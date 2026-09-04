@@ -39,3 +39,27 @@ def test_run_backtest():
 
     assert result["strategy_return"].iloc[1] == 0.0
     assert result["strategy_return"].iloc[2] == -0.05
+from src.features.indicators import add_returns
+
+
+def test_full_backtest_pipeline():
+    df = pd.DataFrame(
+        {
+            "close": [100.0, 102.0, 104.0, 106.0, 108.0],
+        }
+    )
+
+    df = add_returns(df)
+    df = baseline_signal(
+        df,
+        fast_window=2,
+        slow_window=3,
+    )
+    result = run_backtest(df)
+
+    assert "return" in result.columns
+    assert "signal" in result.columns
+    assert "strategy_return" in result.columns
+    assert "equity" in result.columns
+
+    assert result["equity"].iloc[-1] > 0
