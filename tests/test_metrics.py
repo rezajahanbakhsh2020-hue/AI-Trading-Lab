@@ -1,4 +1,5 @@
 import pandas as pd
+import pytest
 
 from src.evaluation.metrics import (
     total_return,
@@ -7,6 +8,8 @@ from src.evaluation.metrics import (
     calmar_ratio,
     sortino_ratio,
     exposure,
+    win_rate,
+    profit_factor,
 )
 
 
@@ -64,6 +67,22 @@ def test_exposure():
     assert exposure(df) == 0.6
 
 
+def test_win_rate():
+    df = pd.DataFrame({
+        "strategy_return": [0.02, -0.01, 0.03, 0.0, -0.02],
+    })
+
+    assert win_rate(df) == 0.5
+
+
+def test_profit_factor():
+    df = pd.DataFrame({
+        "strategy_return": [0.02, -0.01, 0.03, 0.0, -0.02],
+    })
+
+    assert profit_factor(df) == pytest.approx(1.6666666667)
+
+
 def test_total_return_empty_dataframe():
     df = pd.DataFrame({
         "equity": [],
@@ -78,3 +97,49 @@ def test_exposure_empty_dataframe():
     })
 
     assert exposure(df) == 0.0
+
+
+def test_win_rate_no_trades():
+    df = pd.DataFrame({
+        "strategy_return": [0.0, 0.0, 0.0],
+    })
+
+    assert win_rate(df) == 0.0
+
+
+def test_profit_factor_no_losses():
+    df = pd.DataFrame({
+        "strategy_return": [0.01, 0.02, 0.0],
+    })
+
+    assert profit_factor(df) == 0.0
+
+
+def test_missing_equity_column():
+    df = pd.DataFrame({
+        "price": [1.0, 2.0],
+    })
+
+    with pytest.raises(ValueError):
+        total_return(df)
+
+
+def test_missing_signal_column():
+    df = pd.DataFrame({
+        "strategy_return": [0.01, -0.01],
+    })
+
+    with pytest.raises(ValueError):
+        exposure(df)
+
+
+def test_missing_strategy_return_column():
+    df = pd.DataFrame({
+        "equity": [1.0, 1.1],
+    })
+
+    with pytest.raises(ValueError):
+        win_rate(df)
+
+    with pytest.raises(ValueError):
+        profit_factor(df)
