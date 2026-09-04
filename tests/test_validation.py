@@ -22,6 +22,13 @@ def test_valid_market_data():
     validate_market_data(df)
 
 
+def test_valid_market_data_allows_volume():
+    df = valid_data()
+    df["volume"] = [1000, 1200]
+
+    validate_market_data(df)
+
+
 def test_missing_column():
     df = valid_data().drop(columns=["close"])
 
@@ -52,9 +59,65 @@ def test_invalid_high_low():
         validate_market_data(df)
 
 
-def test_negative_price():
+def test_equal_high_low_is_valid():
+    df = valid_data()
+    df.loc[0, "high"] = 2640.0
+    df.loc[0, "low"] = 2640.0
+
+    validate_market_data(df)
+
+
+def test_zero_open_price():
+    df = valid_data()
+    df.loc[0, "open"] = 0.0
+
+    with pytest.raises(ValueError, match="Open prices must be positive"):
+        validate_market_data(df)
+
+
+def test_negative_open_price():
+    df = valid_data()
+    df.loc[0, "open"] = -1.0
+
+    with pytest.raises(ValueError, match="Open prices must be positive"):
+        validate_market_data(df)
+
+
+def test_zero_high_price():
+    df = valid_data()
+    df.loc[0, "high"] = 0.0
+
+    with pytest.raises(ValueError, match="High prices must be positive"):
+        validate_market_data(df)
+
+
+def test_zero_low_price():
+    df = valid_data()
+    df.loc[0, "low"] = 0.0
+
+    with pytest.raises(ValueError, match="Low prices must be positive"):
+        validate_market_data(df)
+
+
+def test_negative_low_price():
+    df = valid_data()
+    df.loc[0, "low"] = -1.0
+
+    with pytest.raises(ValueError, match="Low prices must be positive"):
+        validate_market_data(df)
+
+
+def test_zero_close_price():
+    df = valid_data()
+    df.loc[0, "close"] = 0.0
+
+    with pytest.raises(ValueError, match="Close prices must be positive"):
+        validate_market_data(df)
+
+
+def test_negative_close_price():
     df = valid_data()
     df.loc[0, "close"] = -1.0
 
-    with pytest.raises(ValueError, match="prices must be positive"):
+    with pytest.raises(ValueError, match="Close prices must be positive"):
         validate_market_data(df)
