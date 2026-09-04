@@ -11,33 +11,33 @@ StrategyFunction = Callable[[pd.DataFrame], pd.DataFrame]
 def compare_strategies(
     df: pd.DataFrame,
     strategies: dict[str, StrategyFunction],
+    transaction_cost: float = 0.0,
+    slippage: float = 0.0,
 ) -> dict[str, dict]:
     """
     Run and compare multiple strategies on the same input data.
 
+    The same transaction cost and slippage assumptions are
+    applied to every strategy.
+
     Parameters
     ----------
     df:
-        Market/feature DataFrame used as the common input.
+        Common market/feature DataFrame.
 
     strategies:
         Dictionary mapping strategy names to strategy functions.
 
+    transaction_cost:
+        Proportional transaction cost applied to all strategies.
+
+    slippage:
+        Proportional slippage applied to all strategies.
+
     Returns
     -------
     dict
-        A dictionary containing the evaluation report for
-        every strategy.
-
-    Example
-    -------
-    {
-        "baseline": {
-            "total_return": ...,
-            "max_drawdown": ...,
-            ...
-        }
-    }
+        Evaluation report for every strategy.
     """
 
     if not isinstance(df, pd.DataFrame):
@@ -48,6 +48,12 @@ def compare_strategies(
 
     if not strategies:
         raise ValueError("strategies must not be empty.")
+
+    if transaction_cost < 0:
+        raise ValueError("transaction_cost must be non-negative.")
+
+    if slippage < 0:
+        raise ValueError("slippage must be non-negative.")
 
     results = {}
 
@@ -60,6 +66,8 @@ def compare_strategies(
         _, report = run_strategy(
             df=df,
             strategy=strategy,
+            transaction_cost=transaction_cost,
+            slippage=slippage,
         )
 
         results[name] = report
