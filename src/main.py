@@ -1,7 +1,4 @@
-from data.loader import load_csv
-from features.indicators import add_returns
-from strategies.baseline import baseline_signal
-from backtest.engine import run_backtest
+from src.pipeline import run_strategy_backtest
 
 
 def main() -> None:
