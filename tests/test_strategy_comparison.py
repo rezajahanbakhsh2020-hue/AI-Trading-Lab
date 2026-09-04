@@ -43,7 +43,6 @@ def test_run_strategy_returns_backtest_and_report():
 
     assert isinstance(result, pd.DataFrame)
     assert isinstance(report, dict)
-
     assert "signal" in result.columns
     assert "strategy_return" in result.columns
     assert "equity" in result.columns
@@ -124,7 +123,6 @@ def test_compare_strategies_runs_all_strategies():
     )
 
     assert isinstance(results, dict)
-
     assert set(results.keys()) == {
         "always_long",
         "always_flat",
@@ -187,6 +185,179 @@ def test_compare_strategies_rejects_invalid_strategy_collection():
         )
 
 
+def test_compare_strategies_rejects_non_dataframe_input():
+    strategies = {
+        "always_long": always_long_strategy,
+    }
+
+    with pytest.raises(TypeError):
+        compare_strategies(
+            "not a dataframe",
+            strategies,
+        )
+
+
+def test_compare_strategies_rejects_negative_transaction_cost():
+    df = pd.DataFrame({
+        "return": [0.10, -0.05],
+    })
+
+    strategies = {
+        "always_long": always_long_strategy,
+    }
+
+    with pytest.raises(ValueError):
+        compare_strategies(
+            df,
+            strategies,
+            transaction_cost=-0.01,
+        )
+
+
+def test_compare_strategies_rejects_negative_slippage():
+    df = pd.DataFrame({
+        "return": [0.10, -0.05],
+    })
+
+    strategies = {
+        "always_long": always_long_strategy,
+    }
+
+    with pytest.raises(ValueError):
+        compare_strategies(
+            df,
+            strategies,
+            slippage=-0.01,
+        )
+
+
+def test_compare_strategies_applies_transaction_cost_to_all_strategies():
+    df = pd.DataFrame({
+        "return": [0.10, -0.05, 0.20, -0.10],
+    })
+
+    strategies = {
+        "always_long": always_long_strategy,
+        "always_flat": always_flat_strategy,
+    }
+
+    without_cost = compare_strategies(
+        df,
+        strategies,
+    )
+
+    with_cost = compare_strategies(
+        df,
+        strategies,
+        transaction_cost=0.01,
+    )
+
+    assert (
+        with_cost["always_long"]["total_return"]
+        < without_cost["always_long"]["total_return"]
+    )
+
+    assert (
+        with_cost["always_flat"]["total_return"]
+        == pytest.approx(
+            without_cost["always_flat"]["total_return"]
+        )
+    )
+
+
+def test_compare_strategies_applies_slippage_to_all_strategies():
+    df = pd.DataFrame({
+        "return": [0.10, -0.05, 0.20, -0.10],
+    })
+
+    strategies = {
+        "always_long": always_long_strategy,
+        "always_flat": always_flat_strategy,
+    }
+
+    without_slippage = compare_strategies(
+        df,
+        strategies,
+    )
+
+    with_slippage = compare_strategies(
+        df,
+        strategies,
+        slippage=0.005,
+    )
+
+    assert (
+        with_slippage["always_long"]["total_return"]
+        < without_slippage["always_long"]["total_return"]
+    )
+
+    assert (
+        with_slippage["always_flat"]["total_return"]
+        == pytest.approx(
+            without_slippage["always_flat"]["total_return"]
+        )
+    )
+
+
+def test_compare_strategies_combines_transaction_cost_and_slippage():
+    df = pd.DataFrame({
+        "return": [0.10, -0.05, 0.20, -0.10],
+    })
+
+    strategies = {
+        "always_long": always_long_strategy,
+    }
+
+    without_cost = compare_strategies(
+        df,
+        strategies,
+    )
+
+    with_transaction_cost = compare_strategies(
+        df,
+        strategies,
+        transaction_cost=0.01,
+    )
+
+    with_both = compare_strategies(
+        df,
+        strategies,
+        transaction_cost=0.01,
+        slippage=0.005,
+    )
+
+    assert (
+        with_transaction_cost["always_long"]["total_return"]
+        < without_cost["always_long"]["total_return"]
+    )
+
+    assert (
+        with_both["always_long"]["total_return"]
+        < with_transaction_cost["always_long"]["total_return"]
+    )
+
+
+def test_compare_strategies_preserves_strategy_names():
+    df = pd.DataFrame({
+        "return": [0.01, 0.02, -0.01],
+    })
+
+    strategies = {
+        "strategy_one": always_long_strategy,
+        "strategy_two": always_flat_strategy,
+    }
+
+    results = compare_strategies(
+        df,
+        strategies,
+    )
+
+    assert list(results.keys()) == [
+        "strategy_one",
+        "strategy_two",
+    ]
+
+
 def test_comparison_dataframe_creates_expected_structure():
     comparison = {
         "strategy_a": {
@@ -204,7 +375,6 @@ def test_comparison_dataframe_creates_expected_structure():
     result = comparison_dataframe(comparison)
 
     assert isinstance(result, pd.DataFrame)
-
     assert list(result.index) == [
         "strategy_a",
         "strategy_b",
@@ -230,3 +400,10 @@ def test_comparison_dataframe_handles_empty_comparison():
 
     assert isinstance(result, pd.DataFrame)
     assert result.empty
+
+
+def test_comparison_dataframe_rejects_invalid_input():
+    with pytest.raises(TypeError):
+        comparison_dataframe(
+            ["not", "a", "dictionary"]
+        )
