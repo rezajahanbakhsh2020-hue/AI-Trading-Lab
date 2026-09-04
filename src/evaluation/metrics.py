@@ -104,7 +104,7 @@ def sortino_ratio(
     """
     Calculate the Sortino ratio from the equity curve.
 
-    Only negative returns are used to measure downside risk.
+    Only downside returns are used to measure downside risk.
     """
 
     if equity_column not in df.columns:
@@ -120,12 +120,9 @@ def sortino_ratio(
     if returns.empty:
         return 0.0
 
-    downside_returns = returns[returns < 0]
+    downside = returns.clip(upper=0.0)
 
-    if downside_returns.empty:
-        return 0.0
-
-    downside_deviation = downside_returns.std()
+    downside_deviation = (downside.pow(2).mean()) ** 0.5
 
     if downside_deviation == 0 or pd.isna(downside_deviation):
         return 0.0
@@ -152,3 +149,62 @@ def exposure(
     signal = df[signal_column]
 
     return float((signal == 1).mean())
+
+
+def win_rate(
+    df: pd.DataFrame,
+    return_column: str = "strategy_return",
+) -> float:
+    """
+    Calculate the percentage of non-zero strategy returns
+    that are profitable.
+
+    Returns a value between 0.0 and 1.0.
+    """
+
+    if return_column not in df.columns:
+        raise ValueError(f"Column '{return_column}' not found.")
+
+    if df.empty:
+        return 0.0
+
+    returns = df[return_column].astype(float)
+
+    active_returns = returns[returns != 0]
+
+    if active_returns.empty:
+        return 0.0
+
+    winning_returns = active_returns[active_returns > 0]
+
+    return float(len(winning_returns) / len(active_returns))
+
+
+def profit_factor(
+    df: pd.DataFrame,
+    return_column: str = "strategy_return",
+) -> float:
+    """
+    Calculate the profit factor.
+
+    Profit factor = gross profit / gross loss.
+
+    Returns 0.0 when there are no winning returns
+    or no losing returns.
+    """
+
+    if return_column not in df.columns:
+        raise ValueError(f"Column '{return_column}' not found.")
+
+    if df.empty:
+        return 0.0
+
+    returns = df[return_column].astype(float)
+
+    gross_profit = returns[returns > 0].sum()
+    gross_loss = abs(returns[returns < 0].sum())
+
+    if gross_profit == 0.0 or gross_loss == 0.0:
+        return 0.0
+
+    return float(gross_profit / gross_loss)
