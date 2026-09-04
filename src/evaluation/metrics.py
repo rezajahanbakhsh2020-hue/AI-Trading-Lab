@@ -120,3 +120,23 @@ def profit_factor(
         return 0.0
 
     return float(gross_profit / gross_loss)
+
+
+def average_trade_return(
+    df: pd.DataFrame,
+    return_column: str = "strategy_return",
+) -> float:
+    """
+    Calculate the average return per non-zero trade.
+    """
+
+    if return_column not in df.columns:
+        raise ValueError(f"Column '{return_column}' not found.")
+
+    returns = df[return_column].dropna()
+    trades = returns[returns != 0]
+
+    if trades.empty:
+        return 0.0
+
+    return float(trades.mean())
