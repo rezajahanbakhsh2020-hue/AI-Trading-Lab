@@ -229,6 +229,7 @@ df = pd.DataFrame(
 )
 
 df = add_returns(df)
+
 df = baseline_signal(
     df,
     fast_window=2,
