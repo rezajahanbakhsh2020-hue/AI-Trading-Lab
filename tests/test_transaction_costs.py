@@ -34,18 +34,13 @@ def test_default_costs_preserve_previous_behavior():
 
     result = run_backtest(df)
 
-    expected_strategy_return = [
-        float("nan"),
+    assert pd.isna(result["strategy_return"].iloc[0])
+
+    assert result["strategy_return"].iloc[1:].tolist() == pytest.approx([
         -0.05,
         0.0,
         -0.10,
-    ]
-
-    assert pd.isna(result["strategy_return"].iloc[0])
-
-    assert result["strategy_return"].iloc[1:].tolist() == pytest.approx(
-        expected_strategy_return[1:]
-    )
+    ])
 
 
 def test_position_is_previous_period_signal():
@@ -192,10 +187,10 @@ def test_gross_return_is_separate_from_net_return():
     ])
 
 
-def test_no_cost_is_charged_when_position_does_not_change():
+def test_no_cost_is_charged_when_position_remains_unchanged():
     df = pd.DataFrame({
         "return": [0.10, 0.02, 0.03, 0.04],
-        "signal": [1, 1, 1, 1],
+        "signal": [0, 1, 1, 1],
     })
 
     result = run_backtest(
@@ -215,6 +210,30 @@ def test_no_cost_is_charged_when_position_does_not_change():
         0.0,
         0.0,
         0.0,
+        0.0,
+    ])
+
+
+def test_initial_position_entry_is_charged():
+    df = pd.DataFrame({
+        "return": [0.10, 0.02, 0.03],
+        "signal": [1, 1, 1],
+    })
+
+    result = run_backtest(
+        df,
+        transaction_cost=0.01,
+    )
+
+    assert result["turnover"].tolist() == pytest.approx([
+        0.0,
+        1.0,
+        0.0,
+    ])
+
+    assert result["trading_cost"].tolist() == pytest.approx([
+        0.0,
+        0.01,
         0.0,
     ])
 
