@@ -131,3 +131,24 @@ def sortino_ratio(
         return 0.0
 
     return float(returns.mean() / downside_deviation)
+
+
+def exposure(
+    df: pd.DataFrame,
+    signal_column: str = "signal",
+) -> float:
+    """
+    Calculate the percentage of periods spent in the market.
+
+    Returns a value between 0.0 and 1.0.
+    """
+
+    if signal_column not in df.columns:
+        raise ValueError(f"Column '{signal_column}' not found.")
+
+    if df.empty:
+        return 0.0
+
+    signal = df[signal_column]
+
+    return float((signal == 1).mean())
