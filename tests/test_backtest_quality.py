@@ -15,11 +15,12 @@ def test_backtest_does_not_use_current_signal_return():
 
     result = run_backtest(df)
 
-    # The position at each period must come from the
-    # previous period's signal.
-    expected = [0.0, -0.05, 0.0, -0.10]
+    expected = [float("nan"), -0.05, 0.0, -0.10]
 
-    assert result["strategy_return"].tolist() == pytest.approx(expected)
+    assert result["strategy_return"].iloc[0] != result["strategy_return"].iloc[0]
+    assert result["strategy_return"].iloc[1:].tolist() == pytest.approx(
+        expected[1:]
+    )
 
 
 def test_equity_curve_is_based_on_strategy_returns():
@@ -47,7 +48,6 @@ def test_baseline_strategy_has_no_future_return_access():
 
     result = generate_baseline_signal(df)
 
-    # Signal at t is based only on return at t-1.
     assert result["signal"].tolist() == [0, 1, 0, 1]
 
 
@@ -131,11 +131,15 @@ def test_strategy_and_backtest_work_together_without_lookahead():
     strategy_result = generate_baseline_signal(df)
     backtest_result = run_backtest(strategy_result)
 
-    # Because the strategy signal itself is based on the
-    # previous return and the backtest executes the previous
-    # signal, the current return cannot affect the current
-    # strategy return.
-    assert backtest_result["strategy_return"].iloc[0] == pytest.approx(0.0)
+    # First period has no previous signal, so strategy_return is NaN.
+    assert pd.isna(backtest_result["strategy_return"].iloc[0])
+
+    # The second period still has no active previous signal.
     assert backtest_result["strategy_return"].iloc[1] == pytest.approx(0.0)
+
+    # The third period executes the signal generated from
+    # the first period's return, therefore it uses the second
+    # period's return only through the previous signal.
     assert backtest_result["strategy_return"].iloc[2] == pytest.approx(0.0)
+
     assert backtest_result["strategy_return"].iloc[3] == pytest.approx(-0.10)
