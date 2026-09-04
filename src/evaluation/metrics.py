@@ -49,12 +49,6 @@ def sharpe_ratio(
 ) -> float:
     """
     Calculate the Sharpe ratio from the equity curve.
-
-    The calculation uses percentage returns between
-    consecutive equity values.
-
-    Returns 0.0 when the return series is empty or
-    has zero standard deviation.
     """
 
     if equity_column not in df.columns:
@@ -76,3 +70,30 @@ def sharpe_ratio(
         return 0.0
 
     return float(returns.mean() / std)
+
+
+def calmar_ratio(
+    df: pd.DataFrame,
+    equity_column: str = "equity",
+) -> float:
+    """
+    Calculate the Calmar ratio.
+
+    Calmar ratio = total return / absolute maximum drawdown.
+
+    Returns 0.0 when maximum drawdown is zero.
+    """
+
+    if equity_column not in df.columns:
+        raise ValueError(f"Column '{equity_column}' not found.")
+
+    if df.empty:
+        return 0.0
+
+    total = total_return(df, equity_column)
+    drawdown = max_drawdown(df, equity_column)
+
+    if drawdown == 0.0:
+        return 0.0
+
+    return float(total / abs(drawdown))
