@@ -25,8 +25,10 @@ def max_drawdown(
     """
     Calculate maximum drawdown from the equity curve.
 
-    Returns a negative value representing the largest percentage loss
-    from a previous equity peak.
+    Returns a negative value.
+    Example:
+        equity: 1.0 -> 1.2 -> 1.1 -> 0.9
+        max drawdown = -0.25
     """
 
     if equity_column not in df.columns:
@@ -35,108 +37,10 @@ def max_drawdown(
     if df.empty:
         return 0.0
 
-    equity = df[equity_column]
+    equity = df[equity_column].astype(float)
 
     running_peak = equity.cummax()
-    drawdown = equity / running_peak - 1.0
+
+    drawdown = (equity / running_peak) - 1.0
 
     return float(drawdown.min())
-
-
-def win_rate(
-    df: pd.DataFrame,
-    return_column: str = "strategy_return",
-) -> float:
-    """
-    Calculate the percentage of non-zero strategy returns that are profitable.
-    """
-
-    if return_column not in df.columns:
-        raise ValueError(f"Column '{return_column}' not found.")
-
-    returns = df[return_column].dropna()
-    trades = returns[returns != 0]
-
-    if trades.empty:
-        return 0.0
-
-    return float((trades > 0).mean())
-
-
-def sharpe_ratio(
-    df: pd.DataFrame,
-    return_column: str = "strategy_return",
-    risk_free_rate: float = 0.0,
-) -> float:
-    """
-    Calculate the Sharpe ratio from strategy returns.
-
-    Uses the sample standard deviation of returns.
-    """
-
-    if return_column not in df.columns:
-        raise ValueError(f"Column '{return_column}' not found.")
-
-    returns = df[return_column].dropna()
-
-    if returns.empty:
-        return 0.0
-
-    excess_returns = returns - risk_free_rate
-
-    std = excess_returns.std()
-
-    if std == 0:
-        return 0.0
-
-    return float(excess_returns.mean() / std)
-
-
-def profit_factor(
-    df: pd.DataFrame,
-    return_column: str = "strategy_return",
-) -> float:
-    """
-    Calculate the profit factor from strategy returns.
-
-    Profit Factor = Gross Profit / Gross Loss
-    """
-
-    if return_column not in df.columns:
-        raise ValueError(f"Column '{return_column}' not found.")
-
-    returns = df[return_column].dropna()
-    trades = returns[returns != 0]
-
-    if trades.empty:
-        return 0.0
-
-    gross_profit = trades[trades > 0].sum()
-    gross_loss = abs(trades[trades < 0].sum())
-
-    if gross_loss == 0:
-        if gross_profit > 0:
-            return float("inf")
-        return 0.0
-
-    return float(gross_profit / gross_loss)
-
-
-def average_trade_return(
-    df: pd.DataFrame,
-    return_column: str = "strategy_return",
-) -> float:
-    """
-    Calculate the average return per non-zero trade.
-    """
-
-    if return_column not in df.columns:
-        raise ValueError(f"Column '{return_column}' not found.")
-
-    returns = df[return_column].dropna()
-    trades = returns[returns != 0]
-
-    if trades.empty:
-        return 0.0
-
-    return float(trades.mean())
