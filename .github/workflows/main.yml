@@ -26,7 +26,7 @@ jobs:
       - name: Run tests
         run: |
           if [ -d tests ] && find tests -type f -name "*.py" | grep -q .; then
-            pytest
+            PYTHONPATH=. pytest
           else
             echo "No tests found - skipping pytest"
           fi
