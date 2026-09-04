@@ -231,6 +231,38 @@ def test_compare_strategies_rejects_negative_slippage():
         )
 
 
+def test_compare_strategies_rejects_non_string_strategy_name():
+    df = pd.DataFrame({
+        "return": [0.10, -0.05],
+    })
+
+    strategies = {
+        123: always_long_strategy,
+    }
+
+    with pytest.raises(TypeError):
+        compare_strategies(
+            df,
+            strategies,
+        )
+
+
+def test_compare_strategies_rejects_non_callable_strategy():
+    df = pd.DataFrame({
+        "return": [0.10, -0.05],
+    })
+
+    strategies = {
+        "invalid": "not a strategy",
+    }
+
+    with pytest.raises(TypeError):
+        compare_strategies(
+            df,
+            strategies,
+        )
+
+
 def test_compare_strategies_applies_transaction_cost_to_all_strategies():
     df = pd.DataFrame({
         "return": [0.10, -0.05, 0.20, -0.10],
