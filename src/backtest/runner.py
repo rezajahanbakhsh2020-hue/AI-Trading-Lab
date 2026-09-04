@@ -12,6 +12,8 @@ StrategyFunction = Callable[[pd.DataFrame], pd.DataFrame]
 def run_strategy(
     df: pd.DataFrame,
     strategy: StrategyFunction,
+    transaction_cost: float = 0.0,
+    slippage: float = 0.0,
 ) -> tuple[pd.DataFrame, dict]:
     """
     Run one strategy through the standard backtest pipeline.
@@ -19,11 +21,11 @@ def run_strategy(
     Pipeline:
         Input Data
         -> Strategy
-        -> Backtest Engine
+        -> Backtest
         -> Evaluation
 
-    The strategy must return a DataFrame containing a
-    'signal' column.
+    The strategy must return a DataFrame containing
+    a 'signal' column.
     """
 
     if not isinstance(df, pd.DataFrame):
@@ -44,7 +46,11 @@ def run_strategy(
             "Strategy output must contain a 'signal' column."
         )
 
-    backtest_result = run_backtest(strategy_result)
+    backtest_result = run_backtest(
+        strategy_result,
+        transaction_cost=transaction_cost,
+        slippage=slippage,
+    )
 
     report = evaluate_backtest(backtest_result)
 
