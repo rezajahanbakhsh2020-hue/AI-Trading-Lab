@@ -34,9 +34,6 @@ def validate_market_data(df: pd.DataFrame) -> None:
     if df[REQUIRED_COLUMNS].isnull().any().any():
         raise ValueError("Market data contains missing values.")
 
-    if (df["high"] < df["low"]).any():
-        raise ValueError("High price cannot be lower than low price.")
-
     if (df["open"] <= 0).any():
         raise ValueError("Open prices must be positive.")
 
@@ -48,3 +45,6 @@ def validate_market_data(df: pd.DataFrame) -> None:
 
     if (df["close"] <= 0).any():
         raise ValueError("Close prices must be positive.")
+
+    if (df["high"] < df["low"]).any():
+        raise ValueError("High price cannot be lower than low price.")
