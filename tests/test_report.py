@@ -57,7 +57,27 @@ def test_evaluate_backtest_requires_dataframe():
         evaluate_backtest(None)
 
 
-def test_evaluate_backtest_missing_required_column():
+def test_evaluate_backtest_missing_equity_column():
+    df = pd.DataFrame({
+        "signal": [1, 1],
+        "strategy_return": [0.01, 0.02],
+    })
+
+    with pytest.raises(ValueError):
+        evaluate_backtest(df)
+
+
+def test_evaluate_backtest_missing_signal_column():
+    df = pd.DataFrame({
+        "equity": [1.0, 1.1],
+        "strategy_return": [0.01, 0.02],
+    })
+
+    with pytest.raises(ValueError):
+        evaluate_backtest(df)
+
+
+def test_evaluate_backtest_missing_return_column():
     df = pd.DataFrame({
         "equity": [1.0, 1.1],
         "signal": [1, 1],
@@ -65,3 +85,38 @@ def test_evaluate_backtest_missing_required_column():
 
     with pytest.raises(ValueError):
         evaluate_backtest(df)
+
+
+def test_evaluate_backtest_empty_dataframe():
+    df = pd.DataFrame({
+        "signal": pd.Series(dtype=float),
+        "strategy_return": pd.Series(dtype=float),
+        "equity": pd.Series(dtype=float),
+    })
+
+    report = evaluate_backtest(df)
+
+    assert report["total_return"] == 0.0
+    assert report["max_drawdown"] == 0.0
+    assert report["sharpe_ratio"] == 0.0
+    assert report["calmar_ratio"] == 0.0
+    assert report["sortino_ratio"] == 0.0
+    assert report["exposure"] == 0.0
+    assert report["win_rate"] == 0.0
+    assert report["profit_factor"] == 0.0
+
+
+def test_evaluate_backtest_no_trades():
+    df = pd.DataFrame({
+        "signal": [0, 0, 0, 0],
+        "strategy_return": [0.0, 0.0, 0.0, 0.0],
+        "equity": [1.0, 1.0, 1.0, 1.0],
+    })
+
+    report = evaluate_backtest(df)
+
+    assert report["total_return"] == 0.0
+    assert report["max_drawdown"] == 0.0
+    assert report["exposure"] == 0.0
+    assert report["win_rate"] == 0.0
+    assert report["profit_factor"] == 0.0
