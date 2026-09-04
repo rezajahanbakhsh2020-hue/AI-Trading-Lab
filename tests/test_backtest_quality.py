@@ -134,12 +134,15 @@ def test_strategy_and_backtest_work_together_without_lookahead():
     # First period has no previous signal, so strategy_return is NaN.
     assert pd.isna(backtest_result["strategy_return"].iloc[0])
 
-    # The second period still has no active previous signal.
+    # The second period has an inactive previous signal.
     assert backtest_result["strategy_return"].iloc[1] == pytest.approx(0.0)
 
     # The third period executes the signal generated from
-    # the first period's return, therefore it uses the second
-    # period's return only through the previous signal.
-    assert backtest_result["strategy_return"].iloc[2] == pytest.approx(0.0)
+    # the first period's return.
+    assert backtest_result["strategy_return"].iloc[2] == pytest.approx(0.20)
 
-    assert backtest_result["strategy_return"].iloc[3] == pytest.approx(-0.10)
+    # The fourth period has an inactive previous signal.
+    assert backtest_result["strategy_return"].iloc[3] == pytest.approx(0.0)
+
+    # The fifth period executes the active previous signal.
+    assert backtest_result["strategy_return"].iloc[4] == pytest.approx(0.05)
