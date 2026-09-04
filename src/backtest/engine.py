@@ -1,4 +1,4 @@
-import pandas as pd
+ import pandas as pd
 
 
 def run_backtest(
@@ -14,12 +14,8 @@ def run_backtest(
     The signal generated at period t is executed during period t+1
     to avoid look-ahead bias.
 
-    Transaction costs and slippage are charged when the signal
-    changes and that change becomes effective on the following
-    period.
-
-    The first strategy return is NaN because there is no previous
-    signal available for the first period.
+    Transaction costs and slippage are charged when the executed
+    position changes.
 
     Parameters
     ----------
@@ -33,16 +29,16 @@ def run_backtest(
         Name of the market return column.
 
     transaction_cost:
-        Proportional transaction cost applied to signal changes.
+        Proportional transaction cost applied to position changes.
 
     slippage:
-        Proportional slippage applied to signal changes.
+        Proportional slippage applied to position changes.
 
     Returns
     -------
     pd.DataFrame
-        DataFrame containing strategy returns, position,
-        turnover, trading costs, gross returns, and equity.
+        DataFrame containing position, turnover, gross strategy
+        return, trading cost, net strategy return, and equity.
     """
 
     result = df.copy()
@@ -60,31 +56,27 @@ def run_backtest(
         raise ValueError("slippage must be non-negative.")
 
     # Execute the signal on the following period.
-    # The first period therefore has no active position.
     result["position"] = (
         result[signal_column]
         .shift(1)
         .fillna(0.0)
     )
 
-    # A signal change at period t becomes a position change
-    # at period t+1. Therefore turnover is the absolute signal
-    # change shifted by one period.
+    # Turnover is the absolute change in the executed position.
     result["turnover"] = (
-        result[signal_column]
+        result["position"]
         .diff()
         .abs()
-        .shift(1)
         .fillna(0.0)
     )
 
-    # Gross return before transaction costs and slippage.
-    # Keep the first return as NaN because there is no previous
-    # signal available at the first period.
+    # Gross strategy return before transaction costs and slippage.
     result["gross_strategy_return"] = (
         result["position"] * result[return_column]
     )
 
+    # There is no strategy return for the first period because
+    # there is no previous signal available.
     if not result.empty:
         result.loc[
             result.index[0],
@@ -97,16 +89,17 @@ def run_backtest(
         result["turnover"] * total_cost_rate
     )
 
-    # Net strategy return after transaction costs and slippage.
+    # Net strategy return after trading costs.
     result["strategy_return"] = (
         result["gross_strategy_return"]
         - result["trading_cost"]
     )
 
-    # The first period has no strategy return, but equity starts
-    # from the initial capital of 1.0.
+    # Equity starts from 1.0. The first NaN strategy return
+    # therefore has no effect on initial equity.
     result["equity"] = (
-        1.0 + result["strategy_return"].fillna(0.0)
+        1.0
+        + result["strategy_return"].fillna(0.0)
     ).cumprod()
 
     return result
