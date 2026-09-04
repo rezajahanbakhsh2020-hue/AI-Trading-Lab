@@ -2,38 +2,34 @@
 __pycache__/
 *.py[cod]
 *.pyo
+.pytest_cache/
+.ruff_cache/
+
+# Virtual environments
 .venv/
 venv/
 env/
 
+# Environment files
+.env
+
 # Jupyter
 .ipynb_checkpoints/
 
-# Environment / Secrets
-.env
-.env.*
-!.env.example
+# Generated results
+results/*
+!results/.gitkeep
 
-# IDE
-.vscode/
-.idea/
+# Market data
+data/raw/*
+!data/raw/.gitkeep
 
-# OS
+data/processed/*
+!data/processed/.gitkeep
+
+data/features/*
+!data/features/.gitkeep
+
+# OS files
 .DS_Store
 Thumbs.db
-
-# Data
-data/raw/
-data/processed/
-
-# Logs
-logs/
-*.log
-
-# Models / outputs
-models/
-outputs/
-
-# Temporary
-tmp/
-temp/
