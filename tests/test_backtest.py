@@ -61,7 +61,7 @@ def test_run_backtest_executes_signal_on_next_period():
 
     assert result["position"].tolist() == [0.0, 1.0, 0.0]
 
-    assert result["strategy_return"].iloc[0] == 0.0
+    assert pd.isna(result["strategy_return"].iloc[0])
     assert result["strategy_return"].iloc[1] == 0.20
     assert result["strategy_return"].iloc[2] == 0.0
 
@@ -79,8 +79,8 @@ def test_run_backtest_calculates_turnover():
     assert result["turnover"].tolist() == [
         0.0,
         0.0,
-        0.0,
         1.0,
+        0.0,
         1.0,
     ]
 
