@@ -80,8 +80,6 @@ def calmar_ratio(
     Calculate the Calmar ratio.
 
     Calmar ratio = total return / absolute maximum drawdown.
-
-    Returns 0.0 when maximum drawdown is zero.
     """
 
     if equity_column not in df.columns:
@@ -97,3 +95,39 @@ def calmar_ratio(
         return 0.0
 
     return float(total / abs(drawdown))
+
+
+def sortino_ratio(
+    df: pd.DataFrame,
+    equity_column: str = "equity",
+) -> float:
+    """
+    Calculate the Sortino ratio from the equity curve.
+
+    Only negative returns are used to measure downside risk.
+    """
+
+    if equity_column not in df.columns:
+        raise ValueError(f"Column '{equity_column}' not found.")
+
+    if df.empty:
+        return 0.0
+
+    equity = df[equity_column].astype(float)
+
+    returns = equity.pct_change().dropna()
+
+    if returns.empty:
+        return 0.0
+
+    downside_returns = returns[returns < 0]
+
+    if downside_returns.empty:
+        return 0.0
+
+    downside_deviation = downside_returns.std()
+
+    if downside_deviation == 0 or pd.isna(downside_deviation):
+        return 0.0
+
+    return float(returns.mean() / downside_deviation)
