@@ -15,7 +15,7 @@ def test_total_return():
         "equity": [1.0, 1.1, 1.2],
     })
 
-    assert total_return(df) == 0.2
+    assert round(total_return(df), 10) == 0.2
 
 
 def test_max_drawdown():
@@ -48,7 +48,7 @@ def test_calmar_ratio():
 
 def test_sortino_ratio():
     df = pd.DataFrame({
-        "equity": [1.0, 1.1, 1.05, 1.2],
+        "equity": [1.0, 1.1, 1.05, 1.2, 1.15],
     })
 
     result = sortino_ratio(df)
