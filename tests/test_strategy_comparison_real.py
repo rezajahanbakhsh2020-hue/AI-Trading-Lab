@@ -27,6 +27,8 @@ def test_compare_ma_and_momentum_strategies():
         ],
     })
 
+    df["return"] = df["close"].pct_change()
+
     strategies = {
         "moving_average": lambda data: baseline_signal(
             data,
@@ -104,6 +106,8 @@ def test_strategies_do_not_modify_common_input():
             105,
         ],
     })
+
+    df["return"] = df["close"].pct_change()
 
     original = df.copy()
 
