@@ -90,3 +90,33 @@ def sharpe_ratio(
         return 0.0
 
     return float(excess_returns.mean() / std)
+
+
+def profit_factor(
+    df: pd.DataFrame,
+    return_column: str = "strategy_return",
+) -> float:
+    """
+    Calculate the profit factor from strategy returns.
+
+    Profit Factor = Gross Profit / Gross Loss
+    """
+
+    if return_column not in df.columns:
+        raise ValueError(f"Column '{return_column}' not found.")
+
+    returns = df[return_column].dropna()
+    trades = returns[returns != 0]
+
+    if trades.empty:
+        return 0.0
+
+    gross_profit = trades[trades > 0].sum()
+    gross_loss = abs(trades[trades < 0].sum())
+
+    if gross_loss == 0:
+        if gross_profit > 0:
+            return float("inf")
+        return 0.0
+
+    return float(gross_profit / gross_loss)
