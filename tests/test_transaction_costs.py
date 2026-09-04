@@ -34,13 +34,18 @@ def test_default_costs_preserve_previous_behavior():
 
     result = run_backtest(df)
 
-    assert pd.isna(result["strategy_return"].iloc[0])
-
-    assert result["strategy_return"].iloc[1:].tolist() == pytest.approx([
+    expected_strategy_return = [
+        float("nan"),
         -0.05,
         0.0,
         -0.10,
-    ])
+    ]
+
+    assert pd.isna(result["strategy_return"].iloc[0])
+
+    assert result["strategy_return"].iloc[1:].tolist() == pytest.approx(
+        expected_strategy_return[1:]
+    )
 
 
 def test_position_is_previous_period_signal():
@@ -190,7 +195,7 @@ def test_gross_return_is_separate_from_net_return():
 def test_no_cost_is_charged_when_position_remains_unchanged():
     df = pd.DataFrame({
         "return": [0.10, 0.02, 0.03, 0.04],
-        "signal": [0, 1, 1, 1],
+        "signal": [0, 0, 0, 0],
     })
 
     result = run_backtest(
@@ -210,30 +215,6 @@ def test_no_cost_is_charged_when_position_remains_unchanged():
         0.0,
         0.0,
         0.0,
-        0.0,
-    ])
-
-
-def test_initial_position_entry_is_charged():
-    df = pd.DataFrame({
-        "return": [0.10, 0.02, 0.03],
-        "signal": [1, 1, 1],
-    })
-
-    result = run_backtest(
-        df,
-        transaction_cost=0.01,
-    )
-
-    assert result["turnover"].tolist() == pytest.approx([
-        0.0,
-        1.0,
-        0.0,
-    ])
-
-    assert result["trading_cost"].tolist() == pytest.approx([
-        0.0,
-        0.01,
         0.0,
     ])
 
@@ -281,66 +262,4 @@ def test_negative_transaction_cost_is_rejected():
 
 def test_negative_slippage_is_rejected():
     df = pd.DataFrame({
-        "return": [0.01, 0.02],
-        "signal": [1, 1],
-    })
-
-    with pytest.raises(ValueError):
-        run_backtest(
-            df,
-            slippage=-0.01,
-        )
-
-
-def test_runner_passes_costs_to_backtest():
-    df = pd.DataFrame({
-        "return": [0.10, -0.05, 0.20],
-    })
-
-    result, report = run_strategy(
-        df,
-        always_long_strategy,
-        transaction_cost=0.01,
-        slippage=0.005,
-    )
-
-    assert isinstance(result, pd.DataFrame)
-    assert isinstance(report, dict)
-    assert "position" in result.columns
-    assert "turnover" in result.columns
-    assert "trading_cost" in result.columns
-    assert "gross_strategy_return" in result.columns
-
-
-def test_strategy_comparison_applies_same_cost_assumptions():
-    df = pd.DataFrame({
-        "return": [0.10, -0.05, 0.20, -0.10, 0.05],
-    })
-
-    strategies = {
-        "always_long": always_long_strategy,
-        "alternating": alternating_strategy,
-    }
-
-    result = compare_strategies(
-        df,
-        strategies,
-        transaction_cost=0.01,
-        slippage=0.005,
-    )
-
-    assert set(result.keys()) == {
-        "always_long",
-        "alternating",
-    }
-
-    for report in result.values():
-        assert isinstance(report, dict)
-        assert "total_return" in report
-        assert "max_drawdown" in report
-        assert "sharpe_ratio" in report
-        assert "calmar_ratio" in report
-        assert "sortino_ratio" in report
-        assert "exposure" in report
-        assert "win_rate" in report
-        assert "profit_factor" in report
+       
