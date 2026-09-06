@@ -207,7 +207,7 @@ def rank_walk_forward_strategies(
 
     When the primary metric is tied:
     1. positive_window_rate is used.
-    2. max_drawdown is used.
+    2. max_drawdown magnitude is used.
     3. strategy name is used as a deterministic final tie-breaker.
 
     For max_drawdown, lower absolute drawdown is considered better.
@@ -255,15 +255,22 @@ def rank_walk_forward_strategies(
     dataframe = dataframe.reset_index()
 
     if metric == "max_drawdown":
+        dataframe["_ranking_max_drawdown"] = (
+            dataframe["max_drawdown"].abs()
+        )
+        primary_column = "_ranking_max_drawdown"
         primary_ascending = True
     else:
+        primary_column = metric
         primary_ascending = ascending
 
     dataframe = dataframe.sort_values(
         by=[
-            metric,
+            primary_column,
             "positive_window_rate",
-            "max_drawdown",
+            "_ranking_max_drawdown"
+            if primary_column != "_ranking_max_drawdown"
+            else primary_column,
             "strategy",
         ],
         ascending=[
@@ -274,6 +281,11 @@ def rank_walk_forward_strategies(
         ],
         kind="mergesort",
     ).reset_index(drop=True)
+
+    if "_ranking_max_drawdown" in dataframe.columns:
+        dataframe = dataframe.drop(
+            columns=["_ranking_max_drawdown"]
+        )
 
     dataframe["rank"] = dataframe.index + 1
 
