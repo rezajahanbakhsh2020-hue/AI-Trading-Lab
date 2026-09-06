@@ -7,6 +7,8 @@ from src.pipeline import (
     run_walk_forward_backtest,
 )
 
+from src.evaluation.final_report import get_best_strategy
+
 
 def create_market_data(size: int = 30) -> pd.DataFrame:
     timestamps = pd.date_range(
@@ -218,3 +220,48 @@ def test_build_final_report():
     ]
 
     assert list(report.columns) == expected_columns
+
+
+def test_get_best_strategy():
+    comparison = {
+        "strategy_a": {
+            "total_return": 0.25,
+            "max_drawdown": -0.10,
+            "sharpe_ratio": 1.50,
+            "calmar_ratio": 2.50,
+            "sortino_ratio": 1.80,
+            "exposure": 0.80,
+            "win_rate": 0.60,
+            "profit_factor": 1.80,
+            "windows": 4,
+            "observations": 100,
+            "profitable_windows": 3,
+            "losing_windows": 1,
+            "positive_window_rate": 0.75,
+        },
+        "strategy_b": {
+            "total_return": 0.15,
+            "max_drawdown": -0.08,
+            "sharpe_ratio": 1.20,
+            "calmar_ratio": 1.88,
+            "sortino_ratio": 1.40,
+            "exposure": 0.70,
+            "win_rate": 0.55,
+            "profit_factor": 1.50,
+            "windows": 4,
+            "observations": 100,
+            "profitable_windows": 2,
+            "losing_windows": 2,
+            "positive_window_rate": 0.50,
+        },
+    }
+
+    best_strategy = get_best_strategy(comparison)
+
+    assert best_strategy == "strategy_a"
+
+
+def test_get_best_strategy_empty_comparison():
+    result = get_best_strategy({})
+
+    assert result is None
