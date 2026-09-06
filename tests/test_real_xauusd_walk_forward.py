@@ -7,7 +7,7 @@ from configs.strategies import (
     MOVING_AVERAGE_CONFIG,
 )
 from src.data.preprocessing import standardize_market_data
-from src.data.validation import validate_xauusd_data
+from src.data.validation import validate_market_data
 from src.evaluation.walk_forward_report import evaluate_walk_forward
 from src.evaluation.walk_forward_runner import run_walk_forward_strategy
 from src.features.indicators import add_returns
@@ -25,7 +25,7 @@ DATA_PATH = (
 def test_real_xauusd_walk_forward_pipeline():
     df = pd.read_csv(DATA_PATH)
 
-    validate_xauusd_data(df)
+    validate_market_data(df)
 
     df = standardize_market_data(df)
     df = add_returns(df)
