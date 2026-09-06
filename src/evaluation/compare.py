@@ -254,23 +254,27 @@ def rank_walk_forward_strategies(
     dataframe.index.name = "strategy"
     dataframe = dataframe.reset_index()
 
+    dataframe["_ranking_max_drawdown"] = (
+        dataframe["max_drawdown"].abs()
+    )
+
     if metric == "max_drawdown":
-        dataframe["_ranking_max_drawdown"] = (
-            dataframe["max_drawdown"].abs()
-        )
         primary_column = "_ranking_max_drawdown"
         primary_ascending = True
     else:
         primary_column = metric
         primary_ascending = ascending
 
+    if primary_column == "_ranking_max_drawdown":
+        drawdown_column = "_ranking_max_drawdown"
+    else:
+        drawdown_column = "_ranking_max_drawdown"
+
     dataframe = dataframe.sort_values(
         by=[
             primary_column,
             "positive_window_rate",
-            "_ranking_max_drawdown"
-            if primary_column != "_ranking_max_drawdown"
-            else primary_column,
+            drawdown_column,
             "strategy",
         ],
         ascending=[
@@ -282,10 +286,9 @@ def rank_walk_forward_strategies(
         kind="mergesort",
     ).reset_index(drop=True)
 
-    if "_ranking_max_drawdown" in dataframe.columns:
-        dataframe = dataframe.drop(
-            columns=["_ranking_max_drawdown"]
-        )
+    dataframe = dataframe.drop(
+        columns=["_ranking_max_drawdown"]
+    )
 
     dataframe["rank"] = dataframe.index + 1
 
