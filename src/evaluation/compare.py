@@ -174,3 +174,60 @@ def comparison_dataframe(
         comparison,
         orient="index",
     )
+
+
+def rank_walk_forward_strategies(
+    comparison: dict[str, dict],
+    metric: str = "total_return",
+    ascending: bool = False,
+) -> pd.DataFrame:
+    """
+    Rank strategies from a walk-forward comparison.
+
+    Parameters
+    ----------
+    comparison:
+        Output of compare_walk_forward_strategies().
+
+    metric:
+        Primary metric used for ranking.
+
+    ascending:
+        Ranking direction for the primary metric.
+
+    Returns
+    -------
+    pd.DataFrame
+        A DataFrame containing the original metrics plus a
+        deterministic rank column.
+
+    Ranking
+    -------
+    Strategies are primarily ranked by the selected metric.
+
+    When the primary metric is tied:
+    1. positive_window_rate is used.
+    2. max_drawdown is used.
+    3. strategy name is used as a deterministic final tie-breaker.
+
+    For max_drawdown, lower absolute drawdown is considered better.
+    """
+
+    if not isinstance(comparison, dict):
+        raise TypeError(
+            "comparison must be a dictionary."
+        )
+
+    if not comparison:
+        return pd.DataFrame()
+
+    if not isinstance(metric, str):
+        raise TypeError(
+            "metric must be a string."
+        )
+
+    dataframe = comparison_dataframe(comparison)
+
+    if metric not in dataframe.columns:
+        raise ValueError(
+            f"Unknown ranking metric: {metric
