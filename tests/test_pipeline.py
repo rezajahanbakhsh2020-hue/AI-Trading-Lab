@@ -45,7 +45,7 @@ def create_market_data(size: int = 30) -> pd.DataFrame:
         119.0,
         121.0,
         122.0,
-    ]
+    ][:size]
 
     return pd.DataFrame(
         {
