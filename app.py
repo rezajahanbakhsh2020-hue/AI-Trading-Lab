@@ -13,17 +13,29 @@ from configs.strategies import (
 )
 from src.backtest.runner import run_strategy
 from src.evaluation.compare import (
-    compare_walk_forward_strategies,
+    comparison_dataframe,
 )
 from src.evaluation.final_report import (
     build_final_strategy_report,
     get_best_strategy,
 )
-from src.evaluation.market_regime import classify_volatility_regime
+from src.evaluation.market_regime import (
+    classify_volatility_regime,
+)
+from src.evaluation.strategy_selection import (
+    select_eligible_strategies,
+)
+from src.evaluation.strategy_suite import (
+    run_default_strategy_suite,
+)
 from src.strategies.baseline import baseline_signal
 from src.strategies.momentum import momentum_signal
-from src.visualization.chart_data import prepare_chart_data
-from src.visualization.chart_engine import build_signal_markers
+from src.visualization.chart_data import (
+    prepare_chart_data,
+)
+from src.visualization.chart_engine import (
+    build_signal_markers,
+)
 
 
 # ---------------------------------------------------------------------
@@ -243,11 +255,12 @@ def run_walk_forward_comparison(
     step: int,
 ) -> dict[str, dict]:
     """
-    Run the real project walk-forward comparison.
-
-    Every strategy receives the same chronological
-    train/test/step configuration.
+    Run the project's walk-forward strategy comparison.
     """
+
+    from src.evaluation.compare import (
+        compare_walk_forward_strategies,
+    )
 
     return compare_walk_forward_strategies(
         df=df,
@@ -426,4 +439,88 @@ def build_equity_chart(
 
 def build_drawdown_chart(
     df: pd.DataFrame,
-) -> go.F
+) -> go.Figure:
+    """
+    Build the strategy drawdown curve.
+    """
+
+    figure = go.Figure()
+
+    if "equity" not in df.columns:
+        return figure
+
+    equity = pd.to_numeric(
+        df["equity"],
+        errors="coerce",
+    )
+
+    peak = equity.cummax()
+
+    drawdown = (
+        equity / peak - 1.0
+    ) * 100.0
+
+    figure.add_trace(
+        go.Scatter(
+            x=df["timestamp"],
+            y=drawdown,
+            mode="lines",
+            name="Drawdown",
+            fill="tozeroy",
+        )
+    )
+
+    figure.update_layout(
+        title="Strategy Drawdown",
+        xaxis_title="Date",
+        yaxis_title="Drawdown (%)",
+        height=320,
+        hovermode="x unified",
+    )
+
+    return figure
+
+
+# ---------------------------------------------------------------------
+# Formatting helpers
+# ---------------------------------------------------------------------
+
+def format_percent(
+    value: float | int | None,
+) -> str:
+    if value is None:
+        return "N/A"
+
+    try:
+        numeric_value = float(value)
+
+        if pd.isna(numeric_value):
+            return "N/A"
+
+        return f"{numeric_value * 100:.2f}%"
+
+    except (TypeError, ValueError):
+        return "N/A"
+
+
+def format_ratio(
+    value: float | int | None,
+) -> str:
+    if value is None:
+        return "N/A"
+
+    try:
+        numeric_value = float(value)
+
+        if pd.isna(numeric_value):
+            return "N/A"
+
+        if numeric_value == float("inf"):
+            return "∞"
+
+        if numeric_value == float("-inf"):
+            return "-∞"
+
+        return f"{numeric_value:.2f}"
+
+    except (TypeError, ValueError):
