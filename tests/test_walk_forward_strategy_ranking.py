@@ -101,6 +101,7 @@ def test_rank_walk_forward_strategies_preserves_metrics() -> None:
     assert "max_drawdown" in ranked.columns
     assert "positive_window_rate" in ranked.columns
     assert "sharpe_ratio" in ranked.columns
+
     assert ranked.loc[
         ranked["strategy"] == "strategy_a",
         "total_return",
@@ -142,6 +143,10 @@ def test_rank_walk_forward_strategies_prefers_lower_drawdown() -> None:
 
     comparison["strategy_b"]["total_return"] = 0.20
     comparison["strategy_b"]["positive_window_rate"] = 1.00
+
+    # Give strategy B the better drawdown while keeping
+    # the primary metrics tied with strategy A.
+    comparison["strategy_b"]["max_drawdown"] = -0.05
 
     ranked = rank_walk_forward_strategies(
         comparison
