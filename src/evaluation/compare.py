@@ -230,4 +230,51 @@ def rank_walk_forward_strategies(
 
     if metric not in dataframe.columns:
         raise ValueError(
-            f"Unknown ranking metric: {metric
+            f"Unknown ranking metric: {metric}"
+        )
+
+    required_tie_breakers = {
+        "positive_window_rate",
+        "max_drawdown",
+    }
+
+    missing_tie_breakers = [
+        column
+        for column in required_tie_breakers
+        if column not in dataframe.columns
+    ]
+
+    if missing_tie_breakers:
+        raise ValueError(
+            "Missing required ranking columns: "
+            f"{missing_tie_breakers}"
+        )
+
+    dataframe = dataframe.copy()
+    dataframe.index.name = "strategy"
+    dataframe = dataframe.reset_index()
+
+    if metric == "max_drawdown":
+        primary_ascending = True
+    else:
+        primary_ascending = ascending
+
+    dataframe = dataframe.sort_values(
+        by=[
+            metric,
+            "positive_window_rate",
+            "max_drawdown",
+            "strategy",
+        ],
+        ascending=[
+            primary_ascending,
+            False,
+            True,
+            True,
+        ],
+        kind="mergesort",
+    ).reset_index(drop=True)
+
+    dataframe["rank"] = dataframe.index + 1
+
+    return dataframe
