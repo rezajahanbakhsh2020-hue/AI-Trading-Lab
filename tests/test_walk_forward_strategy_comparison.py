@@ -42,7 +42,7 @@ def create_market_data(
         122.0,
     ][:size]
 
-    return pd.DataFrame(
+    data = pd.DataFrame(
         {
             "timestamp": pd.date_range(
                 "2026-01-01",
@@ -64,6 +64,10 @@ def create_market_data(
             "close": close,
         }
     )
+
+    data["return"] = data["close"].pct_change().fillna(0.0)
+
+    return data
 
 
 def long_strategy(
