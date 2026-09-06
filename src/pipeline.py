@@ -14,6 +14,7 @@ from src.evaluation.report import evaluate_backtest
 from src.evaluation.walk_forward_report import evaluate_walk_forward
 from src.evaluation.walk_forward_runner import run_walk_forward_strategy
 from src.evaluation.final_report import build_final_strategy_report
+from src.evaluation.strategy_suite import run_default_strategy_suite
 
 
 def load_and_prepare_market_data(
@@ -58,6 +59,37 @@ def run_strategy_backtest(
     report = evaluate_backtest(df)
 
     return df, report
+
+
+def run_default_strategy_suite_pipeline(
+    path: str,
+) -> dict[str, dict]:
+    """
+    Run the default configured strategy suite through the main pipeline.
+
+    Pipeline:
+    CSV
+    -> Loader
+    -> Validation
+    -> Preprocessing
+    -> Returns
+    -> Default Strategy Suite
+    -> Strategy Comparison
+
+    The default suite currently contains:
+    - moving_average
+    - momentum
+
+    Returns
+    -------
+    dict[str, dict]
+        Evaluation report for every strategy in the default suite.
+    """
+    df = load_and_prepare_market_data(path)
+
+    df = add_returns(df)
+
+    return run_default_strategy_suite(df)
 
 
 def run_walk_forward_backtest(
