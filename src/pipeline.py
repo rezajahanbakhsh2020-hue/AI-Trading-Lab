@@ -1,12 +1,12 @@
 import pandas as pd
 
+from configs.strategies import BACKTEST_CONFIG
 from src.data.loader import load_csv
 from src.data.validation import validate_market_data
 from src.data.preprocessing import standardize_market_data
 from src.features.indicators import add_returns
-from src.strategy.baseline import generate_baseline_signal
-from src.backtest.engine import run_backtest
 from src.evaluation.report import evaluate_backtest
+from src.strategies.baseline import baseline_signal
 
 
 def load_and_prepare_market_data(
@@ -32,7 +32,7 @@ def run_strategy_backtest(
     path: str,
 ) -> tuple[pd.DataFrame, dict]:
     """
-    Run the complete baseline strategy pipeline.
+    Run the baseline strategy through the standard backtest pipeline.
 
     Pipeline:
         CSV
@@ -40,19 +40,24 @@ def run_strategy_backtest(
         -> Validation
         -> Preprocessing
         -> Returns
-        -> Strategy Signal
+        -> Strategy
         -> Backtest
         -> Evaluation
     """
+
+    from src.backtest.runner import run_strategy
 
     df = load_and_prepare_market_data(path)
 
     df = add_returns(df)
 
-    df = generate_baseline_signal(df)
+    strategy = lambda data: baseline_signal(data)
 
-    df = run_backtest(df)
+    result, report = run_strategy(
+        df=df,
+        strategy=strategy,
+        transaction_cost=BACKTEST_CONFIG["transaction_cost"],
+        slippage=BACKTEST_CONFIG["slippage"],
+    )
 
-    report = evaluate_backtest(df)
-
-    return df, report
+    return result, report
