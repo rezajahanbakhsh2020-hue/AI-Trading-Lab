@@ -3,6 +3,10 @@ from collections.abc import Callable
 import pandas as pd
 
 from src.backtest.runner import run_strategy
+from src.evaluation.walk_forward_report import evaluate_walk_forward
+from src.evaluation.walk_forward_runner import (
+    run_walk_forward_strategy,
+)
 
 
 StrategyFunction = Callable[[pd.DataFrame], pd.DataFrame]
@@ -19,25 +23,6 @@ def compare_strategies(
 
     The same transaction cost and slippage assumptions are
     applied to every strategy.
-
-    Parameters
-    ----------
-    df:
-        Common market/feature DataFrame.
-
-    strategies:
-        Dictionary mapping strategy names to strategy functions.
-
-    transaction_cost:
-        Proportional transaction cost applied to all strategies.
-
-    slippage:
-        Proportional slippage applied to all strategies.
-
-    Returns
-    -------
-    dict
-        Evaluation report for every strategy.
     """
 
     if not isinstance(df, pd.DataFrame):
@@ -63,6 +48,11 @@ def compare_strategies(
                 "Every strategy name must be a string."
             )
 
+        if not callable(strategy):
+            raise TypeError(
+                "Every strategy must be callable."
+            )
+
         _, report = run_strategy(
             df=df,
             strategy=strategy,
@@ -71,6 +61,93 @@ def compare_strategies(
         )
 
         results[name] = report
+
+    return results
+
+
+def compare_walk_forward_strategies(
+    df: pd.DataFrame,
+    strategies: dict[str, StrategyFunction],
+    train_size: int,
+    test_size: int,
+    step: int | None = None,
+    transaction_cost: float = 0.0,
+    slippage: float = 0.0,
+) -> dict[str, dict]:
+    """
+    Run and compare multiple strategies using the same
+    chronological walk-forward configuration.
+
+    Every strategy receives the same input data and the same
+    train/test/step configuration.
+
+    Returns
+    -------
+    dict[str, dict]
+        Walk-forward evaluation report for every strategy.
+    """
+
+    if not isinstance(df, pd.DataFrame):
+        raise TypeError("df must be a pandas DataFrame.")
+
+    if not isinstance(strategies, dict):
+        raise TypeError("strategies must be a dictionary.")
+
+    if not strategies:
+        raise ValueError("strategies must not be empty.")
+
+    if train_size <= 0:
+        raise ValueError(
+            "train_size must be positive."
+        )
+
+    if test_size <= 0:
+        raise ValueError(
+            "test_size must be positive."
+        )
+
+    if step is not None and step <= 0:
+        raise ValueError(
+            "step must be positive when provided."
+        )
+
+    if transaction_cost < 0:
+        raise ValueError(
+            "transaction_cost must be non-negative."
+        )
+
+    if slippage < 0:
+        raise ValueError(
+            "slippage must be non-negative."
+        )
+
+    for name, strategy in strategies.items():
+        if not isinstance(name, str):
+            raise TypeError(
+                "Every strategy name must be a string."
+            )
+
+        if not callable(strategy):
+            raise TypeError(
+                "Every strategy must be callable."
+            )
+
+    results = {}
+
+    for name, strategy in strategies.items():
+        oos_results = run_walk_forward_strategy(
+            df=df,
+            strategy=strategy,
+            train_size=train_size,
+            test_size=test_size,
+            step=step,
+            transaction_cost=transaction_cost,
+            slippage=slippage,
+        )
+
+        results[name] = evaluate_walk_forward(
+            oos_results
+        )
 
     return results
 
