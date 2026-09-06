@@ -13,6 +13,7 @@ from src.backtest.engine import run_backtest
 from src.evaluation.report import evaluate_backtest
 from src.evaluation.walk_forward_report import evaluate_walk_forward
 from src.evaluation.walk_forward_runner import run_walk_forward_strategy
+from src.evaluation.final_report import build_final_strategy_report
 
 
 def load_and_prepare_market_data(
@@ -106,3 +107,38 @@ def run_walk_forward_backtest(
     report = evaluate_walk_forward(oos_results)
 
     return oos_results, report
+
+
+def build_final_report(
+    comparison: dict[str, dict],
+    metric: str = "total_return",
+    ascending: bool = False,
+) -> pd.DataFrame:
+    """
+    Build the final ranked strategy report from a strategy comparison.
+
+    This function connects the final strategy reporting layer
+    to the main pipeline without changing the existing backtest
+    or walk-forward workflows.
+
+    Parameters
+    ----------
+    comparison:
+        Output of compare_walk_forward_strategies().
+
+    metric:
+        Primary metric used for ranking.
+
+    ascending:
+        Ranking direction for the primary metric.
+
+    Returns
+    -------
+    pd.DataFrame
+        Final ranked strategy report.
+    """
+    return build_final_strategy_report(
+        comparison=comparison,
+        metric=metric,
+        ascending=ascending,
+    )
