@@ -1,6 +1,7 @@
 import pandas as pd
 
 from src.pipeline import (
+    build_final_report,
     load_and_prepare_market_data,
     run_strategy_backtest,
     run_walk_forward_backtest,
@@ -146,3 +147,74 @@ def test_run_walk_forward_backtest(tmp_path):
         assert "walk_forward_test_end" in result.columns
 
         assert "oos_equity" in result.columns
+
+
+def test_build_final_report():
+    comparison = {
+        "strategy_a": {
+            "total_return": 0.25,
+            "max_drawdown": -0.10,
+            "sharpe_ratio": 1.50,
+            "calmar_ratio": 2.50,
+            "sortino_ratio": 1.80,
+            "exposure": 0.80,
+            "win_rate": 0.60,
+            "profit_factor": 1.80,
+            "windows": 4,
+            "observations": 100,
+            "profitable_windows": 3,
+            "losing_windows": 1,
+            "positive_window_rate": 0.75,
+        },
+        "strategy_b": {
+            "total_return": 0.15,
+            "max_drawdown": -0.08,
+            "sharpe_ratio": 1.20,
+            "calmar_ratio": 1.88,
+            "sortino_ratio": 1.40,
+            "exposure": 0.70,
+            "win_rate": 0.55,
+            "profit_factor": 1.50,
+            "windows": 4,
+            "observations": 100,
+            "profitable_windows": 2,
+            "losing_windows": 2,
+            "positive_window_rate": 0.50,
+        },
+    }
+
+    report = build_final_report(comparison)
+
+    assert isinstance(report, pd.DataFrame)
+    assert len(report) == 2
+
+    assert report.iloc[0]["strategy"] == "strategy_a"
+    assert report.iloc[0]["rank"] == 1
+
+    assert report.iloc[1]["strategy"] == "strategy_b"
+    assert report.iloc[1]["rank"] == 2
+
+    assert list(report["strategy"]) == [
+        "strategy_a",
+        "strategy_b",
+    ]
+
+    expected_columns = [
+        "rank",
+        "strategy",
+        "total_return",
+        "max_drawdown",
+        "sharpe_ratio",
+        "calmar_ratio",
+        "sortino_ratio",
+        "exposure",
+        "win_rate",
+        "profit_factor",
+        "windows",
+        "observations",
+        "profitable_windows",
+        "losing_windows",
+        "positive_window_rate",
+    ]
+
+    assert list(report.columns) == expected_columns
