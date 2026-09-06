@@ -6,8 +6,7 @@ build_final_strategy_report,
 get_best_strategy,
 )
 
-def create_comparison() -> dict[str, dict]:
-return {
+COMPARISON = {
 "strategy_a": {
 "windows": 4,
 "observations": 40,
@@ -55,18 +54,14 @@ return {
 },
 }
 
-def test_build_final_strategy_report_returns_dataframe() -> None:
-report = build_final_strategy_report(
-create_comparison()
-)
+def test_build_final_strategy_report_returns_dataframe():
+report = build_final_strategy_report(COMPARISON)
 
 assert isinstance(report, pd.DataFrame)
 assert not report.empty
 
-def test_build_final_strategy_report_is_ranked() -> None:
-report = build_final_strategy_report(
-create_comparison()
-)
+def test_build_final_strategy_report_is_ranked():
+report = build_final_strategy_report(COMPARISON)
 
 assert report["strategy"].tolist() == [
     "strategy_a",
@@ -76,12 +71,10 @@ assert report["strategy"].tolist() == [
 
 assert report["rank"].tolist() == [1, 2, 3]
 
-def test_build_final_strategy_report_contains_key_metrics() -> None:
-report = build_final_strategy_report(
-create_comparison()
-)
+def test_build_final_strategy_report_contains_key_metrics():
+report = build_final_strategy_report(COMPARISON)
 
-expected_columns = [
+expected = [
     "rank",
     "strategy",
     "total_return",
@@ -94,24 +87,25 @@ expected_columns = [
     "positive_window_rate",
 ]
 
-for column in expected_columns:
+for column in expected:
     assert column in report.columns
 
-def test_build_final_strategy_report_preserves_values() -> None:
-report = build_final_strategy_report(
-create_comparison()
-)
+def test_build_final_strategy_report_preserves_values():
+report = build_final_strategy_report(COMPARISON)
 
-strategy_a = report[
+row = report[
     report["strategy"] == "strategy_a"
 ].iloc[0]
 
-assert strategy_a["total_return"] == pytest.approx(0.20)
-assert strategy_a["max_drawdown"] == pytest.approx(-0.10)
-assert strategy_a["sharpe_ratio"] == pytest.approx(1.50)
+assert row["total_return"] == pytest.approx(0.20)
+assert row["max_drawdown"] == pytest.approx(-0.10)
+assert row["sharpe_ratio"] == pytest.approx(1.50)
 
-def test_build_final_strategy_report_supports_custom_metric() -> None:
-comparison = create_comparison()
+def test_build_final_strategy_report_supports_custom_metric():
+comparison = {
+key: value.copy()
+for key, value in COMPARISON.items()
+}
 
 comparison["strategy_b"]["sharpe_ratio"] = 2.00
 
@@ -123,9 +117,9 @@ report = build_final_strategy_report(
 assert report.iloc[0]["strategy"] == "strategy_b"
 assert report.iloc[0]["rank"] == 1
 
-def test_build_final_strategy_report_supports_ascending() -> None:
+def test_build_final_strategy_report_supports_ascending():
 report = build_final_strategy_report(
-create_comparison(),
+COMPARISON,
 metric="total_return",
 ascending=True,
 )
@@ -136,21 +130,22 @@ assert report["strategy"].tolist() == [
     "strategy_a",
 ]
 
-def test_build_final_strategy_report_empty_input() -> None:
+def test_build_final_strategy_report_empty_input():
 report = build_final_strategy_report({})
 
 assert isinstance(report, pd.DataFrame)
 assert report.empty
 
-def test_get_best_strategy_returns_top_strategy() -> None:
-best = get_best_strategy(
-create_comparison()
-)
+def test_get_best_strategy_returns_top_strategy():
+best = get_best_strategy(COMPARISON)
 
 assert best == "strategy_a"
 
-def test_get_best_strategy_supports_custom_metric() -> None:
-comparison = create_comparison()
+def test_get_best_strategy_supports_custom_metric():
+comparison = {
+key: value.copy()
+for key, value in COMPARISON.items()
+}
 
 comparison["strategy_b"]["sharpe_ratio"] = 2.00
 
@@ -161,7 +156,7 @@ best = get_best_strategy(
 
 assert best == "strategy_b"
 
-def test_get_best_strategy_empty_input() -> None:
+def test_get_best_strategy_empty_input():
 best = get_best_strategy({})
 
 assert best is None
