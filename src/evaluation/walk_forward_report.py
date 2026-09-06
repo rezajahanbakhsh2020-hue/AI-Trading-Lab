@@ -45,11 +45,35 @@ def combine_oos_results(
     return combined
 
 
+def _calculate_window_returns(
+    results: list[pd.DataFrame],
+) -> list[float]:
+    """
+    Calculate total return for every walk-forward OOS window.
+    """
+
+    window_returns = []
+
+    for result in results:
+        if result.empty:
+            window_returns.append(0.0)
+            continue
+
+        window_returns.append(
+            float(total_return(result))
+        )
+
+    return window_returns
+
+
 def evaluate_walk_forward(
     results: list[pd.DataFrame],
 ) -> dict:
     """
     Evaluate combined out-of-sample walk-forward results.
+
+    The report contains both aggregate OOS performance metrics and
+    window-level stability metrics.
     """
 
     combined = combine_oos_results(results)
@@ -66,6 +90,10 @@ def evaluate_walk_forward(
             "exposure": 0.0,
             "win_rate": 0.0,
             "profit_factor": 0.0,
+            "window_returns": [],
+            "profitable_windows": 0,
+            "losing_windows": 0,
+            "positive_window_rate": 0.0,
         }
 
     required_columns = {
@@ -94,6 +122,24 @@ def evaluate_walk_forward(
             "'position' or 'signal'."
         )
 
+    window_returns = _calculate_window_returns(results)
+
+    profitable_windows = sum(
+        value > 0
+        for value in window_returns
+    )
+
+    losing_windows = sum(
+        value < 0
+        for value in window_returns
+    )
+
+    positive_window_rate = (
+        profitable_windows / len(window_returns)
+        if window_returns
+        else 0.0
+    )
+
     return {
         "windows": len(results),
         "observations": len(combined),
@@ -108,4 +154,8 @@ def evaluate_walk_forward(
         ),
         "win_rate": win_rate(combined),
         "profit_factor": profit_factor(combined),
+        "window_returns": window_returns,
+        "profitable_windows": profitable_windows,
+        "losing_windows": losing_windows,
+        "positive_window_rate": positive_window_rate,
     }
