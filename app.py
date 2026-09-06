@@ -12,9 +12,14 @@ from configs.strategies import (
     MOMENTUM_CONFIG,
 )
 from src.backtest.runner import run_strategy
+from src.evaluation.compare import (
+    compare_walk_forward_strategies,
+)
+from src.evaluation.final_report import (
+    build_final_strategy_report,
+    get_best_strategy,
+)
 from src.evaluation.market_regime import classify_volatility_regime
-from src.evaluation.strategy_suite import run_default_strategy_suite
-from src.evaluation.compare import comparison_dataframe
 from src.strategies.baseline import baseline_signal
 from src.strategies.momentum import momentum_signal
 from src.visualization.chart_data import prepare_chart_data
@@ -176,13 +181,19 @@ def momentum_strategy(
 
 
 STRATEGIES = {
-    "Moving Average": moving_average_strategy,
-    "Momentum": momentum_strategy,
+    "moving_average": moving_average_strategy,
+    "momentum": momentum_strategy,
+}
+
+
+DISPLAY_STRATEGY_NAMES = {
+    "moving_average": "Moving Average",
+    "momentum": "Momentum",
 }
 
 
 # ---------------------------------------------------------------------
-# Strategy execution
+# Standard strategy execution
 # ---------------------------------------------------------------------
 
 @st.cache_data
@@ -195,53 +206,62 @@ def run_selected_strategy(
     standard Strategy -> Backtest -> Evaluation pipeline.
     """
 
-    if strategy_name not in STRATEGIES:
+    if strategy_name not in DISPLAY_STRATEGY_NAMES.values():
         raise ValueError(
             f"Unknown strategy: {strategy_name}"
         )
 
+    internal_name = next(
+        key
+        for key, value in DISPLAY_STRATEGY_NAMES.items()
+        if value == strategy_name
+    )
+
     result, report = run_strategy(
         df=df,
-        strategy=STRATEGIES[strategy_name],
-        transaction_cost=BACKTEST_CONFIG["transaction_cost"],
-        slippage=BACKTEST_CONFIG["slippage"],
+        strategy=STRATEGIES[internal_name],
+        transaction_cost=BACKTEST_CONFIG[
+            "transaction_cost"
+        ],
+        slippage=BACKTEST_CONFIG[
+            "slippage"
+        ],
     )
 
     return result, report
 
 
+# ---------------------------------------------------------------------
+# Walk-forward execution
+# ---------------------------------------------------------------------
+
 @st.cache_data
-def run_strategy_comparison(
+def run_walk_forward_comparison(
     df: pd.DataFrame,
-) -> pd.DataFrame:
+    train_size: int,
+    test_size: int,
+    step: int,
+) -> dict[str, dict]:
     """
-    Run the project's configured strategy suite and convert
-    the comparison report into a DataFrame.
+    Run the real project walk-forward comparison.
+
+    Every strategy receives the same chronological
+    train/test/step configuration.
     """
 
-    comparison = run_default_strategy_suite(df)
-
-    result = comparison_dataframe(
-        comparison
+    return compare_walk_forward_strategies(
+        df=df,
+        strategies=STRATEGIES,
+        train_size=train_size,
+        test_size=test_size,
+        step=step,
+        transaction_cost=BACKTEST_CONFIG[
+            "transaction_cost"
+        ],
+        slippage=BACKTEST_CONFIG[
+            "slippage"
+        ],
     )
-
-    if result.empty:
-        return result
-
-    result = result.copy()
-
-    result.index.name = "strategy"
-
-    result = result.reset_index()
-
-    result["strategy"] = result["strategy"].replace(
-        {
-            "moving_average": "Moving Average",
-            "momentum": "Momentum",
-        }
-    )
-
-    return result
 
 
 # ---------------------------------------------------------------------
@@ -335,7 +355,8 @@ def build_price_chart(
 
     if show_regime and "volatility_regime" in df.columns:
         high_regime = df[
-            df["volatility_regime"] == "high_volatility"
+            df["volatility_regime"]
+            == "high_volatility"
         ]
 
         if not high_regime.empty:
@@ -364,3 +385,45 @@ def build_price_chart(
             yanchor="bottom",
             y=1.02,
             xanchor="left",
+            x=0,
+        ),
+    )
+
+    return figure
+
+
+def build_equity_chart(
+    df: pd.DataFrame,
+) -> go.Figure:
+    """
+    Build the strategy equity curve.
+    """
+
+    figure = go.Figure()
+
+    if "equity" not in df.columns:
+        return figure
+
+    figure.add_trace(
+        go.Scatter(
+            x=df["timestamp"],
+            y=df["equity"],
+            mode="lines",
+            name="Equity",
+        )
+    )
+
+    figure.update_layout(
+        title="Strategy Equity Curve",
+        xaxis_title="Date",
+        yaxis_title="Equity",
+        height=360,
+        hovermode="x unified",
+    )
+
+    return figure
+
+
+def build_drawdown_chart(
+    df: pd.DataFrame,
+) -> go.F
