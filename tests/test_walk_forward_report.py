@@ -46,8 +46,18 @@ def test_combine_oos_results_rejects_invalid_input():
 
 
 def test_combine_oos_results_rejects_non_dataframe():
+    valid = create_oos_result(
+        pd.date_range(
+            "2026-01-01",
+            periods=2,
+            freq="D",
+        ),
+        [0.01, 0.02],
+        [1, 1],
+    )
+
     with pytest.raises(TypeError):
-        combine_oos_results([pd.DataFrame(), "invalid"])
+        combine_oos_results([valid, "invalid"])
 
 
 def test_combine_oos_results_rejects_missing_required_columns():
