@@ -13,6 +13,9 @@ from src.backtest.engine import run_backtest
 from src.data.loader import load_csv
 from src.data.preprocessing import standardize_market_data
 from src.data.validation import validate_market_data
+from src.evaluation.production_result_store import (
+    save_production_result,
+)
 from src.evaluation.production_selection import (
     select_production_strategy,
 )
@@ -26,6 +29,12 @@ DEFAULT_DATA_PATH = (
     / "data"
     / "raw"
     / "xauusd_daily_2025.csv"
+)
+
+DEFAULT_RESULTS_DIR = (
+    Path(__file__).resolve().parents[2]
+    / "results"
+    / "walk_forward"
 )
 
 
@@ -56,14 +65,11 @@ def build_production_strategy(
 
 def run_production_backtest(
     data_path: str | Path = DEFAULT_DATA_PATH,
-    results_dir: str | Path | None = None,
+    results_dir: str | Path = DEFAULT_RESULTS_DIR,
+    save_result: bool = True,
 ) -> dict:
     selection = select_production_strategy(
         results_dir=results_dir
-        if results_dir is not None
-        else Path(__file__).resolve().parents[2]
-        / "results"
-        / "walk_forward"
     )
 
     strategy_name = selection["strategy"]
@@ -95,7 +101,7 @@ def run_production_backtest(
         ],
     )
 
-    return {
+    result = {
         "strategy": strategy_name,
         "stability_score": selection[
             "stability_score"
@@ -105,3 +111,10 @@ def run_production_backtest(
         ],
         "backtest": backtest_result,
     }
+
+    if save_result:
+        result["saved_result"] = (
+            save_production_result(result)
+        )
+
+    return result
