@@ -26,13 +26,21 @@ jobs:
             pip install -r requirements.txt
           fi
 
+      - name: Run tests
+        run: |
+          PYTHONPATH=. pytest -q
+
       - name: Run production pipeline
         run: |
           PYTHONPATH=. python run_production.py
 
       - name: Show production results
         run: |
-          find results -type f -print 2>/dev/null || true
+          echo "Production results:"
+          find results/production -type f -print 2>/dev/null || true
+
+          echo "Walk-forward results:"
+          find results/walk_forward -type f -print 2>/dev/null || true
 
       - name: Upload production results
         uses: actions/upload-artifact@v4
