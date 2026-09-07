@@ -6,6 +6,7 @@ import pandas as pd
 
 from configs.strategies import (
     BACKTEST_CONFIG,
+    BREAKOUT_CONFIG,
     MOVING_AVERAGE_CONFIG,
     MOMENTUM_CONFIG,
 )
@@ -21,6 +22,7 @@ from src.evaluation.production_selection import (
 )
 from src.features.indicators import add_returns
 from src.strategies.baseline import baseline_signal
+from src.strategies.breakout import breakout_signal
 from src.strategies.momentum import momentum_signal
 
 
@@ -56,6 +58,12 @@ def build_production_strategy(
         return lambda data: momentum_signal(
             data,
             window=MOMENTUM_CONFIG["window"],
+        )
+
+    if strategy_name == "breakout":
+        return lambda data: breakout_signal(
+            data,
+            window=BREAKOUT_CONFIG["window"],
         )
 
     raise ValueError(
