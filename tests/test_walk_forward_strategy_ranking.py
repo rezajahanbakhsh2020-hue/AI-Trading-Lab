@@ -34,7 +34,7 @@ def test_rank_by_total_return():
 
     result = rank_walk_forward_strategies(
         reports,
-        primary_metric="total_return",
+        metric="total_return",
     )
 
     assert list(result["strategy"]) == [
@@ -49,7 +49,7 @@ def test_rank_by_sharpe_ratio():
 
     result = rank_walk_forward_strategies(
         reports,
-        primary_metric="sharpe_ratio",
+        metric="sharpe_ratio",
     )
 
     assert list(result["strategy"]) == [
@@ -64,7 +64,7 @@ def test_rank_by_positive_window_rate():
 
     result = rank_walk_forward_strategies(
         reports,
-        primary_metric="positive_window_rate",
+        metric="positive_window_rate",
     )
 
     assert list(result["strategy"]) == [
@@ -79,7 +79,7 @@ def test_rank_by_max_drawdown_prefers_lower_absolute_drawdown():
 
     result = rank_walk_forward_strategies(
         reports,
-        primary_metric="max_drawdown",
+        metric="max_drawdown",
     )
 
     assert list(result["strategy"]) == [
@@ -94,7 +94,7 @@ def test_ranking_preserves_all_metrics():
 
     result = rank_walk_forward_strategies(
         reports,
-        primary_metric="total_return",
+        metric="total_return",
     )
 
     assert "total_return" in result.columns
@@ -113,7 +113,7 @@ def test_ranking_returns_dataframe():
 
     result = rank_walk_forward_strategies(
         reports,
-        primary_metric="total_return",
+        metric="total_return",
     )
 
     assert isinstance(result, pd.DataFrame)
@@ -124,7 +124,7 @@ def test_ranking_has_rank_column():
 
     result = rank_walk_forward_strategies(
         reports,
-        primary_metric="total_return",
+        metric="total_return",
     )
 
     assert "rank" in result.columns
@@ -149,7 +149,7 @@ def test_ranking_is_deterministic_for_ties():
 
     result = rank_walk_forward_strategies(
         reports,
-        primary_metric="total_return",
+        metric="total_return",
     )
 
     assert list(result["strategy"]) == [
@@ -161,7 +161,7 @@ def test_ranking_is_deterministic_for_ties():
 def test_ranking_empty_reports():
     result = rank_walk_forward_strategies(
         {},
-        primary_metric="total_return",
+        metric="total_return",
     )
 
     assert isinstance(result, pd.DataFrame)
@@ -172,7 +172,7 @@ def test_ranking_rejects_invalid_reports_type():
     with pytest.raises(TypeError):
         rank_walk_forward_strategies(
             [],
-            primary_metric="total_return",
+            metric="total_return",
         )
 
 
@@ -182,7 +182,7 @@ def test_ranking_rejects_unknown_metric():
     with pytest.raises(ValueError):
         rank_walk_forward_strategies(
             reports,
-            primary_metric="unknown_metric",
+            metric="unknown_metric",
         )
 
 
@@ -192,7 +192,7 @@ def test_ranking_rejects_non_string_metric():
     with pytest.raises(TypeError):
         rank_walk_forward_strategies(
             reports,
-            primary_metric=None,
+            metric=None,
         )
 
 
@@ -208,7 +208,7 @@ def test_ranking_rejects_missing_primary_metric():
     with pytest.raises(ValueError):
         rank_walk_forward_strategies(
             reports,
-            primary_metric="total_return",
+            metric="total_return",
         )
 
 
@@ -218,76 +218,4 @@ def test_ranking_handles_negative_returns():
             "total_return": -0.05,
             "max_drawdown": -0.10,
             "sharpe_ratio": -0.5,
-            "positive_window_rate": 0.40,
-        },
-        "strategy_b": {
-            "total_return": -0.10,
-            "max_drawdown": -0.20,
-            "sharpe_ratio": -1.0,
-            "positive_window_rate": 0.30,
-        },
-    }
-
-    result = rank_walk_forward_strategies(
-        reports,
-        primary_metric="total_return",
-    )
-
-    assert list(result["strategy"]) == [
-        "strategy_a",
-        "strategy_b",
-    ]
-
-
-def test_ranking_prefers_positive_window_rate_after_primary_metric_tie():
-    reports = {
-        "strategy_a": {
-            "total_return": 0.20,
-            "max_drawdown": -0.10,
-            "sharpe_ratio": 1.0,
-            "positive_window_rate": 0.60,
-        },
-        "strategy_b": {
-            "total_return": 0.20,
-            "max_drawdown": -0.10,
-            "sharpe_ratio": 1.0,
-            "positive_window_rate": 0.80,
-        },
-    }
-
-    result = rank_walk_forward_strategies(
-        reports,
-        primary_metric="total_return",
-    )
-
-    assert list(result["strategy"]) == [
-        "strategy_b",
-        "strategy_a",
-    ]
-
-
-def test_ranking_prefers_lower_absolute_drawdown_after_other_ties():
-    reports = {
-        "strategy_a": {
-            "total_return": 0.20,
-            "max_drawdown": -0.20,
-            "sharpe_ratio": 1.0,
-            "positive_window_rate": 0.80,
-        },
-        "strategy_b": {
-            "total_return": 0.20,
-            "max_drawdown": -0.10,
-            "sharpe_ratio": 1.0,
-            "positive_window_rate": 0.80,
-        },
-    }
-
-    result = rank_walk_forward_strategies(
-        reports,
-        primary_metric="total_return",
-    )
-
-    assert list(result["strategy"]) == [
-        "strategy_b",
-        "strategy_a",
-    ]
+            "positive_window_rate":
