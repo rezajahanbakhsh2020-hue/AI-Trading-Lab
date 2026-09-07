@@ -9,12 +9,19 @@ from src.features.indicators import add_returns
 from src.strategy.baseline import generate_baseline_signal
 
 from src.backtest.engine import run_backtest
-
 from src.evaluation.report import evaluate_backtest
 from src.evaluation.walk_forward_report import evaluate_walk_forward
 from src.evaluation.walk_forward_runner import run_walk_forward_strategy
 from src.evaluation.final_report import build_final_strategy_report
 from src.evaluation.strategy_suite import run_default_strategy_suite
+from src.evaluation.compare import compare_walk_forward_strategies
+from configs.strategies import (
+    BACKTEST_CONFIG,
+    MOVING_AVERAGE_CONFIG,
+    MOMENTUM_CONFIG,
+)
+from src.strategies.baseline import baseline_signal
+from src.strategies.momentum import momentum_signal
 
 
 def load_and_prepare_market_data(
@@ -50,7 +57,6 @@ def run_strategy_backtest(
     -> Evaluation
     """
     df = load_and_prepare_market_data(path)
-
     df = add_returns(df)
     df = generate_baseline_signal(df)
 
@@ -79,14 +85,8 @@ def run_default_strategy_suite_pipeline(
     The default suite currently contains:
     - moving_average
     - momentum
-
-    Returns
-    -------
-    dict[str, dict]
-        Evaluation report for every strategy in the default suite.
     """
     df = load_and_prepare_market_data(path)
-
     df = add_returns(df)
 
     return run_default_strategy_suite(df)
@@ -112,11 +112,6 @@ def run_walk_forward_backtest(
     -> Returns
     -> Walk-Forward OOS Backtest
     -> Walk-Forward Evaluation
-
-    Returns
-    -------
-    tuple[list[pd.DataFrame], dict]
-        OOS results for each walk-forward window and an aggregate report.
     """
     df = load_and_prepare_market_data(path)
     df = add_returns(df)
@@ -141,6 +136,68 @@ def run_walk_forward_backtest(
     return oos_results, report
 
 
+def run_default_walk_forward_pipeline(
+    path: str,
+    train_size: int,
+    test_size: int,
+    step: int | None = None,
+    metric: str = "total_return",
+    ascending: bool = False,
+) -> tuple[dict[str, dict], pd.DataFrame]:
+    """
+    Run the complete default strategy suite through walk-forward
+    out-of-sample evaluation and final ranking.
+
+    Pipeline:
+    CSV
+    -> Loader
+    -> Validation
+    -> Preprocessing
+    -> Returns
+    -> Default Strategies
+    -> Walk-Forward OOS
+    -> Strategy Comparison
+    -> Final Ranking
+
+    Returns
+    -------
+    tuple[dict[str, dict], pd.DataFrame]
+        Walk-forward comparison results and final ranked report.
+    """
+    df = load_and_prepare_market_data(path)
+    df = add_returns(df)
+
+    strategies = {
+        "moving_average": lambda data: baseline_signal(
+            data,
+            fast_window=MOVING_AVERAGE_CONFIG["fast_window"],
+            slow_window=MOVING_AVERAGE_CONFIG["slow_window"],
+        ),
+        "momentum": lambda data: momentum_signal(
+            data,
+            window=MOMENTUM_CONFIG["window"],
+        ),
+    }
+
+    comparison = compare_walk_forward_strategies(
+        df=df,
+        strategies=strategies,
+        train_size=train_size,
+        test_size=test_size,
+        step=step,
+        transaction_cost=BACKTEST_CONFIG["transaction_cost"],
+        slippage=BACKTEST_CONFIG["slippage"],
+    )
+
+    final_report = build_final_strategy_report(
+        comparison=comparison,
+        metric=metric,
+        ascending=ascending,
+    )
+
+    return comparison, final_report
+
+
 def build_final_report(
     comparison: dict[str, dict],
     metric: str = "total_return",
@@ -148,26 +205,6 @@ def build_final_report(
 ) -> pd.DataFrame:
     """
     Build the final ranked strategy report from a strategy comparison.
-
-    This function connects the final strategy reporting layer
-    to the main pipeline without changing the existing backtest
-    or walk-forward workflows.
-
-    Parameters
-    ----------
-    comparison:
-        Output of compare_walk_forward_strategies().
-
-    metric:
-        Primary metric used for ranking.
-
-    ascending:
-        Ranking direction for the primary metric.
-
-    Returns
-    -------
-    pd.DataFrame
-        Final ranked strategy report.
     """
     return build_final_strategy_report(
         comparison=comparison,
