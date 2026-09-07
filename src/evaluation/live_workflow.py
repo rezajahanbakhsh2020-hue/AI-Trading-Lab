@@ -6,6 +6,7 @@ import pandas as pd
 
 from configs.strategies import (
     BACKTEST_CONFIG,
+    BREAKOUT_CONFIG,
     MOVING_AVERAGE_CONFIG,
     MOMENTUM_CONFIG,
 )
@@ -27,6 +28,7 @@ from src.evaluation.strategy_selection import (
 )
 from src.features.indicators import add_returns
 from src.strategies.baseline import baseline_signal
+from src.strategies.breakout import breakout_signal
 from src.strategies.momentum import momentum_signal
 
 
@@ -51,11 +53,19 @@ def prepare_xauusd_data(
     return df
 
 
-def build_default_strategies() -> dict:
+def build_default_strategies(
+    include_breakout: bool = False,
+) -> dict:
     """
-    Build the configured default strategy suite.
+    Build the configured strategy suite.
+
+    By default the original Moving Average and Momentum
+    strategies are returned.
+
+    Breakout can be enabled explicitly when the input data
+    contains the required OHLC columns.
     """
-    return {
+    strategies = {
         "moving_average": lambda data: baseline_signal(
             data,
             fast_window=MOVING_AVERAGE_CONFIG[
@@ -71,6 +81,14 @@ def build_default_strategies() -> dict:
         ),
     }
 
+    if include_breakout:
+        strategies["breakout"] = lambda data: breakout_signal(
+            data,
+            window=BREAKOUT_CONFIG["window"],
+        )
+
+    return strategies
+
 
 def run_xauusd_walk_forward(
     path: str | Path,
@@ -84,6 +102,7 @@ def run_xauusd_walk_forward(
     min_sharpe_ratio: float = 0.0,
     min_positive_window_rate: float = 0.50,
     save_result: bool = True,
+    include_breakout: bool = False,
 ) -> dict:
     """
     Execute the complete XAU/USD research workflow.
@@ -102,7 +121,9 @@ def run_xauusd_walk_forward(
     """
     df = prepare_xauusd_data(path)
 
-    strategies = build_default_strategies()
+    strategies = build_default_strategies(
+        include_breakout=include_breakout,
+    )
 
     comparison = compare_walk_forward_strategies(
         df=df,
