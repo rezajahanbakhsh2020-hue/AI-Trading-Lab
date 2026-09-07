@@ -30,14 +30,14 @@ jobs:
         run: |
           PYTHONPATH=. python run_production.py 2>&1 | tee production_output.txt
 
-      - name: Add production result to summary
+      - name: Publish production result
         if: always()
         run: |
-          echo "## Production Pipeline Result" >> "$GITHUB_STEP_SUMMARY"
+          echo "## Production Result" >> "$GITHUB_STEP_SUMMARY"
           echo "" >> "$GITHUB_STEP_SUMMARY"
           cat production_output.txt >> "$GITHUB_STEP_SUMMARY"
 
-      - name: Show production results
+      - name: Show production files
         run: |
           find results -type f -print 2>/dev/null || true
 
