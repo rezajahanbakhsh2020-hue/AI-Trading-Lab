@@ -38,6 +38,9 @@ DEFAULT_STEP = 30
 def prepare_xauusd_data(
     path: str | Path,
 ) -> pd.DataFrame:
+    """
+    Load and prepare XAU/USD market data for evaluation.
+    """
     df = load_csv(str(path))
 
     validate_market_data(df)
@@ -49,6 +52,9 @@ def prepare_xauusd_data(
 
 
 def build_default_strategies() -> dict:
+    """
+    Build the configured default strategy suite.
+    """
     return {
         "moving_average": lambda data: baseline_signal(
             data,
@@ -79,6 +85,21 @@ def run_xauusd_walk_forward(
     min_positive_window_rate: float = 0.50,
     save_result: bool = True,
 ) -> dict:
+    """
+    Execute the complete XAU/USD research workflow.
+
+    Pipeline:
+        CSV
+        -> validation
+        -> preprocessing
+        -> returns
+        -> strategy suite
+        -> walk-forward OOS
+        -> ranking
+        -> eligibility gate
+        -> best strategy
+        -> result storage
+    """
     df = prepare_xauusd_data(path)
 
     strategies = build_default_strategies()
@@ -128,8 +149,8 @@ def run_xauusd_walk_forward(
     }
 
     if save_result:
-        result["saved_result"] = (
-            save_walk_forward_result(result)
+        result["saved_result"] = save_walk_forward_result(
+            result
         )
 
     return result
