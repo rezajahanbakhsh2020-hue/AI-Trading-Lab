@@ -1,136 +1,132 @@
 import pandas as pd
 import pytest
 
-from src.backtest.runner import run_strategy
 from src.evaluation.compare import (
-    compare_strategies,
-    comparison_dataframe,
+    compare_walk_forward_strategies,
 )
-from src.strategy.baseline import generate_baseline_signal
 
 
-def always_long_strategy(df: pd.DataFrame) -> pd.DataFrame:
-    """
-    Test strategy that is always in the market.
-    """
+def create_market_data(
+    size: int = 30,
+) -> pd.DataFrame:
+    close = [
+        100.0,
+        101.0,
+        102.0,
+        101.0,
+        103.0,
+        104.0,
+        105.0,
+        104.0,
+        106.0,
+        107.0,
+        108.0,
+        107.0,
+        109.0,
+        110.0,
+        111.0,
+        110.0,
+        112.0,
+        113.0,
+        114.0,
+        113.0,
+        115.0,
+        116.0,
+        117.0,
+        116.0,
+        118.0,
+        119.0,
+        120.0,
+        119.0,
+        121.0,
+        122.0,
+        123.0,
+    ][:size]
 
+    data = pd.DataFrame(
+        {
+            "timestamp": pd.date_range(
+                "2026-01-01",
+                periods=size,
+                freq="D",
+            ),
+            "open": [
+                value - 0.5
+                for value in close
+            ],
+            "high": [
+                value + 1.0
+                for value in close
+            ],
+            "low": [
+                value - 1.0
+                for value in close
+            ],
+            "close": close,
+        }
+    )
+
+    data["return"] = (
+        data["close"]
+        .pct_change()
+        .fillna(0.0)
+    )
+
+    return data
+
+
+def long_strategy(
+    df: pd.DataFrame,
+) -> pd.DataFrame:
     result = df.copy()
-    result["signal"] = 1
-
+    result["signal"] = 1.0
     return result
 
 
-def always_flat_strategy(df: pd.DataFrame) -> pd.DataFrame:
-    """
-    Test strategy that is always out of the market.
-    """
-
+def flat_strategy(
+    df: pd.DataFrame,
+) -> pd.DataFrame:
     result = df.copy()
-    result["signal"] = 0
-
+    result["signal"] = 0.0
     return result
 
 
-def test_run_strategy_returns_backtest_and_report():
-    df = pd.DataFrame({
-        "return": [0.10, -0.05, 0.20, -0.10],
-    })
+def alternating_strategy(
+    df: pd.DataFrame,
+) -> pd.DataFrame:
+    result = df.copy()
+    result["signal"] = (
+        pd.Series(
+            range(len(result)),
+            index=result.index,
+        )
+        .mod(2)
+    )
+    return result
 
-    result, report = run_strategy(
-        df,
-        generate_baseline_signal,
+
+def test_compare_walk_forward_strategies():
+    df = create_market_data()
+
+    comparison = compare_walk_forward_strategies(
+        df=df,
+        strategies={
+            "long": long_strategy,
+            "flat": flat_strategy,
+        },
+        train_size=10,
+        test_size=5,
     )
 
-    assert isinstance(result, pd.DataFrame)
-    assert isinstance(report, dict)
-    assert "signal" in result.columns
-    assert "strategy_return" in result.columns
-    assert "equity" in result.columns
-
-    assert "total_return" in report
-    assert "max_drawdown" in report
-    assert "sharpe_ratio" in report
-    assert "calmar_ratio" in report
-    assert "sortino_ratio" in report
-    assert "exposure" in report
-    assert "win_rate" in report
-    assert "profit_factor" in report
-
-
-def test_run_strategy_does_not_modify_input():
-    df = pd.DataFrame({
-        "return": [0.10, -0.05, 0.20],
-    })
-
-    original = df.copy()
-
-    run_strategy(
-        df,
-        always_long_strategy,
-    )
-
-    pd.testing.assert_frame_equal(df, original)
-
-
-def test_run_strategy_rejects_invalid_input():
-    with pytest.raises(TypeError):
-        run_strategy(
-            "not a dataframe",
-            always_long_strategy,
-        )
-
-
-def test_run_strategy_rejects_non_callable_strategy():
-    df = pd.DataFrame({
-        "return": [0.10, -0.05],
-    })
-
-    with pytest.raises(TypeError):
-        run_strategy(
-            df,
-            "not a strategy",
-        )
-
-
-def test_run_strategy_requires_signal_column():
-    def invalid_strategy(df: pd.DataFrame) -> pd.DataFrame:
-        return df.copy()
-
-    df = pd.DataFrame({
-        "return": [0.10, -0.05],
-    })
-
-    with pytest.raises(ValueError):
-        run_strategy(
-            df,
-            invalid_strategy,
-        )
-
-
-def test_compare_strategies_runs_all_strategies():
-    df = pd.DataFrame({
-        "return": [0.10, -0.05, 0.20, -0.10],
-    })
-
-    strategies = {
-        "always_long": always_long_strategy,
-        "always_flat": always_flat_strategy,
+    assert set(comparison) == {
+        "long",
+        "flat",
     }
 
-    results = compare_strategies(
-        df,
-        strategies,
-    )
-
-    assert isinstance(results, dict)
-    assert set(results.keys()) == {
-        "always_long",
-        "always_flat",
-    }
-
-    for report in results.values():
+    for report in comparison.values():
         assert isinstance(report, dict)
-
+        assert "windows" in report
+        assert "observations" in report
         assert "total_return" in report
         assert "max_drawdown" in report
         assert "sharpe_ratio" in report
@@ -139,303 +135,268 @@ def test_compare_strategies_runs_all_strategies():
         assert "exposure" in report
         assert "win_rate" in report
         assert "profit_factor" in report
+        assert "window_returns" in report
+        assert "profitable_windows" in report
+        assert "losing_windows" in report
+        assert "positive_window_rate" in report
 
 
-def test_compare_strategies_uses_same_input_data():
-    df = pd.DataFrame({
-        "return": [0.10, -0.05, 0.20, -0.10],
-    })
+def test_compare_walk_forward_strategies_uses_same_configuration():
+    df = create_market_data()
 
-    original = df.copy()
-
-    strategies = {
-        "long": always_long_strategy,
-        "flat": always_flat_strategy,
-    }
-
-    compare_strategies(
-        df,
-        strategies,
+    comparison = compare_walk_forward_strategies(
+        df=df,
+        strategies={
+            "long": long_strategy,
+            "flat": flat_strategy,
+        },
+        train_size=10,
+        test_size=5,
+        step=5,
     )
 
-    pd.testing.assert_frame_equal(df, original)
+    assert (
+        comparison["long"]["windows"]
+        == comparison["flat"]["windows"]
+    )
+
+    assert (
+        comparison["long"]["observations"]
+        == comparison["flat"]["observations"]
+    )
 
 
-def test_compare_strategies_rejects_empty_strategy_collection():
-    df = pd.DataFrame({
-        "return": [0.10, -0.05],
-    })
+def test_compare_walk_forward_strategies_flat_strategy():
+    df = create_market_data()
 
-    with pytest.raises(ValueError):
-        compare_strategies(
-            df,
-            {},
-        )
+    comparison = compare_walk_forward_strategies(
+        df=df,
+        strategies={
+            "flat": flat_strategy,
+        },
+        train_size=10,
+        test_size=5,
+    )
+
+    report = comparison["flat"]
+
+    assert report["exposure"] == 0.0
+    assert report["total_return"] == 0.0
+    assert report["positive_window_rate"] == 0.0
 
 
-def test_compare_strategies_rejects_invalid_strategy_collection():
-    df = pd.DataFrame({
-        "return": [0.10, -0.05],
-    })
+def test_compare_walk_forward_strategies_requires_dictionary():
+    df = create_market_data()
 
     with pytest.raises(TypeError):
-        compare_strategies(
-            df,
-            ["strategy"],
+        compare_walk_forward_strategies(
+            df=df,
+            strategies=[],
+            train_size=10,
+            test_size=5,
         )
 
 
-def test_compare_strategies_rejects_non_dataframe_input():
-    strategies = {
-        "always_long": always_long_strategy,
-    }
-
-    with pytest.raises(TypeError):
-        compare_strategies(
-            "not a dataframe",
-            strategies,
-        )
-
-
-def test_compare_strategies_rejects_negative_transaction_cost():
-    df = pd.DataFrame({
-        "return": [0.10, -0.05],
-    })
-
-    strategies = {
-        "always_long": always_long_strategy,
-    }
+def test_compare_walk_forward_strategies_requires_non_empty_dictionary():
+    df = create_market_data()
 
     with pytest.raises(ValueError):
-        compare_strategies(
-            df,
-            strategies,
+        compare_walk_forward_strategies(
+            df=df,
+            strategies={},
+            train_size=10,
+            test_size=5,
+        )
+
+
+def test_compare_walk_forward_strategies_requires_positive_sizes():
+    df = create_market_data()
+
+    with pytest.raises(ValueError):
+        compare_walk_forward_strategies(
+            df=df,
+            strategies={
+                "long": long_strategy,
+            },
+            train_size=0,
+            test_size=5,
+        )
+
+    with pytest.raises(ValueError):
+        compare_walk_forward_strategies(
+            df=df,
+            strategies={
+                "long": long_strategy,
+            },
+            train_size=10,
+            test_size=0,
+        )
+
+
+def test_compare_walk_forward_strategies_rejects_invalid_step():
+    df = create_market_data()
+
+    with pytest.raises(ValueError):
+        compare_walk_forward_strategies(
+            df=df,
+            strategies={
+                "long": long_strategy,
+            },
+            train_size=10,
+            test_size=5,
+            step=0,
+        )
+
+    with pytest.raises(ValueError):
+        compare_walk_forward_strategies(
+            df=df,
+            strategies={
+                "long": long_strategy,
+            },
+            train_size=10,
+            test_size=5,
+            step=-1,
+        )
+
+
+def test_compare_walk_forward_strategies_supports_overlapping_windows():
+    df = create_market_data()
+
+    comparison = compare_walk_forward_strategies(
+        df=df,
+        strategies={
+            "long": long_strategy,
+            "flat": flat_strategy,
+        },
+        train_size=10,
+        test_size=5,
+        step=2,
+    )
+
+    assert (
+        comparison["long"]["windows"]
+        == comparison["flat"]["windows"]
+    )
+
+    assert (
+        comparison["long"]["observations"]
+        == comparison["flat"]["observations"]
+    )
+
+    assert comparison["long"]["windows"] == 8
+
+
+def test_compare_walk_forward_strategies_rejects_non_string_strategy_name():
+    df = create_market_data()
+
+    with pytest.raises(TypeError):
+        compare_walk_forward_strategies(
+            df=df,
+            strategies={
+                1: long_strategy,
+            },
+            train_size=10,
+            test_size=5,
+        )
+
+
+def test_compare_walk_forward_strategies_rejects_non_callable_strategy():
+    df = create_market_data()
+
+    with pytest.raises(TypeError):
+        compare_walk_forward_strategies(
+            df=df,
+            strategies={
+                "invalid": "not_callable",
+            },
+            train_size=10,
+            test_size=5,
+        )
+
+
+def test_compare_walk_forward_strategies_rejects_negative_transaction_cost():
+    df = create_market_data()
+
+    with pytest.raises(ValueError):
+        compare_walk_forward_strategies(
+            df=df,
+            strategies={
+                "long": long_strategy,
+            },
+            train_size=10,
+            test_size=5,
             transaction_cost=-0.01,
         )
 
 
-def test_compare_strategies_rejects_negative_slippage():
-    df = pd.DataFrame({
-        "return": [0.10, -0.05],
-    })
-
-    strategies = {
-        "always_long": always_long_strategy,
-    }
+def test_compare_walk_forward_strategies_rejects_negative_slippage():
+    df = create_market_data()
 
     with pytest.raises(ValueError):
-        compare_strategies(
-            df,
-            strategies,
+        compare_walk_forward_strategies(
+            df=df,
+            strategies={
+                "long": long_strategy,
+            },
+            train_size=10,
+            test_size=5,
             slippage=-0.01,
         )
 
 
-def test_compare_strategies_rejects_non_string_strategy_name():
-    df = pd.DataFrame({
-        "return": [0.10, -0.05],
-    })
+def test_compare_walk_forward_strategies_applies_transaction_cost_to_all_strategies():
+    df = create_market_data()
 
-    strategies = {
-        123: always_long_strategy,
-    }
-
-    with pytest.raises(TypeError):
-        compare_strategies(
-            df,
-            strategies,
-        )
-
-
-def test_compare_strategies_rejects_non_callable_strategy():
-    df = pd.DataFrame({
-        "return": [0.10, -0.05],
-    })
-
-    strategies = {
-        "invalid": "not a strategy",
-    }
-
-    with pytest.raises(TypeError):
-        compare_strategies(
-            df,
-            strategies,
-        )
-
-
-def test_compare_strategies_applies_transaction_cost_to_all_strategies():
-    df = pd.DataFrame({
-        "return": [0.10, -0.05, 0.20, -0.10],
-    })
-
-    strategies = {
-        "always_long": always_long_strategy,
-        "always_flat": always_flat_strategy,
-    }
-
-    without_cost = compare_strategies(
-        df,
-        strategies,
-    )
-
-    with_cost = compare_strategies(
-        df,
-        strategies,
-        transaction_cost=0.01,
-    )
-
-    assert (
-        with_cost["always_long"]["total_return"]
-        < without_cost["always_long"]["total_return"]
-    )
-
-    assert (
-        with_cost["always_flat"]["total_return"]
-        == pytest.approx(
-            without_cost["always_flat"]["total_return"]
-        )
-    )
-
-
-def test_compare_strategies_applies_slippage_to_all_strategies():
-    df = pd.DataFrame({
-        "return": [0.10, -0.05, 0.20, -0.10],
-    })
-
-    strategies = {
-        "always_long": always_long_strategy,
-        "always_flat": always_flat_strategy,
-    }
-
-    without_slippage = compare_strategies(
-        df,
-        strategies,
-    )
-
-    with_slippage = compare_strategies(
-        df,
-        strategies,
-        slippage=0.005,
-    )
-
-    assert (
-        with_slippage["always_long"]["total_return"]
-        < without_slippage["always_long"]["total_return"]
-    )
-
-    assert (
-        with_slippage["always_flat"]["total_return"]
-        == pytest.approx(
-            without_slippage["always_flat"]["total_return"]
-        )
-    )
-
-
-def test_compare_strategies_combines_transaction_cost_and_slippage():
-    df = pd.DataFrame({
-        "return": [0.10, -0.05, 0.20, -0.10],
-    })
-
-    strategies = {
-        "always_long": always_long_strategy,
-    }
-
-    without_cost = compare_strategies(
-        df,
-        strategies,
-    )
-
-    with_transaction_cost = compare_strategies(
-        df,
-        strategies,
-        transaction_cost=0.01,
-    )
-
-    with_both = compare_strategies(
-        df,
-        strategies,
-        transaction_cost=0.01,
-        slippage=0.005,
-    )
-
-    assert (
-        with_transaction_cost["always_long"]["total_return"]
-        < without_cost["always_long"]["total_return"]
-    )
-
-    assert (
-        with_both["always_long"]["total_return"]
-        < with_transaction_cost["always_long"]["total_return"]
-    )
-
-
-def test_compare_strategies_preserves_strategy_names():
-    df = pd.DataFrame({
-        "return": [0.01, 0.02, -0.01],
-    })
-
-    strategies = {
-        "strategy_one": always_long_strategy,
-        "strategy_two": always_flat_strategy,
-    }
-
-    results = compare_strategies(
-        df,
-        strategies,
-    )
-
-    assert list(results.keys()) == [
-        "strategy_one",
-        "strategy_two",
-    ]
-
-
-def test_comparison_dataframe_creates_expected_structure():
-    comparison = {
-        "strategy_a": {
-            "total_return": 0.10,
-            "max_drawdown": -0.05,
-            "sharpe_ratio": 1.2,
+    without_cost = compare_walk_forward_strategies(
+        df=df,
+        strategies={
+            "alternating": alternating_strategy,
         },
-        "strategy_b": {
-            "total_return": 0.20,
-            "max_drawdown": -0.10,
-            "sharpe_ratio": 1.5,
+        train_size=10,
+        test_size=5,
+        transaction_cost=0.0,
+    )
+
+    with_cost = compare_walk_forward_strategies(
+        df=df,
+        strategies={
+            "alternating": alternating_strategy,
         },
-    }
-
-    result = comparison_dataframe(comparison)
-
-    assert isinstance(result, pd.DataFrame)
-    assert list(result.index) == [
-        "strategy_a",
-        "strategy_b",
-    ]
-
-    assert set(result.columns) == {
-        "total_return",
-        "max_drawdown",
-        "sharpe_ratio",
-    }
-
-    assert result.loc["strategy_a", "total_return"] == pytest.approx(
-        0.10
+        train_size=10,
+        test_size=5,
+        transaction_cost=0.01,
     )
 
-    assert result.loc["strategy_b", "total_return"] == pytest.approx(
-        0.20
+    assert (
+        with_cost["alternating"]["total_return"]
+        < without_cost["alternating"]["total_return"]
     )
 
 
-def test_comparison_dataframe_handles_empty_comparison():
-    result = comparison_dataframe({})
+def test_compare_walk_forward_strategies_applies_slippage_to_all_strategies():
+    df = create_market_data()
 
-    assert isinstance(result, pd.DataFrame)
-    assert result.empty
+    without_slippage = compare_walk_forward_strategies(
+        df=df,
+        strategies={
+            "alternating": alternating_strategy,
+        },
+        train_size=10,
+        test_size=5,
+        slippage=0.0,
+    )
 
+    with_slippage = compare_walk_forward_strategies(
+        df=df,
+        strategies={
+            "alternating": alternating_strategy,
+        },
+        train_size=10,
+        test_size=5,
+        slippage=0.01,
+    )
 
-def test_comparison_dataframe_rejects_invalid_input():
-    with pytest.raises(TypeError):
-        comparison_dataframe(
-            ["not", "a", "dictionary"]
-        )
+    assert (
+        with_slippage["alternating"]["total_return"]
+        < without_slippage["alternating"]["total_return"]
+    )
