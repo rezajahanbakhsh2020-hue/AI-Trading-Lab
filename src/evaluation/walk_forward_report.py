@@ -12,12 +12,17 @@ from src.evaluation.metrics import (
 )
 
 
+REQUIRED_COLUMNS = {
+    "timestamp",
+    "strategy_return",
+    "equity",
+}
+
+
 def combine_oos_results(
     results: list[pd.DataFrame],
 ) -> pd.DataFrame:
-    """
-    Combine walk-forward OOS results into one chronological DataFrame.
-    """
+    """Combine walk-forward OOS results into one chronological DataFrame."""
 
     if not isinstance(results, list):
         raise TypeError("results must be a list.")
@@ -31,16 +36,23 @@ def combine_oos_results(
                 "Every walk-forward result must be a pandas DataFrame."
             )
 
+        missing_columns = REQUIRED_COLUMNS - set(result.columns)
+
+        if missing_columns:
+            raise ValueError(
+                "OOS result is missing required columns: "
+                f"{sorted(missing_columns)}"
+            )
+
     combined = pd.concat(
         results,
         axis=0,
         ignore_index=True,
     )
 
-    if "timestamp" in combined.columns:
-        combined = combined.sort_values(
-            "timestamp"
-        ).reset_index(drop=True)
+    combined = combined.sort_values(
+        "timestamp"
+    ).reset_index(drop=True)
 
     return combined
 
@@ -48,11 +60,9 @@ def combine_oos_results(
 def _calculate_window_returns(
     results: list[pd.DataFrame],
 ) -> list[float]:
-    """
-    Calculate total return for every walk-forward OOS window.
-    """
+    """Calculate total return for every walk-forward OOS window."""
 
-    window_returns = []
+    window_returns: list[float] = []
 
     for result in results:
         if result.empty:
@@ -69,12 +79,10 @@ def _calculate_window_returns(
 def evaluate_walk_forward(
     results: list[pd.DataFrame],
 ) -> dict:
-    """
-    Evaluate combined out-of-sample walk-forward results.
+    """Evaluate combined out-of-sample walk-forward results."""
 
-    The report contains both aggregate OOS performance metrics and
-    window-level stability metrics.
-    """
+    if not isinstance(results, list):
+        raise TypeError("results must be a list.")
 
     combined = combine_oos_results(results)
 
@@ -95,22 +103,6 @@ def evaluate_walk_forward(
             "losing_windows": 0,
             "positive_window_rate": 0.0,
         }
-
-    required_columns = {
-        "strategy_return",
-        "equity",
-    }
-
-    missing_columns = [
-        column
-        for column in required_columns
-        if column not in combined.columns
-    ]
-
-    if missing_columns:
-        raise ValueError(
-            f"Missing required columns: {missing_columns}"
-        )
 
     if "position" in combined.columns:
         exposure_column = "position"
