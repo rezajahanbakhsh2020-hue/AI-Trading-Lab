@@ -15,7 +15,7 @@ from src.evaluation.production_summary import (
     build_production_summary,
 )
 from src.evaluation.result_store import (
-    DEFAULT_RESULTS_DIR as DEFAULT_WALK_FORWARD_DIR,
+    save_walk_forward_result,
 )
 
 
@@ -26,7 +26,11 @@ DEFAULT_DATA_PATH = (
     / "xauusd_daily_2025.csv"
 )
 
-DEFAULT_RESULTS_DIR = DEFAULT_WALK_FORWARD_DIR
+DEFAULT_RESULTS_DIR = (
+    Path(__file__).resolve().parents[2]
+    / "results"
+    / "walk_forward"
+)
 
 DEFAULT_PRODUCTION_DIR = (
     Path(__file__).resolve().parents[2]
@@ -63,9 +67,14 @@ def _prepare_production_selection(
     if _has_walk_forward_results(results_dir):
         return
 
-    run_xauusd_walk_forward(
+    result = run_xauusd_walk_forward(
         path=data_path,
-        save_result=True,
+        save_result=False,
+    )
+
+    save_walk_forward_result(
+        result,
+        output_dir=results_dir,
     )
 
 
