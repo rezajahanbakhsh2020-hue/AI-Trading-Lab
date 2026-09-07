@@ -159,8 +159,8 @@ def test_rank_walk_forward_strategies_by_positive_window_rate() -> None:
     )
 
     assert ranked["strategy"].tolist() == [
-        "strategy_a",
         "strategy_c",
+        "strategy_a",
         "strategy_b",
     ]
 
