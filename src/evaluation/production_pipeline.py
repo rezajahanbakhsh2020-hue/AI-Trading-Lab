@@ -18,6 +18,7 @@ from src.evaluation.result_store import (
     DEFAULT_RESULTS_DIR as DEFAULT_WALK_FORWARD_DIR,
 )
 
+
 DEFAULT_DATA_PATH = (
     Path(__file__).resolve().parents[2]
     / "data"
