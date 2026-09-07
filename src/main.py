@@ -1,11 +1,13 @@
 from pathlib import Path
 
-from src.pipeline import run_strategy_backtest
+from src.evaluation.live_workflow import (
+    run_xauusd_walk_forward,
+)
 
 
 def main() -> None:
     print("AI-Trading-Lab")
-    print("Running XAUUSD backtest...")
+    print("Running XAUUSD walk-forward research...")
 
     data_path = (
         Path(__file__).resolve().parent.parent
@@ -14,13 +16,39 @@ def main() -> None:
         / "xauusd_daily_2025.csv"
     )
 
-    _, report = run_strategy_backtest(str(data_path))
+    result = run_xauusd_walk_forward(
+        path=data_path,
+    )
 
-    print("Backtest completed.")
-    print("Report:")
+    print("Walk-forward completed.")
+    print()
 
-    for metric, value in report.items():
-        print(f"{metric}: {value}")
+    print("Final Strategy Ranking:")
+    print(
+        result["final_report"].to_string(
+            index=False
+        )
+    )
+
+    print()
+    print("Eligible Strategies:")
+
+    eligible = result["eligible_strategies"]
+
+    if eligible.empty:
+        print("No eligible strategy.")
+    else:
+        print(
+            eligible.to_string(
+                index=False
+            )
+        )
+
+    print()
+    print(
+        f"Best Strategy: "
+        f"{result['best_strategy']}"
+    )
 
 
 if __name__ == "__main__":
