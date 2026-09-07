@@ -19,6 +19,9 @@ from src.evaluation.final_report import (
     build_final_strategy_report,
     get_best_strategy,
 )
+from src.evaluation.result_store import (
+    save_walk_forward_result,
+)
 from src.evaluation.strategy_selection import (
     select_eligible_strategies,
 )
@@ -35,9 +38,6 @@ DEFAULT_STEP = 30
 def prepare_xauusd_data(
     path: str | Path,
 ) -> pd.DataFrame:
-    """
-    Load and prepare XAU/USD market data for evaluation.
-    """
     df = load_csv(str(path))
 
     validate_market_data(df)
@@ -49,9 +49,6 @@ def prepare_xauusd_data(
 
 
 def build_default_strategies() -> dict:
-    """
-    Build the configured default strategy suite.
-    """
     return {
         "moving_average": lambda data: baseline_signal(
             data,
@@ -80,21 +77,8 @@ def run_xauusd_walk_forward(
     max_drawdown: float = 0.20,
     min_sharpe_ratio: float = 0.0,
     min_positive_window_rate: float = 0.50,
+    save_result: bool = True,
 ) -> dict:
-    """
-    Execute the complete XAU/USD research workflow.
-
-    Pipeline:
-        CSV
-        -> validation
-        -> preprocessing
-        -> returns
-        -> strategy suite
-        -> walk-forward OOS
-        -> ranking
-        -> eligibility gate
-        -> best strategy
-    """
     df = prepare_xauusd_data(path)
 
     strategies = build_default_strategies()
@@ -135,10 +119,17 @@ def run_xauusd_walk_forward(
         ascending=ascending,
     )
 
-    return {
+    result = {
         "data": df,
         "comparison": comparison,
         "final_report": final_report,
         "eligible_strategies": eligible,
         "best_strategy": best_strategy,
     }
+
+    if save_result:
+        result["saved_result"] = (
+            save_walk_forward_result(result)
+        )
+
+    return result
