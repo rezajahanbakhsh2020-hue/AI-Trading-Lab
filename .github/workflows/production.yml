@@ -28,16 +28,9 @@ jobs:
 
       - name: Run production pipeline
         run: |
-          PYTHONPATH=. python run_production.py 2>&1 | tee production_output.txt
+          PYTHONPATH=. python run_production.py
 
-      - name: Publish production result
-        if: always()
-        run: |
-          echo "## Production Result" >> "$GITHUB_STEP_SUMMARY"
-          echo "" >> "$GITHUB_STEP_SUMMARY"
-          cat production_output.txt >> "$GITHUB_STEP_SUMMARY"
-
-      - name: Show production files
+      - name: Show production results
         run: |
           find results -type f -print 2>/dev/null || true
 
