@@ -1,13 +1,15 @@
 import pandas as pd
 
 from configs.strategies import (
+    BACKTEST_CONFIG,
     MOVING_AVERAGE_CONFIG,
     MOMENTUM_CONFIG,
-    BACKTEST_CONFIG,
+    BREAKOUT_CONFIG,
 )
 from src.evaluation.compare import compare_strategies
 from src.strategies.baseline import baseline_signal
 from src.strategies.momentum import momentum_signal
+from src.strategies.breakout import breakout_signal
 
 
 def run_default_strategy_suite(
@@ -19,6 +21,7 @@ def run_default_strategy_suite(
     The suite compares:
         - Moving Average
         - Momentum
+        - Breakout
 
     Strategy and backtest parameters are loaded from
     configs/strategies.py.
@@ -36,6 +39,10 @@ def run_default_strategy_suite(
         "momentum": lambda data: momentum_signal(
             data,
             window=MOMENTUM_CONFIG["window"],
+        ),
+        "breakout": lambda data: breakout_signal(
+            data,
+            window=BREAKOUT_CONFIG["window"],
         ),
     }
 
