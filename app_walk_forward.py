@@ -9,9 +9,14 @@ from src.evaluation.live_workflow import (
     DEFAULT_TRAIN_SIZE,
     run_xauusd_walk_forward,
 )
+from src.evaluation.stable_selection import (
+    build_stability_report,
+    select_stable_strategy,
+)
 
 
 PROJECT_ROOT = Path(__file__).resolve().parent
+
 DATA_PATH = (
     PROJECT_ROOT
     / "data"
@@ -21,20 +26,14 @@ DATA_PATH = (
 
 
 st.set_page_config(
-    page_title="AI Trading Lab - Walk Forward",
+    page_title="AI Trading Lab - XAU/USD",
     page_icon="📈",
     layout="wide",
 )
 
 
-st.title("📈 AI Trading Lab")
+st.title("AI Trading Lab")
 st.subheader("XAU/USD Walk-Forward Research")
-
-
-st.caption(
-    "Out-of-sample strategy evaluation, ranking "
-    "and eligibility selection."
-)
 
 
 if not DATA_PATH.exists():
@@ -45,7 +44,6 @@ if not DATA_PATH.exists():
 
 
 raw_data = pd.read_csv(DATA_PATH)
-
 data_size = len(raw_data)
 
 default_train = min(
@@ -93,6 +91,8 @@ with st.sidebar:
 
     st.divider()
 
+    st.header("Eligibility")
+
     min_total_return = st.number_input(
         "Minimum Total Return",
         min_value=0.0,
@@ -125,33 +125,18 @@ with st.sidebar:
 
 if train_size + test_size > data_size:
     st.warning(
-        "Train Size + Test Size exceeds the "
-        "available dataset."
+        "Train Size + Test Size exceeds "
+        "available data."
     )
     st.stop()
 
 
 col1, col2, col3, col4 = st.columns(4)
 
-col1.metric(
-    "Data Rows",
-    f"{data_size:,}",
-)
-
-col2.metric(
-    "Train",
-    f"{train_size:,}",
-)
-
-col3.metric(
-    "Test",
-    f"{test_size:,}",
-)
-
-col4.metric(
-    "Step",
-    f"{step:,}",
-)
+col1.metric("Data Rows", f"{data_size:,}")
+col2.metric("Train", f"{train_size:,}")
+col3.metric("Test", f"{test_size:,}")
+col4.metric("Step", f"{step:,}")
 
 
 run = st.button(
@@ -186,9 +171,19 @@ if run:
         "Walk-forward evaluation completed."
     )
 
-    st.subheader("Final Strategy Ranking")
+    final_report = result[
+        "final_report"
+    ].copy()
 
-    final_report = result["final_report"].copy()
+    eligible = result[
+        "eligible_strategies"
+    ].copy()
+
+    best_strategy = result[
+        "best_strategy"
+    ]
+
+    st.subheader("Current Ranking")
 
     st.dataframe(
         final_report,
@@ -196,20 +191,46 @@ if run:
         hide_index=True,
     )
 
+    st.subheader("Strategy Selection")
 
-    st.subheader("Eligible Strategies")
+    col1, col2, col3 = st.columns(3)
 
-    eligible = result[
-        "eligible_strategies"
-    ].copy()
+    col1.metric(
+        "Best Current Strategy",
+        str(best_strategy),
+    )
+
+    if eligible.empty:
+        col2.metric(
+            "Eligible Strategies",
+            "0",
+        )
+    else:
+        col2.metric(
+            "Eligible Strategies",
+            str(len(eligible)),
+        )
+
+    stable_strategy = select_stable_strategy()
+
+    col3.metric(
+        "Stable Strategy",
+        stable_strategy
+        if stable_strategy
+        else "N/A",
+    )
+
+    st.subheader("Eligibility")
 
     if eligible.empty:
         st.warning(
-            "No strategy passed all eligibility gates."
+            "No strategy passed the "
+            "eligibility criteria."
         )
     else:
         st.success(
-            f"{len(eligible)} strategy(s) passed."
+            f"{len(eligible)} strategy(s) "
+            "passed eligibility."
         )
 
         st.dataframe(
@@ -218,19 +239,49 @@ if run:
             hide_index=True,
         )
 
-
-    st.subheader("Best Strategy")
-
-    best_strategy = result[
-        "best_strategy"
-    ]
-
-    st.success(
-        f"Selected strategy: {best_strategy}"
+    st.subheader(
+        "Cross-Experiment Stability"
     )
 
+    stability_report = (
+        build_stability_report()
+    )
 
-    st.subheader("Strategy Performance")
+    if stability_report.empty:
+        st.info(
+            "No stored experiments are "
+            "available for stability analysis."
+        )
+    else:
+        st.dataframe(
+            stability_report,
+            use_container_width=True,
+            hide_index=True,
+        )
+
+        if stable_strategy:
+            stable_row = stability_report[
+                stability_report["strategy"]
+                == stable_strategy
+            ]
+
+            if not stable_row.empty:
+                score = float(
+                    stable_row.iloc[0][
+                        "stability_score"
+                    ]
+                )
+
+                st.success(
+                    f"Stable Strategy: "
+                    f"{stable_strategy} | "
+                    f"Stability Score: "
+                    f"{score:.4f}"
+                )
+
+    st.subheader(
+        "Performance Comparison"
+    )
 
     performance_columns = [
         column
@@ -249,48 +300,16 @@ if run:
     ]
 
     if performance_columns:
-        performance = final_report[
-            performance_columns
-        ].copy()
-
         st.dataframe(
-            performance,
+            final_report[
+                performance_columns
+            ],
             use_container_width=True,
             hide_index=True,
         )
 
-
-    with st.expander(
-        "Research Configuration"
-    ):
-        st.json(
-            {
-                "data": str(DATA_PATH),
-                "rows": data_size,
-                "train_size": int(train_size),
-                "test_size": int(test_size),
-                "step": int(step),
-                "metric": "total_return",
-                "selection": {
-                    "min_total_return":
-                        float(
-                            min_total_return
-                        ),
-                    "max_drawdown":
-                        float(max_drawdown),
-                    "min_sharpe_ratio":
-                        float(
-                            min_sharpe_ratio
-                        ),
-                    "min_positive_window_rate":
-                        float(
-                            min_positive_window_rate
-                        ),
-                },
-            }
-        )
 else:
     st.info(
-        "Configure the walk-forward parameters "
-        "and run the evaluation."
+        "Configure the parameters and "
+        "run the evaluation."
     )
