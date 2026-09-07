@@ -40,19 +40,24 @@ def build_production_report(
             "sharpe_ratio": 0.0,
         }
 
-    returns = backtest[
-        "strategy_return"
-    ].fillna(0.0)
+    result = backtest.copy()
+
+    if "equity" not in result.columns:
+        result["equity"] = (
+            1.0
+            + result["strategy_return"]
+            .fillna(0.0)
+        ).cumprod()
 
     return {
-        "observations": int(len(backtest)),
+        "observations": int(len(result)),
         "total_return": float(
-            total_return(backtest)
+            total_return(result)
         ),
         "max_drawdown": float(
-            max_drawdown(backtest)
+            max_drawdown(result)
         ),
         "sharpe_ratio": float(
-            sharpe_ratio(backtest)
+            sharpe_ratio(result)
         ),
     }
