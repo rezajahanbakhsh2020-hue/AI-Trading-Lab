@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 from datetime import datetime, timezone
 from pathlib import Path
+from uuid import uuid4
 
 import pandas as pd
 
@@ -43,19 +44,13 @@ def save_walk_forward_result(
     final_report = result["final_report"]
     eligible = result["eligible_strategies"]
 
-    if not isinstance(
-        final_report,
-        pd.DataFrame,
-    ):
+    if not isinstance(final_report, pd.DataFrame):
         raise TypeError(
             "result['final_report'] must be "
             "a pandas DataFrame."
         )
 
-    if not isinstance(
-        eligible,
-        pd.DataFrame,
-    ):
+    if not isinstance(eligible, pd.DataFrame):
         raise TypeError(
             "result['eligible_strategies'] must be "
             "a pandas DataFrame."
@@ -69,9 +64,13 @@ def save_walk_forward_result(
 
     timestamp = datetime.now(
         timezone.utc
-    ).strftime("%Y%m%d_%H%M%S")
+    ).strftime("%Y%m%d_%H%M%S_%f")
 
-    run_dir = output_path / timestamp
+    run_dir = (
+        output_path
+        / f"{timestamp}_{uuid4().hex[:8]}"
+    )
+
     run_dir.mkdir(
         parents=True,
         exist_ok=False,
