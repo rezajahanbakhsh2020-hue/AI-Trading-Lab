@@ -8,6 +8,7 @@ from configs.strategies import (
     BACKTEST_CONFIG,
     MOVING_AVERAGE_CONFIG,
     MOMENTUM_CONFIG,
+    BREAKOUT_CONFIG,
 )
 from src.data.loader import load_csv
 from src.data.preprocessing import standardize_market_data
@@ -28,6 +29,7 @@ from src.evaluation.strategy_selection import (
 from src.features.indicators import add_returns
 from src.strategies.baseline import baseline_signal
 from src.strategies.momentum import momentum_signal
+from src.strategies.breakout import breakout_signal
 
 
 DEFAULT_TRAIN_SIZE = 180
@@ -68,6 +70,10 @@ def build_default_strategies() -> dict:
         "momentum": lambda data: momentum_signal(
             data,
             window=MOMENTUM_CONFIG["window"],
+        ),
+        "breakout": lambda data: breakout_signal(
+            data,
+            window=BREAKOUT_CONFIG["window"],
         ),
     }
 
