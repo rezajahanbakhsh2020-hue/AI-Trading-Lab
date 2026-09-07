@@ -22,6 +22,16 @@ def test_run_production_pipeline(
         }
     )
 
+    def fake_run_xauusd_walk_forward(
+        path,
+        save_result,
+    ):
+        return {
+            "final_report": pd.DataFrame(),
+            "eligible_strategies": pd.DataFrame(),
+            "best_strategy": "moving_average",
+        }
+
     def fake_run_production_backtest(
         data_path,
         results_dir,
@@ -38,6 +48,11 @@ def test_run_production_pipeline(
             ),
             "backtest": backtest,
         }
+
+    monkeypatch.setattr(
+        "src.evaluation.production_pipeline.run_xauusd_walk_forward",
+        fake_run_xauusd_walk_forward,
+    )
 
     monkeypatch.setattr(
         "src.evaluation.production_pipeline.run_production_backtest",
@@ -57,5 +72,8 @@ def test_run_production_pipeline(
     assert "total_return" in result["report"]
     assert "max_drawdown" in result["report"]
     assert "sharpe_ratio" in result["report"]
-    assert isinstance(result["summary"], pd.DataFrame)
+    assert isinstance(
+        result["summary"],
+        pd.DataFrame,
+    )
     assert result["saved_result"] is None
