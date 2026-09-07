@@ -34,24 +34,34 @@ def main() -> None:
         save_result=True,
     )
 
-    print("AI-Trading-Lab")
-    print("Production pipeline completed.")
-    print()
+    report = result["report"]
+
+    print("========================================")
+    print("AI-Trading-Lab Production Result")
+    print("========================================")
     print(
-        f"Selected Strategy: "
-        f"{result['strategy']}"
+        f"Strategy: {result['strategy']}"
     )
     print(
         f"Stability Score: "
-        f"{result['stability_score']:.4f}"
+        f"{result['stability_score']:.6f}"
     )
-    print()
-    print("Production Report:")
-
-    for key, value in result["report"].items():
-        print(f"{key}: {value}")
-
-    print()
+    print(
+        f"Observations: "
+        f"{report['observations']}"
+    )
+    print(
+        f"Total Return: "
+        f"{report['total_return']:.6f}"
+    )
+    print(
+        f"Max Drawdown: "
+        f"{report['max_drawdown']:.6f}"
+    )
+    print(
+        f"Sharpe Ratio: "
+        f"{report['sharpe_ratio']:.6f}"
+    )
 
     saved_result = result.get("saved_result")
 
@@ -60,6 +70,10 @@ def main() -> None:
             f"Production Result Saved: "
             f"{saved_result['run_dir']}"
         )
+
+    print("========================================")
+    print("PRODUCTION PIPELINE SUCCESS")
+    print("========================================")
 
 
 if __name__ == "__main__":
