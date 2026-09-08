@@ -209,7 +209,16 @@ def test_negative_weight_rejected():
 
 def test_invalid_strategy_return_rejected():
     results = make_strategy_results()
-    results["trend"].loc[0, "strategy_return"] = "invalid"
+
+    invalid_values = results["trend"][
+        "strategy_return"
+    ].astype(object)
+
+    invalid_values.iloc[0] = "invalid"
+
+    results["trend"][
+        "strategy_return"
+    ] = invalid_values
 
     with pytest.raises(ValueError):
         calculate_portfolio_returns(
