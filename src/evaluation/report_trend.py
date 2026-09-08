@@ -43,7 +43,7 @@ def calculate_metric_trend(
 
     first = values[0]
     last = values[-1]
-    change = last - first
+    change = round(last - first, 10)
 
     if change > 0:
         direction = "increasing"
@@ -92,7 +92,7 @@ def calculate_metric_changes(
         values.append(float(value))
 
     return [
-        values[index] - values[index - 1]
+        round(values[index] - values[index - 1], 10)
         for index in range(1, len(values))
     ]
 
