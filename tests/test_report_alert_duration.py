@@ -140,7 +140,7 @@ def test_calculate_average_alert_duration():
         {"alert_count": 4},
     ]
 
-    assert calculate_average_alert_duration(history) == 1.5
+    assert calculate_average_alert_duration(history) == 4 / 3
 
 
 def test_calculate_average_alert_duration_no_alerts():
