@@ -24,11 +24,12 @@ def prepare_chart_data(
     such as volume, signal, and volatility regime.
 
     Required columns:
-        timestamp
-        open
-        high
-        low
-        close
+
+    timestamp
+    open
+    high
+    low
+    close
 
     Optional columns are preserved automatically.
     """
@@ -50,6 +51,7 @@ def prepare_chart_data(
 
     result["timestamp"] = pd.to_datetime(
         result["timestamp"],
+        format="mixed",
         errors="coerce",
     )
 
