@@ -26,6 +26,27 @@ def _validate_report(report: pd.DataFrame) -> None:
         )
 
 
+def _validate_weights(
+    report: pd.DataFrame,
+) -> pd.Series:
+    weights = pd.to_numeric(
+        report["portfolio_weight"],
+        errors="coerce",
+    )
+
+    if weights.isna().any():
+        raise ValueError(
+            "portfolio_weight contains invalid values."
+        )
+
+    if (weights < 0).any():
+        raise ValueError(
+            "portfolio_weight cannot be negative."
+        )
+
+    return weights
+
+
 def calculate_capital_allocation(
     report: pd.DataFrame,
     capital: float,
@@ -33,13 +54,8 @@ def calculate_capital_allocation(
     """
     Convert portfolio weights into capital allocations.
 
-    Parameters
-    ----------
-    report:
-        DataFrame containing strategy names and portfolio weights.
-
-    capital:
-        Total capital available for allocation.
+    Weights may sum to less than one, allowing unallocated
+    capital to remain in cash.
     """
 
     _validate_report(report)
@@ -50,32 +66,16 @@ def calculate_capital_allocation(
         )
 
     result = report.copy()
+    weights = _validate_weights(result)
 
-    if "portfolio_weight" in result.columns:
-        weights = pd.to_numeric(
-            result["portfolio_weight"],
-            errors="coerce",
+    if float(weights.sum()) > 1.0 + 1e-9:
+        raise ValueError(
+            "portfolio_weight cannot sum to more than one."
         )
 
-        if weights.isna().any():
-            raise ValueError(
-                "portfolio_weight contains invalid values."
-            )
-
-        if (weights < 0).any():
-            raise ValueError(
-                "portfolio_weight cannot be negative."
-            )
-
-        if abs(float(weights.sum()) - 1.0) > 1e-9:
-            if float(weights.sum()) != 0.0:
-                raise ValueError(
-                    "portfolio_weight must sum to one."
-                )
-
-        result["allocated_capital"] = (
-            weights * capital
-        )
+    result["allocated_capital"] = (
+        weights * capital
+    )
 
     return result
 
@@ -87,7 +87,8 @@ def calculate_exposure(
     """
     Calculate portfolio exposure for each strategy.
 
-    Exposure is represented as allocated capital divided by total capital.
+    Exposure is represented as allocated capital divided
+    by total capital.
     """
 
     result = calculate_capital_allocation(
