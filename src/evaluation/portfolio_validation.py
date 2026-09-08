@@ -31,6 +31,14 @@ def _validate_report(report: pd.DataFrame) -> None:
 def _prepare_report(
     report: pd.DataFrame,
 ) -> pd.DataFrame:
+    """
+    Prepare and validate basic portfolio weight values.
+
+    Higher-level checks such as duplicate strategy names and
+    total weight are intentionally handled by their dedicated
+    validation functions.
+    """
+
     _validate_report(report)
 
     result = report[
@@ -53,16 +61,6 @@ def _prepare_report(
     if (result["portfolio_weight"] < 0).any():
         raise ValueError(
             "portfolio_weight cannot be negative."
-        )
-
-    if result["portfolio_weight"].sum() > 1.0 + 1e-9:
-        raise ValueError(
-            "portfolio_weight cannot sum to more than one."
-        )
-
-    if result["strategy"].duplicated().any():
-        raise ValueError(
-            "strategy contains duplicate names."
         )
 
     return result
@@ -199,14 +197,11 @@ def validate_portfolio_report(
     )
 
     if weights_valid:
-        try:
-            bounds_valid = validate_weight_bounds(
-                report,
-                min_weight=min_weight,
-                max_weight=max_weight,
-            )
-        except ValueError:
-            raise
+        bounds_valid = validate_weight_bounds(
+            report,
+            min_weight=min_weight,
+            max_weight=max_weight,
+        )
     else:
         bounds_valid = False
 
@@ -225,6 +220,16 @@ def validate_portfolio_report(
         and weight_sum_valid
     )
 
+    weight_sum = None
+
+    if weights_valid:
+        weight_sum = float(
+            pd.to_numeric(
+                report["portfolio_weight"],
+                errors="coerce",
+            ).sum()
+        )
+
     return {
         "passed": bool(passed),
         "strategy_names_valid": names_valid,
@@ -232,16 +237,7 @@ def validate_portfolio_report(
         "weight_bounds_valid": bounds_valid,
         "weight_sum_valid": weight_sum_valid,
         "strategy_count": int(len(report)),
-        "weight_sum": (
-            float(
-                pd.to_numeric(
-                    report["portfolio_weight"],
-                    errors="coerce",
-                ).sum()
-            )
-            if weights_valid
-            else None
-        ),
+        "weight_sum": weight_sum,
     }
 
 
