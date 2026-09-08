@@ -215,8 +215,9 @@ def test_build_summary_without_breaches():
 
 
 def test_empty_history():
-    with pytest.raises(ValueError):
-        count_threshold_breaches([], 3)
+    assert count_threshold_breaches([], 3) == 0
+    assert find_threshold_breach_positions([], 3) == []
+    assert calculate_longest_breach_streak([], 3) == 0
 
     with pytest.raises(ValueError):
         calculate_threshold_breach_ratio([], 3)
