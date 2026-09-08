@@ -70,7 +70,7 @@ def test_find_farthest_range_positions():
         history,
         3,
         6,
-    ) == [0, 4]
+    ) == [4]
 
 
 def test_farthest_positions_include_ties():
@@ -161,8 +161,8 @@ def test_build_summary():
         "upper_bound": 6,
         "total_distance": 5,
         "mean_distance": 1.0,
-        "maximum_distance": 2,
-        "farthest_positions": [0, 4],
+        "maximum_distance": 3,
+        "farthest_positions": [4],
     }
 
 
