@@ -65,8 +65,8 @@ def calculate_max_alert_intensity(
     history: list[Mapping[str, Any]],
 ) -> int:
     """
-    Calculate the maximum number of simultaneous alerts
-    recorded in a single snapshot.
+    Calculate the maximum number of alerts recorded
+    in a single snapshot.
     """
     _validate_history(history)
 
@@ -125,4 +125,7 @@ def build_alert_intensity_summary(
         "max_alert_intensity": (
             calculate_max_alert_intensity(history)
         ),
-        "
+        "min_alert_intensity": (
+            calculate_min_alert_intensity(history)
+        ),
+    }
