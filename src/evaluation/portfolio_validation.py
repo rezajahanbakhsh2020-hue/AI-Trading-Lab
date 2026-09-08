@@ -91,9 +91,14 @@ def validate_weight_sum(
     report: pd.DataFrame,
     require_full_allocation: bool = False,
     tolerance: float = 1e-9,
+    raise_on_excess: bool = True,
 ) -> bool:
     """
     Validate the portfolio weight total.
+
+    By default, a total above one raises ValueError.
+    Structured validation callers can set raise_on_excess=False
+    to receive False instead.
     """
 
     if tolerance < 0:
@@ -108,6 +113,10 @@ def validate_weight_sum(
     )
 
     if total > 1.0 + tolerance:
+        if raise_on_excess:
+            raise ValueError(
+                "portfolio_weight cannot sum to more than one."
+            )
         return False
 
     if require_full_allocation:
@@ -201,9 +210,11 @@ def validate_portfolio_report(
             min_weight=min_weight,
             max_weight=max_weight,
         )
+
         weight_sum_valid = validate_weight_sum(
             report,
             require_full_allocation=require_full_allocation,
+            raise_on_excess=False,
         )
     else:
         bounds_valid = False
