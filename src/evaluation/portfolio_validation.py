@@ -34,9 +34,8 @@ def _prepare_report(
     """
     Prepare and validate basic portfolio weight values.
 
-    Higher-level checks such as duplicate strategy names and
-    total weight are intentionally handled by their dedicated
-    validation functions.
+    Duplicate strategy names and total weight are validated by
+    dedicated public validation functions.
     """
 
     _validate_report(report)
@@ -202,15 +201,12 @@ def validate_portfolio_report(
             min_weight=min_weight,
             max_weight=max_weight,
         )
-    else:
-        bounds_valid = False
-
-    if weights_valid:
         weight_sum_valid = validate_weight_sum(
             report,
             require_full_allocation=require_full_allocation,
         )
     else:
+        bounds_valid = False
         weight_sum_valid = False
 
     passed = (
