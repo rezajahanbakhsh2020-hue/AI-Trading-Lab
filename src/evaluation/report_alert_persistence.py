@@ -56,10 +56,7 @@ def calculate_alert_persistence(
         ):
             persistent_transitions += 1
 
-    return round(
-        persistent_transitions / (len(history) - 1),
-        10,
-    )
+    return persistent_transitions / (len(history) - 1)
 
 
 def count_persistent_alert_transitions(
@@ -128,6 +125,18 @@ def build_alert_persistence_summary(
     """
     Build a complete alert-persistence summary.
     """
+    if not isinstance(history, list):
+        raise TypeError("history must be a list.")
+
+    if not history:
+        return {
+            "snapshot_count": 0,
+            "transition_count": 0,
+            "persistent_transitions": 0,
+            "persistence_ratio": 0.0,
+            "has_persistent_alerts": False,
+        }
+
     persistence = calculate_alert_persistence(history)
     transitions = count_persistent_alert_transitions(
         history,
