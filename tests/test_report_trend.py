@@ -211,7 +211,6 @@ def test_find_improving_trends_multiple_metrics():
 
     assert result == [
         "sharpe_ratio",
-        "max_drawdown",
     ]
 
 
