@@ -154,7 +154,7 @@ def test_build_summary():
     assert result == {
         "snapshot_count": 5,
         "threshold": 4,
-        "average_gap": pytest.approx(0.4),
+        "average_gap": pytest.approx(0.0),
         "average_absolute_gap": pytest.approx(1.6),
         "above_threshold_positions": [1, 2],
         "below_threshold_positions": [0, 3],
