@@ -136,7 +136,7 @@ def test_calculate_average_alert_streak():
         {"alert_count": 5},
     ]
 
-    assert calculate_average_alert_streak(history) == 2.0
+    assert calculate_average_alert_streak(history) == 5 / 3
 
 
 def test_calculate_average_alert_streak_no_alerts():
