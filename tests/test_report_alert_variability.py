@@ -19,7 +19,7 @@ def test_calculate_alert_variability():
         {"alert_count": 3},
     ]
 
-    expected = (14 / 5) ** 0.5
+    expected = (1.36) ** 0.5
 
     assert calculate_alert_variability(history) == pytest.approx(
         expected
@@ -75,7 +75,7 @@ def test_calculate_alert_variability_ratio():
         {"alert_count": 3},
     ]
 
-    variability = (14 / 5) ** 0.5
+    variability = (1.36) ** 0.5
     mean = 6 / 5
 
     assert calculate_alert_variability_ratio(history) == pytest.approx(
@@ -106,7 +106,7 @@ def test_build_alert_variability_summary():
         {"alert_count": 3},
     ]
 
-    variability = (14 / 5) ** 0.5
+    variability = (1.36) ** 0.5
     ratio = variability / (6 / 5)
 
     result = build_alert_variability_summary(history)
