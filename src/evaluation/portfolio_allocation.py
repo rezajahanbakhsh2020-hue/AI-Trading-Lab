@@ -44,18 +44,26 @@ def _validate_weights(
             "portfolio_weight cannot be negative."
         )
 
+    if float(weights.sum()) > 1.0 + 1e-9:
+        raise ValueError(
+            "portfolio_weight cannot sum to more than one."
+        )
+
     return weights
 
 
 def calculate_capital_allocation(
     report: pd.DataFrame,
     capital: float,
+    allow_partial: bool = False,
 ) -> pd.DataFrame:
     """
     Convert portfolio weights into capital allocations.
 
-    Weights may sum to less than one, allowing unallocated
-    capital to remain in cash.
+    By default, portfolio weights must sum to one.
+
+    Set allow_partial=True when the allocation is intentionally
+    partial and the remaining capital should stay unallocated.
     """
 
     _validate_report(report)
@@ -68,10 +76,13 @@ def calculate_capital_allocation(
     result = report.copy()
     weights = _validate_weights(result)
 
-    if float(weights.sum()) > 1.0 + 1e-9:
-        raise ValueError(
-            "portfolio_weight cannot sum to more than one."
-        )
+    weight_sum = float(weights.sum())
+
+    if not allow_partial:
+        if abs(weight_sum - 1.0) > 1e-9:
+            raise ValueError(
+                "portfolio_weight must sum to one."
+            )
 
     result["allocated_capital"] = (
         weights * capital
@@ -113,11 +124,15 @@ def calculate_unallocated_capital(
 ) -> float:
     """
     Return capital not allocated to strategies.
+
+    Partial portfolio weights are allowed because the difference
+    between total capital and allocated capital remains in cash.
     """
 
     result = calculate_capital_allocation(
         report,
         capital,
+        allow_partial=True,
     )
 
     if result.empty:
