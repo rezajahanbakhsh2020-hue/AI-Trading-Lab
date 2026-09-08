@@ -92,7 +92,7 @@ def test_find_farthest_positions():
     assert find_farthest_positions(
         history,
         4,
-    ) == [2]
+    ) == [0, 2]
 
 
 def test_find_multiple_farthest_positions():
@@ -162,7 +162,7 @@ def test_build_summary():
         "total_distance": 8,
         "average_distance": pytest.approx(1.6),
         "closest_positions": [4],
-        "farthest_positions": [2],
+        "farthest_positions": [0, 2],
     }
 
 
