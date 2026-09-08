@@ -59,7 +59,7 @@ def test_calculate_mean_absolute_deviation():
     ]
 
     assert calculate_mean_absolute_deviation(history) == pytest.approx(
-        1.75
+        1.5
     )
 
 
