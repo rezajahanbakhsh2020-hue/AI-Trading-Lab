@@ -60,7 +60,7 @@ def calculate_capital_allocation(
     """
     Convert portfolio weights into capital allocations.
 
-    By default, portfolio weights must sum to one.
+    By default, non-empty portfolio weights must sum to one.
 
     Set allow_partial=True when the allocation is intentionally
     partial and the remaining capital should stay unallocated.
@@ -76,9 +76,9 @@ def calculate_capital_allocation(
     result = report.copy()
     weights = _validate_weights(result)
 
-    weight_sum = float(weights.sum())
+    if not result.empty and not allow_partial:
+        weight_sum = float(weights.sum())
 
-    if not allow_partial:
         if abs(weight_sum - 1.0) > 1e-9:
             raise ValueError(
                 "portfolio_weight must sum to one."
