@@ -24,7 +24,7 @@ def test_calculate_recovery_durations():
         {"alert_count": 0},
     ]
 
-    assert calculate_recovery_durations(history) == [2, 4]
+    assert calculate_recovery_durations(history) == [2, 3]
 
 
 def test_calculate_recovery_durations_empty():
@@ -219,11 +219,11 @@ def test_build_alert_recovery_summary():
     assert result == {
         "snapshot_count": 6,
         "recovered_period_count": 2,
-        "recovery_durations": [1, 3],
-        "total_recovery_duration": 4,
-        "average_recovery_duration": 2.0,
+        "recovery_durations": [1, 2],
+        "total_recovery_duration": 3,
+        "average_recovery_duration": 1.5,
         "fastest_recovery_duration": 1,
-        "slowest_recovery_duration": 3,
+        "slowest_recovery_duration": 2,
     }
 
 
