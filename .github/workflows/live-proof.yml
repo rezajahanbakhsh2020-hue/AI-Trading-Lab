@@ -26,11 +26,32 @@ jobs:
         run: |
           PYTHONPATH=. pytest tests/test_run_live_proof.py -q
 
+      - name: Run visual proof report tests
+        run: |
+          PYTHONPATH=. pytest tests/test_live_proof_report.py -q
+
       - name: Run real XAU/USD live proof
         run: |
           PYTHONPATH=. python run_live_proof.py
+
+      - name: Build visual proof report
+        run: |
+          PYTHONPATH=. python live_proof_report.py
+
+      - name: Verify visual proof report
+        run: |
+          test -f results/live/live_snapshot.json
+          test -f results/live/live_proof.html
+          grep -q "XAUUSD" results/live/live_proof.html
+          grep -q "BUY\|NO TRADE" results/live/live_proof.html
+          grep -q "Risk / Reward" results/live/live_proof.html
 
       - name: Show saved live snapshot
         run: |
           echo "=== Saved Live Snapshot ==="
           cat results/live/live_snapshot.json
+
+      - name: Show visual proof report
+        run: |
+          echo "=== Visual Proof Report ==="
+          sed -n '1,220p' results/live/live_proof.html
