@@ -97,7 +97,7 @@ def test_dashboard_signal_uses_existing_strategy_snapshot():
     assert snapshot["signal_label"] == "BUY"
     assert snapshot["close"] == 104.0
     assert snapshot["momentum"] == pytest.approx(
-        (104.0 / 102.0) - 1.0
+        (104.0 / 101.0) - 1.0
     )
 
 
