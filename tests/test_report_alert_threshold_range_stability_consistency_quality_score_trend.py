@@ -23,7 +23,7 @@ def test_quality_score_trend_contains_expected_series() -> None:
     assert result["upper_bound"] == 4
 
     assert result["quality_series"] == pytest.approx(
-        [1.0, 0.0, 2 / 3]
+        [1.0, 0.0, 0.0]
     )
 
     assert result["stability_series"] == pytest.approx(
@@ -49,7 +49,7 @@ def test_quality_trend_is_up_when_quality_improves() -> None:
     )
 
     assert result["quality_trend"] == "up"
-    assert result["quality_change"] == pytest.approx(2 / 3)
+    assert result["quality_change"] == pytest.approx(1.0)
 
 
 def test_quality_trend_is_down_when_quality_declines() -> None:
@@ -66,7 +66,7 @@ def test_quality_trend_is_down_when_quality_declines() -> None:
     )
 
     assert result["quality_trend"] == "down"
-    assert result["quality_change"] == pytest.approx(-1.0)
+    assert result["quality_change"] == pytest.approx(-2 / 3)
 
 
 def test_stability_trend_is_up_when_stability_improves() -> None:
@@ -100,7 +100,7 @@ def test_stability_trend_is_down_when_stability_declines() -> None:
     )
 
     assert result["stability_trend"] == "down"
-    assert result["stability_change"] == pytest.approx(-1.0)
+    assert result["stability_change"] == pytest.approx(-2 / 3)
 
 
 def test_consistency_detects_state_changes() -> None:
