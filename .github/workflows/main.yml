@@ -34,3 +34,7 @@ jobs:
       - name: Run real backtest
         run: |
           PYTHONPATH=. python run_backtest.py
+
+      - name: Run production pipeline
+        run: |
+          PYTHONPATH=. python run_production.py
