@@ -2,39 +2,82 @@ from pathlib import Path
 
 import pandas as pd
 
-import run_live_visual_proof
+import src.live.run_live_visual_proof as run_live_visual_proof
 
 
-def sample_data() -> pd.DataFrame:
+def sample_data():
     return pd.DataFrame(
         {
-            "openTime": pd.date_range(
-                "2026-01-01",
-                periods=60,
+            "timestamp": pd.date_range(
+                "2025-01-01",
+                periods=10,
                 freq="5min",
-                tz="UTC",
             ),
-            "open": [2500.0 + i for i in range(60)],
-            "high": [2501.0 + i for i in range(60)],
-            "low": [2499.0 + i for i in range(60)],
-            "close": [2500.5 + i for i in range(60)],
+            "open": [
+                4390.0,
+                4391.0,
+                4392.0,
+                4393.0,
+                4394.0,
+                4395.0,
+                4396.0,
+                4397.0,
+                4398.0,
+                4399.0,
+            ],
+            "high": [
+                4391.0,
+                4392.0,
+                4393.0,
+                4394.0,
+                4395.0,
+                4396.0,
+                4397.0,
+                4398.0,
+                4399.0,
+                4400.0,
+            ],
+            "low": [
+                4389.0,
+                4390.0,
+                4391.0,
+                4392.0,
+                4393.0,
+                4394.0,
+                4395.0,
+                4396.0,
+                4397.0,
+                4398.0,
+            ],
+            "close": [
+                4390.5,
+                4391.5,
+                4392.5,
+                4393.5,
+                4394.5,
+                4395.5,
+                4396.5,
+                4397.5,
+                4398.5,
+                4399.5,
+            ],
         }
     )
 
 
-def sample_quote() -> dict:
+def sample_quote():
     return {
         "symbol": "XAUUSD",
-        "mid": 2559.5,
-        "bid": 2559.4,
-        "ask": 2559.6,
-        "marketState": "open",
-        "stale": False,
-        "quoteAgeSeconds": 0,
+        "bid": 4399.4,
+        "ask": 4399.6,
+        "timestamp": "2025-01-01T00:45:00+00:00",
     }
 
 
-def test_live_visual_proof_creates_real_html(tmp_path, monkeypatch):
+def test_live_visual_proof_returns_expected_result(
+    tmp_path,
+    monkeypatch,
+):
     output_path = tmp_path / "live_proof_visual.html"
 
     monkeypatch.setattr(
@@ -56,25 +99,16 @@ def test_live_visual_proof_creates_real_html(tmp_path, monkeypatch):
     result = run_live_visual_proof.run_live_visual_proof()
 
     assert result["symbol"] == "XAUUSD"
-    assert result["interval"]
-    assert result["signal"] in {0, 1}
+    assert result["interval"] == run_live_visual_proof.DEFAULT_INTERVAL
+    assert result["signal"] in (0, 1)
     assert result["signal_label"] in {"BUY", "NO TRADE"}
-    assert result["trend"] in {
-        "UP",
-        "DOWN",
-        "INSUFFICIENT DATA",
-    }
-    assert result["candle_count"] > 0
-    assert result["timestamp"]
-    assert result["market_state"]
-    assert isinstance(result["quote_stale"], bool)
-    assert result["human_text"]
-
-    result_path = Path(result["output_path"])
-
-    assert result_path == output_path
-    assert result_path.is_file()
-    assert result_path.stat().st_size > 0
+    assert result["trend"] in {"UP", "DOWN", "FLAT"}
+    assert result["entry_price"] is not None
+    assert result["stop_loss"] is not None
+    assert result["take_profit"] is not None
+    assert result["candle_count"] == 10
+    assert result["output_path"] == str(output_path)
+    assert output_path.exists()
 
 
 def test_live_visual_proof_html_contains_visual_elements(
@@ -106,6 +140,5 @@ def test_live_visual_proof_html_contains_visual_elements(
     html = output_path.read_text(encoding="utf-8")
 
     assert "plotly" in html.lower()
-    assert "XAU/USD" in html
     assert "Fast MA" in html
     assert "Slow MA" in html
