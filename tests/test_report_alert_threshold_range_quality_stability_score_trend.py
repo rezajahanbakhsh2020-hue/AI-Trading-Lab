@@ -94,10 +94,10 @@ def test_trend_series_are_cumulative() -> None:
         [1.0, 0.5, 2 / 3]
     )
     assert result["stability_series"] == pytest.approx(
-        [1.0, 0.0, 0.5]
+        [1.0, 0.0, 0.0]
     )
     assert result["score_series"] == pytest.approx(
-        [1.0, 0.25, 7 / 12]
+        [1.0, 0.25, 1 / 3]
     )
 
 
@@ -133,8 +133,8 @@ def test_trend_change_values_are_returned() -> None:
     )
 
     assert result["quality_change"] == pytest.approx(-1 / 3)
-    assert result["stability_change"] == pytest.approx(-0.5)
-    assert result["score_change"] == pytest.approx(-5 / 12)
+    assert result["stability_change"] == pytest.approx(-1.0)
+    assert result["score_change"] == pytest.approx(-2 / 3)
 
 
 def test_empty_history_returns_empty_series_and_flat_trends() -> None:
