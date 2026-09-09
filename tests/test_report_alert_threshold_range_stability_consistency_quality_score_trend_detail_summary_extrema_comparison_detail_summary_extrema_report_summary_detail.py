@@ -28,7 +28,7 @@ def test_report_summary_detail_builds_per_metric_details() -> None:
     assert quality["range"] == pytest.approx(2 / 3)
     assert quality["peak_snapshot"] == 2
     assert quality["floor_snapshot"] == 0
-    assert quality["range_rank"] == 2
+    assert quality["range_rank"] is None
     assert quality["is_widest"] is False
     assert quality["is_largest_change"] is True
     assert quality["is_improving"] is True
@@ -42,7 +42,7 @@ def test_report_summary_detail_builds_per_metric_details() -> None:
     assert stability["range"] == pytest.approx(2 / 3)
     assert stability["peak_snapshot"] == 2
     assert stability["floor_snapshot"] == 0
-    assert stability["range_rank"] == 3
+    assert stability["range_rank"] is None
     assert stability["is_widest"] is False
     assert stability["is_largest_change"] is False
     assert stability["is_improving"] is True
@@ -56,7 +56,7 @@ def test_report_summary_detail_builds_per_metric_details() -> None:
     assert consistency["range"] == pytest.approx(1.0)
     assert consistency["peak_snapshot"] == 0
     assert consistency["floor_snapshot"] == 1
-    assert consistency["range_rank"] == 1
+    assert consistency["range_rank"] is None
     assert consistency["is_widest"] is True
     assert consistency["is_largest_change"] is False
     assert consistency["is_improving"] is False
