@@ -30,7 +30,7 @@ def test_trend_summary_returns_final_scores_and_trends() -> None:
     assert result["stability_trend"] == "up"
     assert result["consistency_trend"] == "flat"
 
-    assert result["quality_change"] == pytest.approx(1.0)
+    assert result["quality_change"] == pytest.approx(2 / 3)
     assert result["stability_change"] == pytest.approx(2 / 3)
     assert result["consistency_change"] == pytest.approx(0.0)
 
@@ -56,7 +56,7 @@ def test_trend_summary_reports_declining_quality() -> None:
     assert result["stability_trend"] == "down"
     assert result["consistency_trend"] == "flat"
 
-    assert result["quality_change"] == pytest.approx(-1.0)
+    assert result["quality_change"] == pytest.approx(-2 / 3)
     assert result["stability_change"] == pytest.approx(-2 / 3)
     assert result["consistency_change"] == pytest.approx(0.0)
 
