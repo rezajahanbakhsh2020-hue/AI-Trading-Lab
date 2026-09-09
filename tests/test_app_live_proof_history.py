@@ -76,7 +76,9 @@ def test_invalid_history_record_is_rejected():
     assert validate_history_record({}) is False
 
 
-def test_append_history_record_persists_records(tmp_path):
+def test_append_history_record_persists_records(
+    tmp_path,
+):
     path = tmp_path / "history.json"
 
     record = build_live_history_record(
@@ -103,7 +105,9 @@ def test_append_history_record_persists_records(tmp_path):
     assert saved[0]["symbol"] == "XAUUSD"
 
 
-def test_append_history_record_keeps_latest_limit(tmp_path):
+def test_append_history_record_keeps_latest_limit(
+    tmp_path,
+):
     path = tmp_path / "history.json"
 
     record1 = build_live_history_record(
@@ -112,10 +116,14 @@ def test_append_history_record_keeps_latest_limit(tmp_path):
     )
 
     record2 = dict(record1)
-    record2["timestamp"] = "2026-01-01T01:00:00+00:00"
+    record2["timestamp"] = (
+        "2026-01-01T01:00:00+00:00"
+    )
 
     record3 = dict(record1)
-    record3["timestamp"] = "2026-01-01T02:00:00+00:00"
+    record3["timestamp"] = (
+        "2026-01-01T02:00:00+00:00"
+    )
 
     append_history_record(
         record1,
@@ -136,8 +144,14 @@ def test_append_history_record_keeps_latest_limit(tmp_path):
     )
 
     assert len(history) == 2
-    assert history[0]["timestamp"] == record2["timestamp"]
-    assert history[1]["timestamp"] == record3["timestamp"]
+    assert (
+        history[0]["timestamp"]
+        == record2["timestamp"]
+    )
+    assert (
+        history[1]["timestamp"]
+        == record3["timestamp"]
+    )
 
 
 def test_load_history_returns_empty_for_missing_file(
@@ -151,11 +165,15 @@ def test_load_history_returns_empty_for_missing_file(
 def test_build_history_chart_contains_signal_trace():
     history = [
         {
-            "timestamp": "2026-01-01T00:00:00+00:00",
+            "timestamp": (
+                "2026-01-01T00:00:00+00:00"
+            ),
             "signal": 0,
         },
         {
-            "timestamp": "2026-01-01T00:05:00+00:00",
+            "timestamp": (
+                "2026-01-01T00:05:00+00:00"
+            ),
             "signal": 1,
         },
     ]
@@ -175,7 +193,9 @@ def test_build_history_chart_empty_history():
 def test_render_history_table_contains_expected_columns():
     history = [
         {
-            "timestamp": "2026-01-01T00:00:00+00:00",
+            "timestamp": (
+                "2026-01-01T00:00:00+00:00"
+            ),
             "signal_label": "NO TRADE",
             "trend": "UP",
             "entry_price": 2500.0,
