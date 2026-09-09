@@ -1,8 +1,6 @@
-from pathlib import Path
-
 import pandas as pd
 
-import src.live.run_live_visual_proof as run_live_visual_proof
+import src.run_live_visual_proof as run_live_visual_proof
 
 
 def sample_data():
