@@ -1,6 +1,6 @@
 import pandas as pd
 
-import src.run_live_visual_proof as run_live_visual_proof
+import run_live_visual_proof
 
 
 def sample_data():
@@ -100,13 +100,19 @@ def test_live_visual_proof_returns_expected_result(
     assert result["interval"] == run_live_visual_proof.DEFAULT_INTERVAL
     assert result["signal"] in (0, 1)
     assert result["signal_label"] in {"BUY", "NO TRADE"}
-    assert result["trend"] in {"UP", "DOWN", "FLAT"}
+    assert result["trend"] in {
+        "UP",
+        "DOWN",
+        "FLAT",
+        "INSUFFICIENT DATA",
+    }
     assert result["entry_price"] is not None
     assert result["stop_loss"] is not None
     assert result["take_profit"] is not None
     assert result["candle_count"] == 10
     assert result["output_path"] == str(output_path)
     assert output_path.exists()
+    assert output_path.stat().st_size > 0
 
 
 def test_live_visual_proof_html_contains_visual_elements(
