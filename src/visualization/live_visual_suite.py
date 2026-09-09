@@ -143,6 +143,14 @@ def build_live_visual_suite(
         default="UNKNOWN",
     )
 
+    quote_stale = bool(
+        _value(
+            normalized,
+            "quote_stale",
+            default=False,
+        )
+    )
+
     entry = _format_price(
         _value(
             normalized,
@@ -182,6 +190,72 @@ def build_live_visual_suite(
 
     decision = _decision_text(normalized)
 
+    annotations = [
+        dict(
+            x=0.5,
+            y=1.13,
+            xref="paper",
+            yref="paper",
+            text=(
+                f"<b>{symbol}</b> | "
+                f"{interval} | "
+                f"Signal: <b>{signal_label}</b> | "
+                f"Trend: <b>{trend}</b>"
+            ),
+            showarrow=False,
+            xanchor="center",
+            yanchor="bottom",
+            font=dict(size=16),
+        ),
+        dict(
+            x=0.5,
+            y=1.075,
+            xref="paper",
+            yref="paper",
+            text=(
+                f"<b>{decision}</b> | "
+                f"Strategy: {strategy} | "
+                f"Market: {market_state}"
+            ),
+            showarrow=False,
+            xanchor="center",
+            yanchor="bottom",
+            font=dict(size=14),
+        ),
+        dict(
+            x=0.5,
+            y=1.025,
+            xref="paper",
+            yref="paper",
+            text=(
+                f"Entry: <b>{entry}</b> | "
+                f"SL: <b>{stop_loss}</b> | "
+                f"TP1: <b>{tp1}</b> | "
+                f"TP2: <b>{tp2}</b> | "
+                f"TP3: <b>{tp3}</b>"
+            ),
+            showarrow=False,
+            xanchor="center",
+            yanchor="bottom",
+            font=dict(size=13),
+        ),
+    ]
+
+    if quote_stale:
+        annotations.append(
+            dict(
+                x=0.5,
+                y=0.975,
+                xref="paper",
+                yref="paper",
+                text="<b>STALE QUOTE</b>",
+                showarrow=False,
+                xanchor="center",
+                yanchor="bottom",
+                font=dict(size=14),
+            )
+        )
+
     figure.update_layout(
         title=(
             "AI-Trading-Lab — Live Visual Suite"
@@ -195,56 +269,7 @@ def build_live_visual_suite(
             t=190,
             b=80,
         ),
-        annotations=[
-            dict(
-                x=0.5,
-                y=1.13,
-                xref="paper",
-                yref="paper",
-                text=(
-                    f"<b>{symbol}</b> | "
-                    f"{interval} | "
-                    f"Signal: <b>{signal_label}</b> | "
-                    f"Trend: <b>{trend}</b>"
-                ),
-                showarrow=False,
-                xanchor="center",
-                yanchor="bottom",
-                font=dict(size=16),
-            ),
-            dict(
-                x=0.5,
-                y=1.075,
-                xref="paper",
-                yref="paper",
-                text=(
-                    f"<b>{decision}</b> | "
-                    f"Strategy: {strategy} | "
-                    f"Market: {market_state}"
-                ),
-                showarrow=False,
-                xanchor="center",
-                yanchor="bottom",
-                font=dict(size=14),
-            ),
-            dict(
-                x=0.5,
-                y=1.025,
-                xref="paper",
-                yref="paper",
-                text=(
-                    f"Entry: <b>{entry}</b> | "
-                    f"SL: <b>{stop_loss}</b> | "
-                    f"TP1: <b>{tp1}</b> | "
-                    f"TP2: <b>{tp2}</b> | "
-                    f"TP3: <b>{tp3}</b>"
-                ),
-                showarrow=False,
-                xanchor="center",
-                yanchor="bottom",
-                font=dict(size=13),
-            ),
-        ],
+        annotations=annotations,
     )
 
     return figure
