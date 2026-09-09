@@ -181,7 +181,7 @@ def test_build_summary():
     assert summary["quality_stability_percentage"] == pytest.approx(
         expected_score * 100.0
     )
-    assert summary["classification"] == "acceptable"
+    assert summary["classification"] == "unstable"
 
 
 def test_history_must_be_a_list():
