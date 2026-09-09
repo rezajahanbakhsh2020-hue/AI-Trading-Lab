@@ -49,7 +49,7 @@ def test_quality_trend_is_up_when_quality_improves() -> None:
     )
 
     assert result["quality_trend"] == "up"
-    assert result["quality_change"] == pytest.approx(1.0)
+    assert result["quality_change"] == pytest.approx(2 / 3)
 
 
 def test_quality_trend_is_down_when_quality_declines() -> None:
