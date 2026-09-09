@@ -55,3 +55,13 @@ jobs:
         run: |
           echo "=== Visual Proof Report ==="
           sed -n '1,220p' results/live/live_proof.html
+
+      - name: Upload live proof artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: xauusd-live-proof
+          path: |
+            results/live/live_snapshot.json
+            results/live/live_proof.html
+          if-no-files-found: error
+          retention-days: 7
