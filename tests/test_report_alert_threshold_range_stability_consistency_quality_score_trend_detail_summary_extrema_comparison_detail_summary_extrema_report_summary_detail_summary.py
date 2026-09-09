@@ -124,7 +124,8 @@ def test_report_summary_detail_summary_contains_status_counts() -> None:
     assert sum(result["status_counts"].values()) == 3
 
     for detail in result["metric_details"]:
-        assert detail["status"] in result["status_counts"]
+        direction = detail["status"]["direction"]
+        assert direction in result["status_counts"]
 
 
 def test_report_summary_detail_summary_preserves_core_report_values() -> None:
