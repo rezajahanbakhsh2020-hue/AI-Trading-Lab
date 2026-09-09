@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+from pathlib import Path
 from typing import Any
 
 import pandas as pd
@@ -23,10 +25,7 @@ from live_signal import (
     DEFAULT_MOMENTUM_WINDOW,
     build_live_signal_snapshot,
 )
-from live_snapshot import (
-    REQUIRED_SNAPSHOT_FIELDS,
-    save_live_snapshot,
-)
+from live_snapshot import save_live_snapshot
 from live_trend import (
     DEFAULT_FAST_WINDOW,
     DEFAULT_SLOW_WINDOW,
@@ -36,6 +35,34 @@ from live_trend import (
 
 HISTORY_PATH = "results/live/live_proof_history.json"
 DEFAULT_HISTORY_LIMIT = 20
+
+REQUIRED_HISTORY_FIELDS = frozenset(
+    {
+        "symbol",
+        "interval",
+        "signal",
+        "signal_label",
+        "strategy",
+        "momentum",
+        "trend",
+        "fast_ma",
+        "slow_ma",
+        "entry_price",
+        "stop_loss",
+        "take_profit",
+        "risk_reward_ratio",
+        "stop_loss_pct",
+        "take_profit_pct",
+        "timestamp",
+        "market_state",
+        "quote_stale",
+        "quote_age_seconds",
+        "bid",
+        "ask",
+        "mid",
+        "candle_count",
+    }
+)
 
 
 def build_live_history_record(
@@ -49,7 +76,7 @@ def build_live_history_record(
     stop_loss_pct: float = DEFAULT_STOP_LOSS_PCT,
     take_profit_pct: float = DEFAULT_TAKE_PROFIT_PCT,
 ) -> dict[str, Any]:
-    """Build one human-readable live proof history record."""
+    """Build one live proof history record."""
 
     if not isinstance(data, pd.DataFrame):
         raise ValueError("data must be a pandas DataFrame.")
@@ -114,12 +141,12 @@ def build_live_history_record(
 def validate_history_record(
     record: dict[str, Any],
 ) -> bool:
-    """Validate the core fields required by the live snapshot store."""
+    """Validate the fields required by this history layer."""
 
     if not isinstance(record, dict):
         return False
 
-    return REQUIRED_SNAPSHOT_FIELDS.issubset(
+    return REQUIRED_HISTORY_FIELDS.issubset(
         record.keys()
     )
 
@@ -128,9 +155,6 @@ def load_history(
     path: str = HISTORY_PATH,
 ) -> list[dict[str, Any]]:
     """Load saved live proof history."""
-
-    from pathlib import Path
-    import json
 
     history_path = Path(path)
 
@@ -144,7 +168,9 @@ def load_history(
         payload = json.load(handle)
 
     if not isinstance(payload, list):
-        raise ValueError("history must contain a JSON list.")
+        raise ValueError(
+            "history must contain a JSON list."
+        )
 
     return [
         item
@@ -158,24 +184,21 @@ def append_history_record(
     path: str = HISTORY_PATH,
     limit: int = DEFAULT_HISTORY_LIMIT,
 ) -> list[dict[str, Any]]:
-    """Append a live proof record and keep the latest records."""
+    """Append a live proof record and retain the latest records."""
 
     if not validate_history_record(record):
         raise ValueError(
-            "record does not contain required snapshot fields."
+            "record does not contain required history fields."
         )
 
     if limit < 1:
-        raise ValueError("limit must be positive.")
+        raise ValueError(
+            "limit must be positive."
+        )
 
     history = load_history(path)
-
     history.append(dict(record))
-
     history = history[-limit:]
-
-    from pathlib import Path
-    import json
 
     target = Path(path)
     target.parent.mkdir(
@@ -200,7 +223,7 @@ def append_history_record(
 def build_history_chart(
     history: list[dict[str, Any]],
 ) -> go.Figure:
-    """Build a visual signal-history chart."""
+    """Build the visual signal-history chart."""
 
     if not history:
         return go.Figure()
@@ -245,7 +268,7 @@ def build_history_chart(
 def render_history_table(
     history: list[dict[str, Any]],
 ) -> pd.DataFrame:
-    """Prepare history for human-readable dashboard display."""
+    """Prepare history for dashboard display."""
 
     if not history:
         return pd.DataFrame()
@@ -286,8 +309,8 @@ def main() -> None:
     )
 
     st.caption(
-        "Real XAU/USD observations collected from "
-        "the existing live proof engine."
+        "Real XAU/USD observations collected "
+        "from the existing live proof engine."
     )
 
     with st.sidebar:
@@ -377,17 +400,26 @@ def main() -> None:
 
     col1.metric(
         "Latest Signal",
-        latest.get("signal_label", "N/A"),
+        latest.get(
+            "signal_label",
+            "N/A",
+        ),
     )
 
     col2.metric(
         "Trend",
-        latest.get("trend", "N/A"),
+        latest.get(
+            "trend",
+            "N/A",
+        ),
     )
 
     col3.metric(
         "Market",
-        latest.get("market_state", "N/A"),
+        latest.get(
+            "market_state",
+            "N/A",
+        ),
     )
 
     col4.metric(
