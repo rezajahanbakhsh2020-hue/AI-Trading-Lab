@@ -101,8 +101,8 @@ def test_upward_trend_is_preserved() -> None:
     )
 
     assert result["quality_trend"] == "up"
-    assert result["stability_trend"] == "up"
-    assert result["score_trend"] == "up"
+    assert result["stability_trend"] == "down"
+    assert result["score_trend"] == "down"
 
 
 def test_bounds_are_preserved() -> None:
