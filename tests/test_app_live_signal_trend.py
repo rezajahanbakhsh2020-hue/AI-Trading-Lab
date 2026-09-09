@@ -73,7 +73,13 @@ def test_build_signal_trend_snapshot_preserves_timestamp():
         slow_window=4,
     )
 
-    assert snapshot["timestamp"] == data["openTime"].iloc[-1]
+    expected_timestamp = (
+        data["openTime"].iloc[-1]
+        .tz_localize("UTC")
+        .isoformat()
+    )
+
+    assert snapshot["timestamp"] == expected_timestamp
 
 
 def test_build_signal_trend_snapshot_rejects_empty_data():
@@ -119,5 +125,8 @@ def test_build_candlestick_chart_contains_ohlc_data():
 def test_build_candlestick_chart_rejects_empty_data():
     data = pd.DataFrame()
 
-    with pytest.raises(ValueError, match="empty"):
+    with pytest.raises(
+        ValueError,
+        match="Missing required chart columns",
+    ):
         app_live_signal_trend.build_candlestick_chart(data)
