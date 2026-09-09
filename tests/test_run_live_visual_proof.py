@@ -106,6 +106,6 @@ def test_live_visual_proof_html_contains_visual_elements(
     html = output_path.read_text(encoding="utf-8")
 
     assert "plotly" in html.lower()
-    assert "XAUUSD" in html
+    assert "XAU/USD" in html
     assert "Fast MA" in html
     assert "Slow MA" in html
