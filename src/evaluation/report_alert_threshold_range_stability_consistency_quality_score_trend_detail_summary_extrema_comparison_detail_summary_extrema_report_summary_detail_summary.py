@@ -53,9 +53,12 @@ def build_quality_score_trend_detail_summary_extrema_comparison_detail_summary_e
     )
 
     status_counts: dict[str, int] = {}
+
     for item in metric_details:
         status = item["status"]
-        status_counts[status] = status_counts.get(status, 0) + 1
+        direction = status["direction"]
+
+        status_counts[direction] = status_counts.get(direction, 0) + 1
 
     return {
         "snapshot_count": report["snapshot_count"],
