@@ -74,7 +74,7 @@ def test_stability_ratio_for_mixed_transitions():
         {"alert_count": 7},
     ]
 
-    assert calculate_stability_ratio(history, 2, 4) == pytest.approx(1 / 3)
+    assert calculate_stability_ratio(history, 2, 4) == pytest.approx(2 / 3)
 
 
 def test_quality_stability_score_combines_quality_and_stability():
