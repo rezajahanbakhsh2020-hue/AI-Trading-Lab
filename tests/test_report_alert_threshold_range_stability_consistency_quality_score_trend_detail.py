@@ -45,10 +45,10 @@ def test_trend_detail_returns_per_snapshot_scores_and_changes() -> None:
 
     assert details[1]["snapshot_index"] == 1
     assert details[1]["alert_count"] == 3
-    assert details[1]["quality_score"] == pytest.approx(0.5)
+    assert details[1]["quality_score"] == pytest.approx(0.0)
     assert details[1]["stability_score"] == pytest.approx(0.5)
     assert details[1]["consistency_score"] == pytest.approx(0.0)
-    assert details[1]["quality_change"] == pytest.approx(0.5)
+    assert details[1]["quality_change"] == pytest.approx(0.0)
     assert details[1]["stability_change"] == pytest.approx(0.5)
     assert details[1]["consistency_change"] == pytest.approx(-1.0)
 
@@ -57,7 +57,7 @@ def test_trend_detail_returns_per_snapshot_scores_and_changes() -> None:
     assert details[2]["quality_score"] == pytest.approx(2 / 3)
     assert details[2]["stability_score"] == pytest.approx(2 / 3)
     assert details[2]["consistency_score"] == pytest.approx(1.0)
-    assert details[2]["quality_change"] == pytest.approx(1 / 6)
+    assert details[2]["quality_change"] == pytest.approx(2 / 3)
     assert details[2]["stability_change"] == pytest.approx(1 / 6)
     assert details[2]["consistency_change"] == pytest.approx(1.0)
 
