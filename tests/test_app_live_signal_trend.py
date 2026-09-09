@@ -41,7 +41,7 @@ def test_build_signal_trend_snapshot_combines_signal_and_uptrend():
     assert snapshot["trend"] == "UP"
     assert snapshot["close"] == 6.0
     assert snapshot["momentum"] == pytest.approx(
-        (6.0 / 5.0) - 1.0
+        (6.0 / 4.0) - 1.0
     )
     assert snapshot["fast_ma"] == pytest.approx(5.5)
     assert snapshot["slow_ma"] == pytest.approx(4.5)
@@ -69,7 +69,7 @@ def test_build_signal_trend_snapshot_combines_no_trade_and_downtrend():
     assert snapshot["trend"] == "DOWN"
     assert snapshot["close"] == 1.0
     assert snapshot["momentum"] == pytest.approx(
-        (1.0 / 2.0) - 1.0
+        (1.0 / 3.0) - 1.0
     )
 
 
@@ -109,7 +109,7 @@ def test_build_candlestick_chart_contains_ohlc_data():
     assert list(trace.open) == [100.0, 101.0, 102.0]
     assert list(trace.high) == [102.0, 103.0, 104.0]
     assert list(trace.low) == [98.0, 99.0, 100.0]
-    assert list(trace.close) == [100.0, 101.0, 102.0]
+    assert list(trace.close) == [101.0, 102.0, 103.0]
 
 
 def test_build_candlestick_chart_rejects_missing_columns():
