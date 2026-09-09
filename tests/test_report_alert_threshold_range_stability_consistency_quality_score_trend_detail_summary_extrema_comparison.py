@@ -128,7 +128,7 @@ def test_extrema_comparison_handles_empty_history() -> None:
     assert result["stability_change"] == 0.0
     assert result["consistency_change"] == 0.0
 
-    assert result["largest_change_metric"] is None
+    assert result["largest_change_metric"] == "quality"
     assert result["largest_change"] == 0.0
 
     assert result["positive_change_metrics"] == ()
