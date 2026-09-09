@@ -22,13 +22,13 @@ def test_quality_ratio_for_mixed_history():
 
 def test_stability_ratio_for_mixed_transitions():
     history = [
-        {"alert_count": 3},
         {"alert_count": 2},
-        {"alert_count": 6},
+        {"alert_count": 3},
         {"alert_count": 7},
+        {"alert_count": 4},
     ]
 
-    assert calculate_stability_ratio(history, 2, 4) == pytest.approx(2 / 3)
+    assert calculate_stability_ratio(history, 2, 4) == pytest.approx(1 / 3)
 
 
 def test_quality_stability_score_is_average_of_two_ratios():
@@ -39,7 +39,7 @@ def test_quality_stability_score_is_average_of_two_ratios():
         {"alert_count": 4},
     ]
 
-    expected = (0.75 + (2 / 3)) / 2
+    expected = (0.75 + (1 / 3)) / 2
 
     assert calculate_quality_stability_score(
         history,
@@ -56,7 +56,7 @@ def test_quality_stability_percentage():
         {"alert_count": 4},
     ]
 
-    expected_score = (0.75 + (2 / 3)) / 2
+    expected_score = (0.75 + (1 / 3)) / 2
 
     assert calculate_quality_stability_percentage(
         history,
@@ -79,13 +79,13 @@ def test_build_detail_returns_complete_result():
         4,
     )
 
-    expected_score = (0.75 + (2 / 3)) / 2
+    expected_score = (0.75 + (1 / 3)) / 2
 
     assert result["snapshot_count"] == 4
     assert result["lower_bound"] == 2
     assert result["upper_bound"] == 4
     assert result["quality_ratio"] == pytest.approx(0.75)
-    assert result["stability_ratio"] == pytest.approx(2 / 3)
+    assert result["stability_ratio"] == pytest.approx(1 / 3)
     assert result["quality_stability_score"] == pytest.approx(
         expected_score
     )
