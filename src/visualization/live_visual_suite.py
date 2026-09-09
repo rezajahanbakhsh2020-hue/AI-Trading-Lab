@@ -29,7 +29,9 @@ def _build_chart_snapshot(snapshot: Mapping[str, Any]) -> dict[str, Any]:
     }
 
 
-def _build_decision_snapshot(snapshot: Mapping[str, Any]) -> dict[str, Any]:
+def _build_decision_snapshot(
+    snapshot: Mapping[str, Any],
+) -> dict[str, Any]:
     """Build the snapshot format expected by the decision board."""
     result = dict(snapshot)
 
@@ -43,6 +45,17 @@ def _build_decision_snapshot(snapshot: Mapping[str, Any]) -> dict[str, Any]:
         result["tp3"] = result.get("take_profit_3")
 
     return result
+
+
+def _price(value: Any) -> str:
+    """Format a price consistently for the visual output."""
+    if value is None:
+        return "N/A"
+
+    try:
+        return f"{float(value):.2f}"
+    except (TypeError, ValueError):
+        return str(value)
 
 
 def build_live_visual_suite(
@@ -95,15 +108,28 @@ def build_live_visual_suite(
     for trace in decision_board.data:
         figure.add_trace(trace)
 
-    signal_label = snapshot.get(
+    signal = snapshot.get(
         "signal_label",
         "BUY" if int(snapshot.get("signal", 0)) == 1 else "NO TRADE",
     )
-    trend = snapshot.get("trend", "INSUFFICIENT DATA")
-    strategy = snapshot.get("strategy", "N/A")
-    market_state = snapshot.get("market_state", "UNKNOWN")
+
+    trend = snapshot.get(
+        "trend",
+        "INSUFFICIENT DATA",
+    )
+
+    strategy = snapshot.get(
+        "strategy",
+        "N/A",
+    )
+
+    market_state = snapshot.get(
+        "market_state",
+        "UNKNOWN",
+    )
 
     quote_stale = snapshot.get("quote_stale")
+
     quote_status = (
         "STALE"
         if quote_stale is True
@@ -112,23 +138,39 @@ def build_live_visual_suite(
         else "UNKNOWN"
     )
 
-    entry = snapshot.get("entry_price")
-    stop_loss = snapshot.get("stop_loss")
+    entry = _price(
+        snapshot.get("entry_price")
+    )
+
+    stop_loss = _price(
+        snapshot.get("stop_loss")
+    )
+
     tp1 = decision_snapshot.get("tp1")
     tp2 = decision_snapshot.get("tp2")
     tp3 = decision_snapshot.get("tp3")
 
+    tp1_display = _price(tp1)
+    tp2_display = _price(tp2)
+    tp3_display = _price(tp3)
+
+    if signal == "NO TRADE":
+        decision_status = "NO TRADE — WAIT"
+    else:
+        decision_status = "BUY — TRADE SETUP ACTIVE"
+
     summary = (
-        f"Signal: {signal_label} | "
+        f"Signal: {signal} | "
         f"Trend: {trend} | "
         f"Strategy: {strategy} | "
         f"Market: {market_state} | "
         f"Quote: {quote_status} | "
         f"Entry: {entry} | "
         f"SL: {stop_loss} | "
-        f"TP1: {tp1} | "
-        f"TP2: {tp2} | "
-        f"TP3: {tp3}"
+        f"TP1: {tp1_display} | "
+        f"TP2: {tp2_display} | "
+        f"TP3: {tp3_display} | "
+        f"Decision: {decision_status}"
     )
 
     figure.add_annotation(
@@ -142,10 +184,15 @@ def build_live_visual_suite(
     )
 
     figure.update_layout(
-        title="XAU/USD Complete Live Visual Suite",
+        title="AI-Trading-Lab — Live Visual Suite",
         template="plotly_white",
         height=850,
-        margin=dict(t=130, l=40, r=40, b=40),
+        margin=dict(
+            t=130,
+            l=40,
+            r=40,
+            b=40,
+        ),
     )
 
     return figure
@@ -155,7 +202,7 @@ def build_complete_live_visual_output(
     candles: pd.DataFrame,
     snapshot: Mapping[str, Any],
     output_path: str | Path = DEFAULT_OUTPUT_PATH,
-) -> Path:
+) -> str:
     """
     Build the complete live visual suite and persist it as HTML.
     """
@@ -166,7 +213,14 @@ def build_complete_live_visual_output(
     )
 
     path = Path(output_path)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    figure.write_html(str(path), include_plotlyjs=True)
+    path.parent.mkdir(
+        parents=True,
+        exist_ok=True,
+    )
 
-    return path
+    figure.write_html(
+        str(path),
+        include_plotlyjs=True,
+    )
+
+    return str(path)
