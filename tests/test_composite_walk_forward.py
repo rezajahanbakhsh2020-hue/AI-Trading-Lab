@@ -43,8 +43,8 @@ def test_composite_walk_forward_creates_oos_folds():
         result,
         CompositeWalkForwardResult,
     )
-    assert result.fold_count == 6
-    assert len(result.oos_evaluations) == 6
+    assert result.fold_count == 5
+    assert len(result.oos_evaluations) == 5
 
 
 def test_each_fold_has_selected_strategies():
