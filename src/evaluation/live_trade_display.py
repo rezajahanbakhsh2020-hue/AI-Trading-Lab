@@ -68,21 +68,15 @@ def build_live_trade_display(
     interval: str = DEFAULT_INTERVAL,
 ) -> dict[str, Any]:
     """
-    Build the final human-readable live trade levels.
+    Build final live trade levels from the existing production decision.
 
-    The function does not create a new trading signal. It consumes the
-    existing production decision and converts its risk/reward structure
-    into Entry, SL, TP1, TP2 and TP3 levels.
+    BUY:
+        Entry + SL + TP1 + TP2 + TP3 are returned.
 
-    For BUY decisions:
-        TP1 = entry + risk_distance * tp1_multiplier
-        TP2 = entry + risk_distance * tp2_multiplier
-        TP3 = entry + risk_distance * tp3_multiplier
+    NO TRADE:
+        All trade price levels are returned as None.
 
-    For NO TRADE:
-        entry, SL and all TP levels are None.
-
-    No SELL logic is invented here.
+    This layer does not create SELL logic.
     """
 
     if not isinstance(data, pd.DataFrame):
@@ -104,12 +98,8 @@ def build_live_trade_display(
         tp3_multiplier,
     )
 
-    if not (
-        tp1_multiplier < tp2_multiplier < tp3_multiplier
-    ):
-        raise ValueError(
-            "TP multipliers must satisfy TP1 < TP2 < TP3."
-        )
+    if not tp1_multiplier < tp2_multiplier < tp3_multiplier:
+        raise ValueError("TP multipliers must satisfy TP1 < TP2 < TP3.")
 
     decision = build_live_production_decision(
         data,
@@ -127,21 +117,30 @@ def build_live_trade_display(
 
     _validate_decision(decision)
 
-    entry_price = decision["entry_price"]
-    stop_loss = decision["stop_loss"]
+    is_buy = decision["decision"] == "BUY"
 
-    tp1 = None
-    tp2 = None
-    tp3 = None
-
-    if decision["decision"] == "BUY":
-        if entry_price is None or stop_loss is None:
+    if not is_buy:
+        entry_price = None
+        stop_loss = None
+        take_profit = None
+        tp1 = None
+        tp2 = None
+        tp3 = None
+        risk_distance = None
+        risk_reward_tp1 = None
+        risk_reward_tp2 = None
+        risk_reward_tp3 = None
+    else:
+        if (
+            decision["entry_price"] is None
+            or decision["stop_loss"] is None
+        ):
             raise ValueError(
                 "BUY decision must contain entry_price and stop_loss."
             )
 
-        entry_price = float(entry_price)
-        stop_loss = float(stop_loss)
+        entry_price = float(decision["entry_price"])
+        stop_loss = float(decision["stop_loss"])
 
         risk_distance = entry_price - stop_loss
 
@@ -158,6 +157,18 @@ def build_live_trade_display(
         )
         tp3 = entry_price + (
             risk_distance * tp3_multiplier
+        )
+
+        take_profit = float(decision["take_profit"])
+
+        risk_reward_tp1 = (
+            (tp1 - entry_price) / risk_distance
+        )
+        risk_reward_tp2 = (
+            (tp2 - entry_price) / risk_distance
+        )
+        risk_reward_tp3 = (
+            (tp3 - entry_price) / risk_distance
         )
 
     return {
@@ -177,36 +188,11 @@ def build_live_trade_display(
         "tp1": tp1,
         "tp2": tp2,
         "tp3": tp3,
-        "take_profit": decision["take_profit"],
-        "risk_distance": (
-            None
-            if entry_price is None or stop_loss is None
-            else float(entry_price) - float(stop_loss)
-        ),
-        "risk_reward_tp1": (
-            None
-            if tp1 is None
-            else (
-                (tp1 - float(entry_price))
-                / (float(entry_price) - float(stop_loss))
-            )
-        ),
-        "risk_reward_tp2": (
-            None
-            if tp2 is None
-            else (
-                (tp2 - float(entry_price))
-                / (float(entry_price) - float(stop_loss))
-            )
-        ),
-        "risk_reward_tp3": (
-            None
-            if tp3 is None
-            else (
-                (tp3 - float(entry_price))
-                / (float(entry_price) - float(stop_loss))
-            )
-        ),
+        "take_profit": take_profit,
+        "risk_distance": risk_distance,
+        "risk_reward_tp1": risk_reward_tp1,
+        "risk_reward_tp2": risk_reward_tp2,
+        "risk_reward_tp3": risk_reward_tp3,
         "stop_loss_pct": decision["stop_loss_pct"],
         "take_profit_pct": decision["take_profit_pct"],
         "tp1_multiplier": tp1_multiplier,
