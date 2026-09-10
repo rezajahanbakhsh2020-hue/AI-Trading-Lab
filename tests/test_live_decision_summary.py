@@ -2,120 +2,175 @@ from __future__ import annotations
 
 import pytest
 
-from src.visualization.live_decision_summary import (
-    build_live_decision_summary,
-    build_live_decision_summary_html,
+from src.evaluation.live_decision_summary import (
+    get_latest_live_decision_summary,
+    get_live_decision_counts,
+    summarize_live_decisions,
 )
 
 
-def _snapshot() -> dict:
+def _record(
+    timestamp: str,
+    signal_label: str,
+    trend: str,
+    strategy: str = "momentum",
+) -> dict:
     return {
-        "signal": "BUY",
-        "signal_label": "BUY",
-        "trend": "UP",
-        "strategy": "momentum",
+        "timestamp": timestamp,
+        "symbol": "XAUUSD",
+        "interval": "5m",
+        "signal": 1 if signal_label == "BUY" else 0,
+        "signal_label": signal_label,
+        "trend": trend,
+        "strategy": strategy,
+        "entry_price": 4429.802,
+        "stop_loss": 4385.50398,
+        "take_profit": 4518.39804,
+        "risk_reward_ratio": 2.0,
+        "stability_score": 0.65,
+        "market_state": "open",
+        "quote_age_seconds": 0,
         "quote_stale": False,
-        "entry_price": 3000.0,
-        "stop_loss": 2980.0,
-        "take_profit": 3040.0,
-        "tp2": 3060.0,
-        "tp3": 3080.0,
+        "candle_count": 201,
     }
 
 
-def test_build_live_decision_summary_creates_table():
-    figure = build_live_decision_summary(_snapshot())
+def test_summarize_live_decisions_counts_records():
+    history = [
+        _record("2026-09-10T05:45:00+00:00", "BUY", "UP"),
+        _record("2026-09-10T05:50:00+00:00", "NO TRADE", "FLAT"),
+        _record("2026-09-10T05:55:00+00:00", "BUY", "UP"),
+    ]
 
-    assert len(figure.data) == 1
-    assert figure.data[0].type == "table"
-    assert figure.layout.title.text == (
-        "AI-Trading-Lab — Live Decision Summary"
+    summary = summarize_live_decisions(history)
+
+    assert summary["record_count"] == 3
+
+
+def test_summarize_live_decisions_counts_signals():
+    history = [
+        _record("2026-09-10T05:45:00+00:00", "BUY", "UP"),
+        _record("2026-09-10T05:50:00+00:00", "NO TRADE", "FLAT"),
+        _record("2026-09-10T05:55:00+00:00", "BUY", "UP"),
+    ]
+
+    summary = summarize_live_decisions(history)
+
+    assert summary["signal_counts"] == {
+        "BUY": 2,
+        "NO TRADE": 1,
+    }
+
+
+def test_summarize_live_decisions_counts_trends():
+    history = [
+        _record("2026-09-10T05:45:00+00:00", "BUY", "UP"),
+        _record("2026-09-10T05:50:00+00:00", "NO TRADE", "FLAT"),
+        _record("2026-09-10T05:55:00+00:00", "BUY", "UP"),
+    ]
+
+    summary = summarize_live_decisions(history)
+
+    assert summary["trend_counts"] == {
+        "UP": 2,
+        "FLAT": 1,
+    }
+
+
+def test_summarize_live_decisions_counts_strategies():
+    history = [
+        _record("2026-09-10T05:45:00+00:00", "BUY", "UP", "momentum"),
+        _record(
+            "2026-09-10T05:50:00+00:00",
+            "NO TRADE",
+            "FLAT",
+            "mean_reversion",
+        ),
+        _record("2026-09-10T05:55:00+00:00", "BUY", "UP", "momentum"),
+    ]
+
+    summary = summarize_live_decisions(history)
+
+    assert summary["strategy_counts"] == {
+        "momentum": 2,
+        "mean_reversion": 1,
+    }
+
+
+def test_summarize_live_decisions_returns_latest_record():
+    history = [
+        _record("2026-09-10T05:45:00+00:00", "BUY", "UP"),
+        _record("2026-09-10T05:50:00+00:00", "NO TRADE", "FLAT"),
+    ]
+
+    summary = summarize_live_decisions(history)
+
+    assert summary["latest"]["timestamp"] == (
+        "2026-09-10T05:50:00+00:00"
     )
+    assert summary["latest"]["signal_label"] == "NO TRADE"
 
 
-def test_build_live_decision_summary_contains_decision_state():
-    figure = build_live_decision_summary(_snapshot())
+def test_summarize_live_decisions_empty_history():
+    summary = summarize_live_decisions([])
 
-    values = figure.data[0].cells.values[1]
-
-    assert "BUY" in values
-    assert "UP" in values
-    assert "momentum" in values
-    assert "FRESH" in values
-
-
-def test_build_live_decision_summary_contains_risk_levels():
-    figure = build_live_decision_summary(_snapshot())
-
-    values = figure.data[0].cells.values[1]
-
-    assert "3000.0000" in values
-    assert "2980.0000" in values
-    assert "3040.0000" in values
-    assert "3060.0000" in values
-    assert "3080.0000" in values
+    assert summary["record_count"] == 0
+    assert summary["signal_counts"] == {}
+    assert summary["trend_counts"] == {}
+    assert summary["strategy_counts"] == {}
+    assert summary["latest"] is None
 
 
-def test_build_live_decision_summary_uses_take_profit_as_tp1():
-    snapshot = _snapshot()
-    snapshot.pop("tp1", None)
-
-    figure = build_live_decision_summary(snapshot)
-
-    values = figure.data[0].cells.values[1]
-
-    assert "3040.0000" in values
-
-
-def test_build_live_decision_summary_keeps_missing_targets_as_na():
-    snapshot = _snapshot()
-    snapshot.pop("tp2")
-    snapshot.pop("tp3")
-
-    figure = build_live_decision_summary(snapshot)
-
-    values = figure.data[0].cells.values[1]
-
-    assert values[7] == "N/A"
-    assert values[8] == "N/A"
-
-
-def test_build_live_decision_summary_shows_stale_quote():
-    snapshot = _snapshot()
-    snapshot["quote_stale"] = True
-
-    figure = build_live_decision_summary(snapshot)
-
-    values = figure.data[0].cells.values[1]
-
-    assert "STALE" in values
-
-
-def test_build_live_decision_summary_handles_missing_values():
-    figure = build_live_decision_summary(
-        {
-            "signal": "NO TRADE",
-            "trend": "INSUFFICIENT DATA",
-        }
+def test_summarize_live_decisions_does_not_recalculate_values():
+    record = _record(
+        "2026-09-10T05:45:00+00:00",
+        "BUY",
+        "UP",
     )
+    record["entry_price"] = 9999.0
 
-    values = figure.data[0].cells.values[1]
+    summary = summarize_live_decisions([record])
 
-    assert "NO TRADE" in values
-    assert "INSUFFICIENT DATA" in values
-    assert values[2] == "N/A"
-    assert values[4] == "N/A"
-    assert values[5] == "N/A"
+    assert summary["latest"]["entry_price"] == 9999.0
 
 
-def test_build_live_decision_summary_rejects_invalid_snapshot():
+def test_summarize_live_decisions_rejects_invalid_input():
     with pytest.raises(TypeError):
-        build_live_decision_summary([])
+        summarize_live_decisions("invalid")
 
 
-def test_build_live_decision_summary_html_is_generated():
-    html = build_live_decision_summary_html(_snapshot())
+def test_summarize_live_decisions_rejects_invalid_record():
+    with pytest.raises(TypeError):
+        summarize_live_decisions([[]])
 
-    assert "plotly" in html.lower()
-    assert "AI-Trading-Lab" in html
-    assert "LIVE DECISION" in html
+
+def test_get_live_decision_counts_returns_signal_counts():
+    history = [
+        _record("2026-09-10T05:45:00+00:00", "BUY", "UP"),
+        _record("2026-09-10T05:50:00+00:00", "NO TRADE", "FLAT"),
+    ]
+
+    counts = get_live_decision_counts(history)
+
+    assert counts == {
+        "BUY": 1,
+        "NO TRADE": 1,
+    }
+
+
+def test_get_latest_live_decision_summary_returns_copy():
+    history = [
+        _record("2026-09-10T05:45:00+00:00", "BUY", "UP")
+    ]
+
+    latest = get_latest_live_decision_summary(history)
+
+    assert latest is not None
+
+    latest["signal_label"] = "CHANGED"
+
+    assert history[0]["signal_label"] == "BUY"
+
+
+def test_get_latest_live_decision_summary_empty_history():
+    assert get_latest_live_decision_summary([]) is None
