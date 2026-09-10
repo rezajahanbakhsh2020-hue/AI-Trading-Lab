@@ -4,13 +4,18 @@ import pandas as pd
 import streamlit as st
 
 from src.evaluation.live_runtime import build_live_runtime
-from src.visualization.live_trade_overlay import build_live_trade_overlay
+from src.evaluation.production_live_bridge import (
+    load_production_selection,
+)
+from src.visualization.live_trade_overlay import (
+    build_live_trade_overlay,
+)
+
 from app_live_trade_display import _build_chart
 
 
 DATA_PATH = "data/raw/xauusd_daily_2025.csv"
-STABLE_STRATEGY = "momentum"
-STABILITY_SCORE = 0.517268
+
 SYMBOL = "XAUUSD"
 INTERVAL = "1d"
 
@@ -25,6 +30,7 @@ def _load_runtime_data() -> pd.DataFrame:
         "low",
         "close",
     }
+
     missing = required.difference(data.columns)
 
     if missing:
@@ -47,7 +53,12 @@ def _load_runtime_data() -> pd.DataFrame:
             errors="coerce",
         )
 
-    for column in ("open", "high", "low", "close"):
+    for column in (
+        "open",
+        "high",
+        "low",
+        "close",
+    ):
         data[column] = pd.to_numeric(
             data[column],
             errors="coerce",
@@ -64,9 +75,46 @@ def _load_runtime_data() -> pd.DataFrame:
     )
 
     if data.empty:
-        raise ValueError("No valid market data available.")
+        raise ValueError(
+            "No valid market data available."
+        )
 
     return data.reset_index(drop=True)
+
+
+def _load_stable_selection() -> dict:
+    selection = load_production_selection()
+
+    stable_strategy = selection.get(
+        "stable_strategy"
+    )
+    stability_score = selection.get(
+        "stability_score"
+    )
+
+    if not stable_strategy:
+        raise ValueError(
+            "Production selection does not contain "
+            "a stable strategy."
+        )
+
+    if stability_score is None:
+        raise ValueError(
+            "Production selection does not contain "
+            "a stability score."
+        )
+
+    return {
+        "stable_strategy": str(
+            stable_strategy
+        ),
+        "stability_score": float(
+            stability_score
+        ),
+        "source_path": selection.get(
+            "source_path"
+        ),
+    }
 
 
 def main() -> None:
@@ -75,15 +123,22 @@ def main() -> None:
         layout="wide",
     )
 
-    st.title("AI-Trading-Lab — Live Runtime")
+    st.title(
+        "AI-Trading-Lab — Live Runtime"
+    )
 
     try:
         data = _load_runtime_data()
+        selection = _load_stable_selection()
 
         runtime = build_live_runtime(
             data,
-            stable_strategy=STABLE_STRATEGY,
-            stability_score=STABILITY_SCORE,
+            stable_strategy=selection[
+                "stable_strategy"
+            ],
+            stability_score=selection[
+                "stability_score"
+            ],
             symbol=SYMBOL,
             interval=INTERVAL,
         )
@@ -94,16 +149,24 @@ def main() -> None:
         )
 
     except Exception as exc:
-        st.error(f"Live runtime failed: {exc}")
+        st.error(
+            f"Live runtime failed: {exc}"
+        )
         st.stop()
 
     col1, col2, col3, col4 = st.columns(4)
 
     with col1:
-        st.metric("Decision", runtime.decision["decision"])
+        st.metric(
+            "Decision",
+            runtime.decision["decision"],
+        )
 
     with col2:
-        st.metric("Trend", runtime.decision["trend"])
+        st.metric(
+            "Trend",
+            runtime.decision["trend"],
+        )
 
     with col3:
         st.metric(
@@ -115,6 +178,19 @@ def main() -> None:
         st.metric(
             "Signal",
             runtime.decision["signal_label"],
+        )
+
+    st.caption(
+        f'Stable Strategy: '
+        f'{selection["stable_strategy"]} | '
+        f'Production Stability: '
+        f'{selection["stability_score"]:.3f}'
+    )
+
+    if selection.get("source_path"):
+        st.caption(
+            f'Production source: '
+            f'{selection["source_path"]}'
         )
 
     if overlay["decision"] == "BUY":
@@ -139,9 +215,11 @@ def main() -> None:
                     label,
                     f"{value:.2f}",
                 )
+
     else:
         st.info(
-            "NO TRADE — no entry, SL or TP levels are displayed."
+            "NO TRADE — no entry, SL or TP "
+            "levels are displayed."
         )
 
     figure = _build_chart(
