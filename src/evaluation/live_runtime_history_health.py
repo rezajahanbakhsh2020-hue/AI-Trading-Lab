@@ -5,9 +5,7 @@ from typing import Any
 
 import pandas as pd
 
-from src.evaluation.live_runtime_history import (
-    LiveRuntimeHistory,
-)
+from src.evaluation.live_runtime_history import LiveRuntimeHistory
 
 
 @dataclass(frozen=True)
@@ -29,13 +27,8 @@ class LiveRuntimeHistoryHealth:
 def build_live_runtime_history_health(
     history: LiveRuntimeHistory,
 ) -> LiveRuntimeHistoryHealth:
-    if not isinstance(
-        history,
-        LiveRuntimeHistory,
-    ):
-        raise TypeError(
-            "history must be a LiveRuntimeHistory."
-        )
+    if not isinstance(history, LiveRuntimeHistory):
+        raise TypeError("history must be a LiveRuntimeHistory.")
 
     count = history.count
 
@@ -58,9 +51,7 @@ def build_live_runtime_history_health(
     snapshots = history.snapshots
 
     ready_count = sum(
-        1
-        for snapshot in snapshots
-        if snapshot.controller_ready
+        1 for snapshot in snapshots if snapshot.controller_ready
     )
     blocked_count = count - ready_count
     ready_ratio = ready_count / count
@@ -71,9 +62,7 @@ def build_live_runtime_history_health(
     ]
 
     missing_timestamps = sum(
-        1
-        for timestamp in timestamps
-        if not timestamp
+        1 for timestamp in timestamps if not timestamp
     )
 
     parsed_timestamps = pd.to_datetime(
@@ -82,23 +71,26 @@ def build_live_runtime_history_health(
         utc=True,
     )
 
-    invalid_timestamp_count = int(
-        parsed_timestamps.isna().sum()
-    )
-
-    duplicate_timestamps = (
-        int(
-            parsed_timestamps.duplicated(
-                keep=False
-            ).sum()
+    invalid_timestamp_count = sum(
+        1
+        for timestamp, parsed in zip(
+            timestamps,
+            parsed_timestamps,
         )
-        if invalid_timestamp_count == 0
-        else 0
+        if timestamp and pd.isna(parsed)
     )
 
+    valid_timestamp_count = count - (
+        missing_timestamps + invalid_timestamp_count
+    )
+
+    duplicate_timestamps = 0
     out_of_order = False
 
-    if invalid_timestamp_count == 0:
+    if valid_timestamp_count == count:
+        duplicate_timestamps = int(
+            parsed_timestamps.duplicated(keep=False).sum()
+        )
         out_of_order = not parsed_timestamps.is_monotonic_increasing
 
     strategies = [
@@ -144,10 +136,7 @@ def build_live_runtime_history_health(
     if out_of_order:
         score -= 0.20
 
-    score = max(
-        0.0,
-        min(1.0, score),
-    )
+    score = max(0.0, min(1.0, score))
 
     healthy = (
         count > 0
@@ -168,8 +157,9 @@ def build_live_runtime_history_health(
         ready_ratio=ready_ratio,
         duplicate_timestamps=duplicate_timestamps,
         out_of_order=out_of_order,
-        missing_timestamps=missing_timestamps
-        + invalid_timestamp_count,
+        missing_timestamps=(
+            missing_timestamps + invalid_timestamp_count
+        ),
         strategy_changes=strategy_changes,
         score=score,
         issues=tuple(issues),
@@ -179,17 +169,13 @@ def build_live_runtime_history_health(
 def is_live_runtime_history_healthy(
     history: LiveRuntimeHistory,
 ) -> bool:
-    return build_live_runtime_history_health(
-        history
-    ).healthy
+    return build_live_runtime_history_health(history).healthy
 
 
 def live_runtime_history_health_message(
     history: LiveRuntimeHistory,
 ) -> str:
-    health = build_live_runtime_history_health(
-        history
-    )
+    health = build_live_runtime_history_health(history)
 
     if health.count == 0:
         return "LIVE RUNTIME HISTORY HEALTH: EMPTY"
@@ -206,9 +192,7 @@ def live_runtime_history_health_message(
 def live_runtime_history_health_dict(
     history: LiveRuntimeHistory,
 ) -> dict[str, Any]:
-    health = build_live_runtime_history_health(
-        history
-    )
+    health = build_live_runtime_history_health(history)
 
     return {
         "healthy": health.healthy,
@@ -217,16 +201,10 @@ def live_runtime_history_health_dict(
         "ready_count": health.ready_count,
         "blocked_count": health.blocked_count,
         "ready_ratio": health.ready_ratio,
-        "duplicate_timestamps": (
-            health.duplicate_timestamps
-        ),
+        "duplicate_timestamps": health.duplicate_timestamps,
         "out_of_order": health.out_of_order,
-        "missing_timestamps": (
-            health.missing_timestamps
-        ),
-        "strategy_changes": (
-            health.strategy_changes
-        ),
+        "missing_timestamps": health.missing_timestamps,
+        "strategy_changes": health.strategy_changes,
         "score": health.score,
         "issues": health.issues,
     }
