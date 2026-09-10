@@ -3,28 +3,30 @@ from __future__ import annotations
 import pandas as pd
 import streamlit as st
 
+from app_live import (
+    DEFAULT_INTERVAL,
+    DEFAULT_LIMIT,
+    fetch_xauusd_ohlc,
+    fetch_xauusd_quote,
+)
 from src.evaluation.live_runtime import build_live_runtime
-from src.evaluation.production_live_bridge import (
-    load_production_selection,
-)
-from src.visualization.live_trade_overlay import (
-    build_live_trade_overlay,
-)
-
+from src.evaluation.production_live_bridge import load_production_selection
+from src.visualization.live_trade_overlay import build_live_trade_overlay
 from app_live_trade_display import _build_chart
 
-
-DATA_PATH = "data/raw/xauusd_daily_2025.csv"
-
 SYMBOL = "XAUUSD"
-INTERVAL = "1d"
+INTERVAL = DEFAULT_INTERVAL
+LIMIT = DEFAULT_LIMIT
 
 
 def _load_runtime_data() -> pd.DataFrame:
-    data = pd.read_csv(DATA_PATH)
+    data = fetch_xauusd_ohlc(
+        interval=INTERVAL,
+        limit=LIMIT,
+    )
 
     required = {
-        "timestamp",
+        "openTime",
         "open",
         "high",
         "low",
@@ -32,33 +34,21 @@ def _load_runtime_data() -> pd.DataFrame:
     }
 
     missing = required.difference(data.columns)
-
     if missing:
         raise ValueError(
-            "Missing required columns: "
+            "Missing required live columns: "
             + ", ".join(sorted(missing))
         )
 
     data = data.copy()
 
-    if pd.api.types.is_numeric_dtype(data["timestamp"]):
-        data["timestamp"] = pd.to_datetime(
-            data["timestamp"],
-            unit="s",
-            errors="coerce",
-        )
-    else:
-        data["timestamp"] = pd.to_datetime(
-            data["timestamp"],
-            errors="coerce",
-        )
+    data["timestamp"] = pd.to_datetime(
+        data["openTime"],
+        utc=True,
+        errors="coerce",
+    )
 
-    for column in (
-        "open",
-        "high",
-        "low",
-        "close",
-    ):
+    for column in ("open", "high", "low", "close"):
         data[column] = pd.to_numeric(
             data[column],
             errors="coerce",
@@ -75,9 +65,7 @@ def _load_runtime_data() -> pd.DataFrame:
     )
 
     if data.empty:
-        raise ValueError(
-            "No valid market data available."
-        )
+        raise ValueError("No valid live market data available.")
 
     return data.reset_index(drop=True)
 
@@ -85,35 +73,23 @@ def _load_runtime_data() -> pd.DataFrame:
 def _load_stable_selection() -> dict:
     selection = load_production_selection()
 
-    stable_strategy = selection.get(
-        "stable_strategy"
-    )
-    stability_score = selection.get(
-        "stability_score"
-    )
+    stable_strategy = selection.get("stable_strategy")
+    stability_score = selection.get("stability_score")
 
     if not stable_strategy:
         raise ValueError(
-            "Production selection does not contain "
-            "a stable strategy."
+            "Production selection does not contain a stable strategy."
         )
 
     if stability_score is None:
         raise ValueError(
-            "Production selection does not contain "
-            "a stability score."
+            "Production selection does not contain a stability score."
         )
 
     return {
-        "stable_strategy": str(
-            stable_strategy
-        ),
-        "stability_score": float(
-            stability_score
-        ),
-        "source_path": selection.get(
-            "source_path"
-        ),
+        "stable_strategy": str(stable_strategy),
+        "stability_score": float(stability_score),
+        "source_path": selection.get("source_path"),
     }
 
 
@@ -123,22 +99,17 @@ def main() -> None:
         layout="wide",
     )
 
-    st.title(
-        "AI-Trading-Lab — Live Runtime"
-    )
+    st.title("AI-Trading-Lab — Live Runtime")
 
     try:
         data = _load_runtime_data()
         selection = _load_stable_selection()
+        quote = fetch_xauusd_quote()
 
         runtime = build_live_runtime(
             data,
-            stable_strategy=selection[
-                "stable_strategy"
-            ],
-            stability_score=selection[
-                "stability_score"
-            ],
+            stable_strategy=selection["stable_strategy"],
+            stability_score=selection["stability_score"],
             symbol=SYMBOL,
             interval=INTERVAL,
         )
@@ -149,9 +120,7 @@ def main() -> None:
         )
 
     except Exception as exc:
-        st.error(
-            f"Live runtime failed: {exc}"
-        )
+        st.error(f"Live runtime failed: {exc}")
         st.stop()
 
     col1, col2, col3, col4 = st.columns(4)
@@ -180,17 +149,24 @@ def main() -> None:
             runtime.decision["signal_label"],
         )
 
-    st.caption(
-        f'Stable Strategy: '
-        f'{selection["stable_strategy"]} | '
-        f'Production Stability: '
-        f'{selection["stability_score"]:.3f}'
-    )
+    strategy_col, price_col, market_col = st.columns(3)
 
-    if selection.get("source_path"):
-        st.caption(
-            f'Production source: '
-            f'{selection["source_path"]}'
+    with strategy_col:
+        st.metric(
+            "Stable Strategy",
+            selection["stable_strategy"],
+        )
+
+    with price_col:
+        st.metric(
+            "Live Mid",
+            f'{quote["mid"]:.3f}',
+        )
+
+    with market_col:
+        st.metric(
+            "Market",
+            str(quote.get("marketState", "unknown")),
         )
 
     if overlay["decision"] == "BUY":
@@ -215,11 +191,9 @@ def main() -> None:
                     label,
                     f"{value:.2f}",
                 )
-
     else:
         st.info(
-            "NO TRADE — no entry, SL or TP "
-            "levels are displayed."
+            "NO TRADE — no entry, SL or TP levels are displayed."
         )
 
     figure = _build_chart(
@@ -232,11 +206,15 @@ def main() -> None:
         use_container_width=True,
     )
 
+    source_path = selection.get("source_path") or "unknown"
+
     st.caption(
         f'Strategy: {overlay["stable_strategy"]} | '
         f'Symbol: {overlay["symbol"]} | '
         f'Interval: {overlay["interval"]} | '
-        f'Timestamp: {overlay["timestamp"]}'
+        f'Candles: {len(data)} | '
+        f'Quote stale: {quote.get("stale")} | '
+        f'Production source: {source_path}'
     )
 
 
