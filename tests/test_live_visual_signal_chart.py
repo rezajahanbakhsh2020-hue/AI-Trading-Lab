@@ -106,8 +106,9 @@ def test_build_live_visual_signal_chart_omits_missing_targets():
     assert 3080.0 not in y_values
 
 
-def test_build_live_visual_signal_chart_skips_invalid_candles():
-    candles = _candles() + [
+def test_build_live_visual_signal_chart_rejects_invalid_candle_values():
+    candles = _candles()
+    candles.append(
         {
             "timestamp": 1735690200,
             "open": None,
@@ -115,15 +116,13 @@ def test_build_live_visual_signal_chart_skips_invalid_candles():
             "low": 3000.0,
             "close": 3015.0,
         }
-    ]
-
-    figure = build_live_visual_signal_chart(
-        candles,
-        _snapshot(),
     )
 
-    assert len(figure.data) == 1
-    assert len(figure.data[0].x) == 2
+    with pytest.raises(TypeError):
+        build_live_visual_signal_chart(
+            candles,
+            _snapshot(),
+        )
 
 
 def test_build_live_visual_signal_chart_accepts_open_time():
