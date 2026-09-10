@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -170,7 +170,10 @@ def load_live_runtime_history(
             f"runtime history not found: {input_path}"
         )
 
-    dataframe = pd.read_csv(input_path)
+    try:
+        dataframe = pd.read_csv(input_path)
+    except pd.errors.EmptyDataError:
+        return create_live_runtime_history()
 
     if dataframe.empty:
         return create_live_runtime_history()
