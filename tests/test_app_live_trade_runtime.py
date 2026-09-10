@@ -3,96 +3,121 @@ from __future__ import annotations
 import pandas as pd
 import pytest
 
-import app_live_trade_runtime as module
+import app_live_trade_runtime
 
 
-def test_load_stable_selection_uses_production_result(
-    monkeypatch,
-):
+def _sample_live_data() -> pd.DataFrame:
+    return pd.DataFrame(
+        {
+            "openTime": pd.to_datetime(
+                [
+                    "2026-09-10 10:00:00+00:00",
+                    "2026-09-10 10:05:00+00:00",
+                    "2026-09-10 10:10:00+00:00",
+                ]
+            ),
+            "open": [4400.0, 4401.0, 4402.0],
+            "high": [4402.0, 4403.0, 4404.0],
+            "low": [4399.0, 4400.0, 4401.0],
+            "close": [4401.0, 4402.0, 4403.0],
+        }
+    )
+
+
+def test_load_runtime_data_uses_live_biquote(monkeypatch):
+    expected = _sample_live_data()
+
+    calls = {}
+
+    def fake_fetch_xauusd_ohlc(interval, limit):
+        calls["interval"] = interval
+        calls["limit"] = limit
+        return expected.copy()
+
     monkeypatch.setattr(
-        module,
+        app_live_trade_runtime,
+        "fetch_xauusd_ohlc",
+        fake_fetch_xauusd_ohlc,
+    )
+
+    result = app_live_trade_runtime._load_runtime_data()
+
+    assert calls["interval"] == app_live_trade_runtime.INTERVAL
+    assert calls["limit"] == app_live_trade_runtime.LIMIT
+    assert len(result) == 3
+    assert "timestamp" in result.columns
+    assert result["close"].tolist() == [4401.0, 4402.0, 4403.0]
+
+
+def test_load_runtime_data_rejects_missing_live_columns(monkeypatch):
+    invalid = pd.DataFrame(
+        {
+            "openTime": pd.to_datetime(
+                ["2026-09-10 10:00:00+00:00"]
+            ),
+            "open": [4400.0],
+            "high": [4402.0],
+            "low": [4399.0],
+        }
+    )
+
+    monkeypatch.setattr(
+        app_live_trade_runtime,
+        "fetch_xauusd_ohlc",
+        lambda interval, limit: invalid,
+    )
+
+    with pytest.raises(ValueError, match="Missing required live columns"):
+        app_live_trade_runtime._load_runtime_data()
+
+
+def test_load_stable_selection(monkeypatch):
+    monkeypatch.setattr(
+        app_live_trade_runtime,
         "load_production_selection",
         lambda: {
             "stable_strategy": "momentum",
             "stability_score": 0.517268,
-            "source_path": (
-                "results/production/latest.json"
-            ),
+            "source_path": "results/production/latest.json",
         },
     )
 
-    selection = module._load_stable_selection()
+    result = app_live_trade_runtime._load_stable_selection()
 
-    assert selection["stable_strategy"] == "momentum"
-    assert selection["stability_score"] == pytest.approx(
-        0.517268
-    )
-    assert (
-        selection["source_path"]
-        == "results/production/latest.json"
-    )
+    assert result["stable_strategy"] == "momentum"
+    assert result["stability_score"] == pytest.approx(0.517268)
+    assert result["source_path"] == "results/production/latest.json"
 
 
-def test_load_stable_selection_rejects_missing_strategy(
-    monkeypatch,
-):
+def test_load_stable_selection_rejects_missing_strategy(monkeypatch):
     monkeypatch.setattr(
-        module,
+        app_live_trade_runtime,
         "load_production_selection",
         lambda: {
-            "stable_strategy": None,
-            "stability_score": 0.5,
+            "stability_score": 0.517268,
+            "source_path": "results/production/latest.json",
         },
     )
 
-    with pytest.raises(ValueError):
-        module._load_stable_selection()
+    with pytest.raises(
+        ValueError,
+        match="stable strategy",
+    ):
+        app_live_trade_runtime._load_stable_selection()
 
 
-def test_load_stable_selection_rejects_missing_score(
-    monkeypatch,
-):
+def test_load_stable_selection_rejects_missing_score(monkeypatch):
     monkeypatch.setattr(
-        module,
+        app_live_trade_runtime,
         "load_production_selection",
         lambda: {
             "stable_strategy": "momentum",
-            "stability_score": None,
+            "source_path": "results/production/latest.json",
         },
     )
 
-    with pytest.raises(ValueError):
-        module._load_stable_selection()
-
-
-def test_load_runtime_data():
-    data = pd.DataFrame(
-        {
-            "timestamp": [
-                1735689600,
-                1735776000,
-            ],
-            "open": [2625.1, 2623.66],
-            "high": [2626.0, 2660.38],
-            "low": [2621.48, 2622.45],
-            "close": [2623.56, 2658.30],
-        }
-    )
-
-    original_read_csv = module.pd.read_csv
-
-    module.pd.read_csv = lambda _: data
-
-    try:
-        result = module._load_runtime_data()
-    finally:
-        module.pd.read_csv = original_read_csv
-
-    assert len(result) == 2
-    assert pd.api.types.is_datetime64_any_dtype(
-        result["timestamp"]
-    )
-    assert list(result["close"]) == [
-        2623.56,
-        2658.30,
-    ]
+    with pytest.raises(
+        ValueError,
+        match="stability score",
+    ):
+        app_live_trade_runtime._load_stable_selection()
