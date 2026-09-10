@@ -174,4 +174,3 @@ def test_build_live_decision_handoff_rejects_missing_pipeline_fields():
                 "evaluation": {},
             }
         )
-```0
