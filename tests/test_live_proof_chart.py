@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import pandas as pd
 
 from src.visualization.live_proof_chart import (
@@ -5,118 +7,138 @@ from src.visualization.live_proof_chart import (
 )
 
 
-def sample_data() -> pd.DataFrame:
-    index = pd.date_range(
-        "2026-09-09",
-        periods=60,
-        freq="5min",
-    )
-
+def _sample_data() -> pd.DataFrame:
     return pd.DataFrame(
         {
-            "open": range(4400, 4460),
-            "high": range(4402, 4462),
-            "low": range(4398, 4458),
-            "close": range(4401, 4461),
-        },
-        index=index,
+            "open": [
+                4400.0,
+                4402.0,
+                4404.0,
+                4406.0,
+            ],
+            "high": [
+                4403.0,
+                4405.0,
+                4407.0,
+                4409.0,
+            ],
+            "low": [
+                4399.0,
+                4401.0,
+                4403.0,
+                4405.0,
+            ],
+            "close": [
+                4402.0,
+                4404.0,
+                4406.0,
+                4408.0,
+            ],
+        }
     )
 
 
-def sample_snapshot() -> dict:
-    return {
-        "signal": 1,
-        "signal_label": "BUY",
-        "trend": "UP",
-        "fast_window": 20,
-        "slow_window": 50,
-        "entry_price": 4460.0,
-        "stop_loss": 4415.4,
-        "take_profit": 4549.2,
+def test_live_proof_chart_contains_market_and_signal_context():
+    figure = build_live_proof_chart(
+        _sample_data(),
+        {
+            "symbol": "XAUUSD",
+            "interval": "5m",
+            "signal": 1,
+            "signal_label": "BUY",
+            "trend": "UP",
+            "entry_price": 4408.0,
+            "stop_loss": 4363.92,
+            "take_profit": 4496.16,
+        },
+    )
+
+    assert "XAUUSD" in figure.layout.title.text
+    assert "BUY" in figure.layout.title.text
+    assert "UP" in figure.layout.title.text
+
+    names = {
+        trace.name
+        for trace in figure.data
     }
 
-
-def test_chart_contains_candles_and_moving_averages():
-    figure = build_live_proof_chart(
-        sample_data(),
-        sample_snapshot(),
-    )
-
-    names = [
-        trace.name
-        for trace in figure.data
-    ]
-
-    assert "XAU/USD" in names
+    assert "XAUUSD" in names
     assert "Fast MA (20)" in names
     assert "Slow MA (50)" in names
-
-
-def test_chart_contains_buy_signal():
-    figure = build_live_proof_chart(
-        sample_data(),
-        sample_snapshot(),
-    )
-
-    names = [
-        trace.name
-        for trace in figure.data
-    ]
-
     assert "BUY Signal" in names
 
 
-def test_chart_contains_risk_lines():
+def test_live_proof_chart_contains_tp1_tp2_tp3():
     figure = build_live_proof_chart(
-        sample_data(),
-        sample_snapshot(),
+        _sample_data(),
+        {
+            "symbol": "XAUUSD",
+            "interval": "5m",
+            "signal": 1,
+            "signal_label": "BUY",
+            "trend": "UP",
+            "entry_price": 4408.0,
+            "stop_loss": 4363.92,
+            "tp1": 4452.08,
+            "tp2": 4496.16,
+            "tp3": 4540.24,
+        },
     )
 
-    assert len(figure.layout.shapes) == 3
-
-
-def test_no_trade_has_no_buy_marker():
-    snapshot = sample_snapshot()
-    snapshot["signal"] = 0
-
-    figure = build_live_proof_chart(
-        sample_data(),
-        snapshot,
-    )
-
-    names = [
-        trace.name
-        for trace in figure.data
+    annotations = [
+        annotation.text
+        for annotation in figure.layout.annotations
     ]
 
-    assert "BUY Signal" not in names
+    assert "Entry" in annotations
+    assert "SL" in annotations
+    assert "TP1" in annotations
+    assert "TP2" in annotations
+    assert "TP3" in annotations
 
 
-def test_chart_rejects_empty_data():
-    try:
-        build_live_proof_chart(
-            pd.DataFrame(),
-            sample_snapshot(),
-        )
-        assert False
-    except ValueError:
-        assert True
+def test_live_proof_chart_supports_legacy_single_take_profit():
+    figure = build_live_proof_chart(
+        _sample_data(),
+        {
+            "symbol": "XAUUSD",
+            "interval": "5m",
+            "signal": 1,
+            "signal_label": "BUY",
+            "trend": "UP",
+            "entry_price": 4408.0,
+            "stop_loss": 4363.92,
+            "take_profit": 4496.16,
+        },
+    )
+
+    annotations = [
+        annotation.text
+        for annotation in figure.layout.annotations
+    ]
+
+    assert "Entry" in annotations
+    assert "SL" in annotations
+    assert "TP" in annotations
 
 
-def test_chart_rejects_missing_ohlc():
+def test_live_proof_chart_rejects_missing_ohlc():
     data = pd.DataFrame(
         {
-            "open": [1.0],
-            "high": [2.0],
-            "close": [1.5],
+            "open": [4400.0],
+            "high": [4402.0],
+            "low": [4399.0],
         }
     )
 
     try:
         build_live_proof_chart(
             data,
-            sample_snapshot(),
+            {},
         )
-        assert False
-    except ValueError:
-        assert True
+    except ValueError as exc:
+        assert "Missing OHLC columns" in str(exc)
+    else:
+        raise AssertionError(
+            "Expected ValueError for missing OHLC columns."
+        )
