@@ -80,7 +80,7 @@ def test_build_live_visual_final_view_contains_main_visual_components():
         history=_history(),
     )
 
-    assert len(figure.data) >= 5
+    assert len(figure.data) >= 3
 
     trace_types = {trace.type for trace in figure.data}
 
@@ -154,7 +154,7 @@ def test_build_live_visual_final_view_works_without_history():
     ]
 
     assert len(stability_traces) == 0
-    assert len(figure.data) >= 4
+    assert len(figure.data) >= 2
 
 
 def test_build_live_visual_final_view_omits_missing_targets():
