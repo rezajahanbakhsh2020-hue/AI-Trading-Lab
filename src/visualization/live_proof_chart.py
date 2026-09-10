@@ -10,7 +10,7 @@ def build_live_proof_chart(
     data: pd.DataFrame,
     snapshot: dict[str, Any],
 ) -> go.Figure:
-    """Build a complete visual live-proof chart."""
+    """Build a human-readable visual live-proof chart."""
 
     if not isinstance(data, pd.DataFrame):
         raise ValueError("data must be a pandas DataFrame.")
@@ -19,6 +19,7 @@ def build_live_proof_chart(
         raise ValueError("data must not be empty.")
 
     required = {"open", "high", "low", "close"}
+
     missing = required.difference(data.columns)
 
     if missing:
@@ -35,13 +36,14 @@ def build_live_proof_chart(
             high=data["high"],
             low=data["low"],
             close=data["close"],
-            name="XAU/USD",
+            name="XAUUSD",
         )
     )
 
     fast_window = int(
         snapshot.get("fast_window", 20)
     )
+
     slow_window = int(
         snapshot.get("slow_window", 50)
     )
@@ -99,6 +101,22 @@ def build_live_proof_chart(
             annotation_text="TP",
         )
 
+    tp_levels = (
+        ("TP1", snapshot.get("tp1")),
+        ("TP2", snapshot.get("tp2")),
+        ("TP3", snapshot.get("tp3")),
+    )
+
+    for label, level in tp_levels:
+        if level is None:
+            continue
+
+        figure.add_hline(
+            y=float(level),
+            line_dash="dash",
+            annotation_text=label,
+        )
+
     signal = snapshot.get("signal")
 
     if signal == 1 and entry is not None:
@@ -112,8 +130,30 @@ def build_live_proof_chart(
             )
         )
 
+    symbol = str(
+        snapshot.get("symbol", "XAUUSD")
+    ).upper()
+
+    interval = str(
+        snapshot.get("interval", "")
+    )
+
+    signal_label = snapshot.get(
+        "signal_label",
+        "NO TRADE",
+    )
+
+    trend = snapshot.get(
+        "trend",
+        "UNKNOWN",
+    )
+
     figure.update_layout(
-        title="XAU/USD Live Proof — Signal & Trend",
+        title=(
+            f"{symbol} Live Proof — "
+            f"{signal_label} | Trend: {trend}"
+            + (f" | {interval}" if interval else "")
+        ),
         xaxis_title="Time",
         yaxis_title="Price",
         height=650,
