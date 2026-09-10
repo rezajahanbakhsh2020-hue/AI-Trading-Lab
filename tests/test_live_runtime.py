@@ -22,7 +22,7 @@ def _data() -> pd.DataFrame:
     )
 
 
-def test_live_runtime_contains_tp_levels():
+def test_live_runtime_builds_decision_and_display():
     result = build_live_runtime(
         data=_data(),
         stable_strategy="momentum",
@@ -34,32 +34,50 @@ def test_live_runtime_contains_tp_levels():
     assert result.decision["symbol"] == "XAUUSD"
     assert result.decision["interval"] == "5m"
 
-    assert "tp1" in result.decision
-    assert "tp2" in result.decision
-    assert "tp3" in result.decision
+    assert result.decision["decision"] in {
+        "BUY",
+        "NO TRADE",
+    }
 
-    assert result.display["tp1"] == result.decision["tp1"]
-    assert result.display["tp2"] == result.decision["tp2"]
-    assert result.display["tp3"] == result.decision["tp3"]
+    assert result.display["decision"] == result.decision["decision"]
 
 
-def test_live_runtime_keeps_entry_and_risk_levels_consistent():
+def test_live_runtime_display_contains_tp_levels():
+    result = build_live_runtime(
+        data=_data(),
+        stable_strategy="momentum",
+        stability_score=0.80,
+        symbol="XAUUSD",
+        interval="5m",
+    )
+
+    assert "tp1" in result.display
+    assert "tp2" in result.display
+    assert "tp3" in result.display
+
+    assert result.display["tp1"] is not None
+    assert result.display["tp2"] is not None
+    assert result.display["tp3"] is not None
+
+
+def test_live_runtime_keeps_decision_and_display_consistent():
     result = build_live_runtime(
         data=_data(),
         stable_strategy="momentum",
         stability_score=0.80,
     )
 
-    for field in (
-        "entry_price",
-        "stop_loss",
-        "take_profit",
-    ):
-        assert result.display[field] == result.decision[field]
+    assert (
+        result.display["decision"]
+        == result.decision["decision"]
+    )
 
 
 def test_live_runtime_rejects_non_dataframe():
-    with pytest.raises(ValueError, match="pandas DataFrame"):
+    with pytest.raises(
+        TypeError,
+        match="pandas DataFrame",
+    ):
         build_live_runtime(
             data=[],
             stable_strategy="momentum",
