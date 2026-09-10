@@ -15,7 +15,6 @@ def make_data(size: int = 180) -> pd.DataFrame:
         + np.sin(np.arange(size) / 5.0),
         name="close",
     )
-
     return pd.DataFrame(
         {
             "timestamp": pd.date_range(
@@ -38,7 +37,6 @@ def test_composite_walk_forward_creates_oos_folds():
         test_size=20,
         top_n=2,
     )
-
     assert isinstance(
         result,
         CompositeWalkForwardResult,
@@ -70,8 +68,11 @@ def test_test_window_is_after_training_window():
 
     for fold in result.folds:
         assert fold.train_start < fold.train_end
-        assert fold.train_end == fold.test_start
+        assert fold.train_end < fold.test_start
         assert fold.test_start < fold.test_end
+
+        gap = fold.test_start - fold.train_end
+        assert gap == pd.Timedelta(days=1)
 
 
 def test_walk_forward_returns_are_finite():
