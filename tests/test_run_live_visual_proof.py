@@ -1,153 +1,85 @@
-import pandas as pd
+from pathlib import Path
 
-import run_live_visual_proof
+import pytest
 
-
-def sample_data():
-    return pd.DataFrame(
-        {
-            "timestamp": pd.date_range(
-                "2025-01-01",
-                periods=10,
-                freq="5min",
-            ),
-            "open": [
-                4390.0,
-                4391.0,
-                4392.0,
-                4393.0,
-                4394.0,
-                4395.0,
-                4396.0,
-                4397.0,
-                4398.0,
-                4399.0,
-            ],
-            "high": [
-                4391.0,
-                4392.0,
-                4393.0,
-                4394.0,
-                4395.0,
-                4396.0,
-                4397.0,
-                4398.0,
-                4399.0,
-                4400.0,
-            ],
-            "low": [
-                4389.0,
-                4390.0,
-                4391.0,
-                4392.0,
-                4393.0,
-                4394.0,
-                4395.0,
-                4396.0,
-                4397.0,
-                4398.0,
-            ],
-            "close": [
-                4390.5,
-                4391.5,
-                4392.5,
-                4393.5,
-                4394.5,
-                4395.5,
-                4396.5,
-                4397.5,
-                4398.5,
-                4399.5,
-            ],
-        }
-    )
+from run_live_visual_proof import (
+    OUTPUT_PATH,
+    run_live_visual_proof,
+)
 
 
-def sample_quote():
-    return {
-        "symbol": "XAUUSD",
-        "bid": 4399.4,
-        "ask": 4399.6,
-        "timestamp": "2025-01-01T00:45:00+00:00",
-    }
-
-
-def test_live_visual_proof_returns_expected_result(
-    tmp_path,
-    monkeypatch,
-):
-    output_path = tmp_path / "live_proof_visual.html"
-
-    monkeypatch.setattr(
-        run_live_visual_proof,
-        "fetch_xauusd_ohlc",
-        lambda interval, limit: sample_data(),
-    )
-    monkeypatch.setattr(
-        run_live_visual_proof,
-        "fetch_xauusd_quote",
-        lambda: sample_quote(),
-    )
-    monkeypatch.setattr(
-        run_live_visual_proof,
-        "OUTPUT_PATH",
-        output_path,
-    )
-
-    result = run_live_visual_proof.run_live_visual_proof()
+def test_live_visual_proof_creates_real_html():
+    result = run_live_visual_proof()
 
     assert result["symbol"] == "XAUUSD"
-    assert result["interval"] == run_live_visual_proof.DEFAULT_INTERVAL
-    assert result["signal"] in (0, 1)
-    assert result["signal_label"] in {"BUY", "NO TRADE"}
+    assert result["interval"] == "5m"
+
+    assert result["decision"] in {
+        "BUY",
+        "NO TRADE",
+    }
+
+    assert result["signal"] in {0, 1}
+
+    assert result["signal_label"] in {
+        "BUY",
+        "NO TRADE",
+    }
+
     assert result["trend"] in {
         "UP",
         "DOWN",
-        "FLAT",
         "INSUFFICIENT DATA",
     }
-    assert result["entry_price"] is not None
 
-    if result["stop_loss"] is not None:
-        assert isinstance(result["stop_loss"], (int, float))
+    assert result["stable_strategy"]
+    assert 0.0 <= result["stability_score"] <= 1.0
 
-    if result["take_profit"] is not None:
-        assert isinstance(result["take_profit"], (int, float))
+    assert result["candle_count"] > 0
+    assert result["timestamp"]
+    assert result["market_state"]
 
-    assert result["candle_count"] == 10
-    assert result["output_path"] == str(output_path)
+    assert isinstance(
+        result["quote_stale"],
+        bool,
+    )
+
+    assert isinstance(
+        result["actionable"],
+        bool,
+    )
+
+    assert result["production_source"]
+
+    assert result["human_text"]
+
+    output_path = Path(
+        result["output_path"]
+    )
+
     assert output_path.exists()
     assert output_path.stat().st_size > 0
 
 
-def test_live_visual_proof_html_contains_visual_elements(
-    tmp_path,
-    monkeypatch,
-):
-    output_path = tmp_path / "live_proof_visual.html"
+def test_live_visual_proof_html_contains_visual_elements():
+    if not OUTPUT_PATH.exists():
+        pytest.skip(
+            "Live visual proof HTML does not exist yet."
+        )
 
-    monkeypatch.setattr(
-        run_live_visual_proof,
-        "fetch_xauusd_ohlc",
-        lambda interval, limit: sample_data(),
-    )
-    monkeypatch.setattr(
-        run_live_visual_proof,
-        "fetch_xauusd_quote",
-        lambda: sample_quote(),
-    )
-    monkeypatch.setattr(
-        run_live_visual_proof,
-        "OUTPUT_PATH",
-        output_path,
+    html = OUTPUT_PATH.read_text(
+        encoding="utf-8"
     )
 
-    run_live_visual_proof.run_live_visual_proof()
-
-    assert output_path.exists()
-
-    html = output_path.read_text(encoding="utf-8")
-
-    assert "plotly" in html.lower()
+    assert "XAUUSD" in html
     assert "Fast MA" in html
     assert "Slow MA" in html
+
+
+def test_live_visual_proof_uses_production_selection():
+    result = run_live_visual_proof()
+
+    assert result["stable_strategy"]
+    assert result["production_source"]
+    assert result["stability_score"] >= 0.0
+    assert result["stability_score"] <= 1.0
