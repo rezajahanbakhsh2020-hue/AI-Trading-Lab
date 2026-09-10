@@ -29,7 +29,8 @@ def build_live_visual_signal_chart(
     """
     Build a live price chart with the current signal, trend, and risk levels.
 
-    Only values explicitly available in the inputs are displayed.
+    Every supplied candle must contain valid OHLC data.
+    Only risk levels explicitly available in the snapshot are displayed.
     """
     if not isinstance(candles, Sequence) or isinstance(candles, (str, bytes)):
         raise TypeError("candles must be a sequence")
@@ -37,7 +38,17 @@ def build_live_visual_signal_chart(
     if not isinstance(snapshot, Mapping):
         raise TypeError("snapshot must be a mapping")
 
-    rows: list[tuple[Any, float, float, float, float, float | None, float | None]] = []
+    rows: list[
+        tuple[
+            Any,
+            float,
+            float,
+            float,
+            float,
+            float | None,
+            float | None,
+        ]
+    ] = []
 
     for candle in candles:
         if not isinstance(candle, Mapping):
@@ -56,7 +67,9 @@ def build_live_visual_signal_chart(
             or low_price is None
             or close_price is None
         ):
-            continue
+            raise TypeError(
+                "each candle must contain valid timestamp and OHLC values"
+            )
 
         fast_ma = _number(candle.get("fast_ma"))
         slow_ma = _number(candle.get("slow_ma"))
@@ -110,9 +123,15 @@ def build_live_visual_signal_chart(
             )
 
     levels = [
-        ("Entry", _number(snapshot.get("entry_price", snapshot.get("entry")))),
+        (
+            "Entry",
+            _number(snapshot.get("entry_price", snapshot.get("entry"))),
+        ),
         ("Stop Loss", _number(snapshot.get("stop_loss"))),
-        ("TP1", _number(snapshot.get("tp1", snapshot.get("take_profit")))),
+        (
+            "TP1",
+            _number(snapshot.get("tp1", snapshot.get("take_profit"))),
+        ),
         ("TP2", _number(snapshot.get("tp2"))),
         ("TP3", _number(snapshot.get("tp3"))),
     ]
