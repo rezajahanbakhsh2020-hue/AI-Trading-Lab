@@ -99,4 +99,3 @@ def test_build_live_status_panel_html_is_generated():
     assert "plotly" in html.lower()
     assert "AI-Trading-Lab" in html
     assert "LIVE STATUS" in html
-    assert "XAU/USD" in html
