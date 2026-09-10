@@ -230,7 +230,9 @@ def run_composite_walk_forward(
     )
 
     if not registry.names():
-        raise ValueError("strategy_registry must contain at least one strategy.")
+        raise ValueError(
+            "strategy_registry must contain at least one strategy."
+        )
 
     available_count = len(registry.names())
 
@@ -263,7 +265,7 @@ def run_composite_walk_forward(
 
         train_evaluations = evaluate_all_strategies(
             train_df,
-            strategy_registry=registry,
+            registry=registry,
             transaction_cost=transaction_cost,
             slippage=slippage,
         )
@@ -321,7 +323,7 @@ def run_composite_walk_forward(
     ]
 
     fold_sharpes = [
-        float(fold.evaluation.sharpe)
+        float(fold.evaluation.sharpe_ratio)
         for fold in folds
     ]
 
