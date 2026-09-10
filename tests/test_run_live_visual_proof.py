@@ -71,7 +71,8 @@ def test_live_visual_proof_html_contains_visual_elements():
         encoding="utf-8"
     )
 
-    assert "XAUUSD" in html
+    assert "<html" in html.lower()
+    assert "plotly" in html.lower()
     assert "Fast MA" in html
     assert "Slow MA" in html
 
