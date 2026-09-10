@@ -89,4 +89,3 @@ def test_build_live_visual_report_rejects_invalid_history():
             _snapshot(),
             history=123,
         )
-```0
