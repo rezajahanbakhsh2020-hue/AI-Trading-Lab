@@ -28,7 +28,7 @@ def _snapshot() -> dict:
         "signal": "BUY",
         "signal_label": "BUY",
         "strategy": "momentum",
-        "trend": "BULLISH",
+        "trend": "UP",
         "market_state": "OPEN",
         "quote_stale": False,
         "entry_price": 3015.0,
