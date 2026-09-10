@@ -178,4 +178,3 @@ def test_session_rejects_empty_dataframe():
             stable_strategy="momentum",
             stability_score=0.90,
         )
-```0
