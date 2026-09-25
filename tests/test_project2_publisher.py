@@ -175,6 +175,45 @@ def test_publisher_retry_and_failure(mock_urlopen) -> None:
     assert "secret-key" not in res["error"]
 
 
+def test_contract_v1_event_id_uniqueness_scope() -> None:
+    """Verify that event_id changes when symbol, interval, decision, strategy, or timestamp differ."""
+    base_kwargs = dict(
+        symbol="XAUUSD",
+        interval="5m",
+        decision="BUY",
+        strategy="momentum",
+        stability_score=0.8,
+        signal_label="BUY",
+        trend="BULLISH",
+        entry_price=2000.0,
+        stop_loss=1980.0,
+        candle_timestamp="2025-01-01T12:00:00Z",
+    )
+
+    base_payload = build_contract_v1_payload(**base_kwargs)
+    base_id = base_payload["event_id"]
+
+    # Different symbol -> different event_id
+    diff_symbol = build_contract_v1_payload(**{**base_kwargs, "symbol": "BTCUSD"})
+    assert diff_symbol["event_id"] != base_id
+
+    # Different interval -> different event_id
+    diff_interval = build_contract_v1_payload(**{**base_kwargs, "interval": "15m"})
+    assert diff_interval["event_id"] != base_id
+
+    # Different strategy -> different event_id
+    diff_strategy = build_contract_v1_payload(**{**base_kwargs, "strategy": "mean_reversion"})
+    assert diff_strategy["event_id"] != base_id
+
+    # Different decision -> different event_id
+    diff_decision = build_contract_v1_payload(**{**base_kwargs, "decision": "NO TRADE"})
+    assert diff_decision["event_id"] != base_id
+
+    # Different candle timestamp -> different event_id
+    diff_ts = build_contract_v1_payload(**{**base_kwargs, "candle_timestamp": "2025-01-01T12:05:00Z"})
+    assert diff_ts["event_id"] != base_id
+
+
 def test_publisher_missing_api_key() -> None:
     publisher = Project2Publisher(
         publish_url="https://api.example.com/signals",

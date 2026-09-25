@@ -127,6 +127,7 @@ def build_live_trade_display(
         tp2 = None
         tp3 = None
         risk_distance = None
+        risk_reward_ratio = None
         risk_reward_tp1 = None
         risk_reward_tp2 = None
         risk_reward_tp3 = None
@@ -160,6 +161,8 @@ def build_live_trade_display(
         )
 
         take_profit = float(decision["take_profit"])
+        reward_distance = take_profit - entry_price
+        risk_reward_ratio = reward_distance / risk_distance if risk_distance > 0 else None
 
         risk_reward_tp1 = (
             (tp1 - entry_price) / risk_distance
@@ -190,6 +193,7 @@ def build_live_trade_display(
         "tp3": tp3,
         "take_profit": take_profit,
         "risk_distance": risk_distance,
+        "risk_reward_ratio": risk_reward_ratio,
         "risk_reward_tp1": risk_reward_tp1,
         "risk_reward_tp2": risk_reward_tp2,
         "risk_reward_tp3": risk_reward_tp3,

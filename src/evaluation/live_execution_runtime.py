@@ -36,10 +36,20 @@ def load_live_market_data(
     interval: str = DEFAULT_INTERVAL,
     limit: int = DEFAULT_LIMIT,
 ) -> pd.DataFrame:
-    """Fetch live market data for a target symbol and interval."""
+    """Fetch live market data for a target symbol and interval.
+
+    Note on Instrument Constraint:
+    The live market data provider (BiQuote) adapter (`fetch_xauusd_ohlc` in `app_live.py`)
+    is architecturally designed and hard-wired to the XAUUSD endpoint (`/api/XAUUSD/ohlc`).
+    Attempting to fetch other symbols through this adapter would silently query XAUUSD data
+    and violate symbol/instrument integrity. Therefore, non-XAUUSD symbols are explicitly rejected.
+    """
     symbol_clean = str(symbol).strip().upper()
     if symbol_clean != "XAUUSD":
-        raise ValueError(f"Unsupported symbol for live market data: {symbol}. Only XAUUSD is supported.")
+        raise ValueError(
+            f"Unsupported symbol for live market data: {symbol}. "
+            f"The live BiQuote adapter only supports XAUUSD."
+        )
 
     data = fetch_xauusd_ohlc(interval=interval, limit=limit)
 
@@ -141,6 +151,7 @@ class LiveExecutionRuntime:
             tp2=display.get("tp2"),
             tp3=display.get("tp3"),
             take_profit=display.get("take_profit"),
+            risk_reward_ratio=display.get("risk_reward_ratio"),
             timestamp=now_iso,
             candle_timestamp=candle_iso,
         )
