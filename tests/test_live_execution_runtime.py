@@ -30,8 +30,23 @@ def test_load_live_market_data(mock_fetch) -> None:
 
 
 def test_load_live_market_data_invalid_symbol() -> None:
-    with pytest.raises(ValueError, match="Unsupported symbol"):
+    with pytest.raises(ValueError, match="Unsupported instrument symbol"):
         load_live_market_data("EURUSD", "5m", 100)
+
+
+def test_provider_capability_registry_custom_adapter(monkeypatch) -> None:
+    """Verify that registering a valid adapter for another symbol (e.g. BTCUSD) flows through cleanly without hardcoded restrictions."""
+    from src.evaluation.live_execution_runtime import LIVE_DATA_PROVIDERS
+
+    def mock_btc_adapter(interval="5m", limit=100):
+        df = make_dummy_df()
+        return df
+
+    monkeypatch.setitem(LIVE_DATA_PROVIDERS, "BTCUSD", mock_btc_adapter)
+
+    df = load_live_market_data("BTCUSD", "5m", 100)
+    assert not df.empty
+    assert "timestamp" in df.columns
 
 
 @patch("src.evaluation.live_execution_runtime.load_production_selection")

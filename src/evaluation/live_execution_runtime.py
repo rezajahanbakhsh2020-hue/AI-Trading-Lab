@@ -31,27 +31,35 @@ DEFAULT_STORE_PATH = Path("results/live/decision_history.json")
 DEFAULT_SNAPSHOT_PATH = Path("results/live/latest_execution.json")
 
 
+# Provider capability registry mapping canonical instrument symbols to live market data adapters
+LIVE_DATA_PROVIDERS: Dict[str, Any] = {
+    "XAUUSD": fetch_xauusd_ohlc,
+}
+
+
+def get_live_data_adapter(symbol: str) -> Any:
+    """Resolve live market data adapter based on provider capabilities."""
+    symbol_clean = str(symbol).strip().upper()
+    adapter = LIVE_DATA_PROVIDERS.get(symbol_clean)
+    if not adapter:
+        supported = ", ".join(sorted(LIVE_DATA_PROVIDERS.keys()))
+        raise ValueError(
+            f"Unsupported instrument symbol '{symbol}'. "
+            f"No live market data adapter is configured for '{symbol_clean}'. "
+            f"Supported instruments: {supported}."
+        )
+    return adapter
+
+
 def load_live_market_data(
     symbol: str = "XAUUSD",
     interval: str = DEFAULT_INTERVAL,
     limit: int = DEFAULT_LIMIT,
 ) -> pd.DataFrame:
-    """Fetch live market data for a target symbol and interval.
-
-    Note on Instrument Constraint:
-    The live market data provider (BiQuote) adapter (`fetch_xauusd_ohlc` in `app_live.py`)
-    is architecturally designed and hard-wired to the XAUUSD endpoint (`/api/XAUUSD/ohlc`).
-    Attempting to fetch other symbols through this adapter would silently query XAUUSD data
-    and violate symbol/instrument integrity. Therefore, non-XAUUSD symbols are explicitly rejected.
-    """
+    """Fetch live market data for a target symbol and interval using registered provider adapters."""
     symbol_clean = str(symbol).strip().upper()
-    if symbol_clean != "XAUUSD":
-        raise ValueError(
-            f"Unsupported symbol for live market data: {symbol}. "
-            f"The live BiQuote adapter only supports XAUUSD."
-        )
-
-    data = fetch_xauusd_ohlc(interval=interval, limit=limit)
+    adapter = get_live_data_adapter(symbol_clean)
+    data = adapter(interval=interval, limit=limit)
 
     required = {"openTime", "open", "high", "low", "close"}
     missing = required.difference(data.columns)
