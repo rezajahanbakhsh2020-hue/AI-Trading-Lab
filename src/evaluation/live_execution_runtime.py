@@ -229,26 +229,52 @@ class LiveExecutionRuntime:
         if not stable_strategy or stability_score is None:
             raise ValueError("Valid production strategy selection not found.")
 
-        # 4. Evaluate live runtime decision & trade levels
-        runtime = build_live_runtime(
-            data,
-            stable_strategy=str(stable_strategy),
-            stability_score=float(stability_score),
-            symbol=self.symbol,
-            interval=self.interval,
-        )
-
-        display = dict(runtime.display)
-
-        # 5. Enforce freshness boundary BEFORE persistence / publication
+        # 4. Enforce freshness boundary BEFORE invoking authoritative trading decision generator
         if not freshness["fresh"]:
-            display["decision"] = "NO TRADE"
-            display["reason"] = freshness["reason"]
-            display["signal"] = 0
-            display["signal_label"] = "NO TRADE"
-            display["quote_stale"] = True
-            display["quote_age_seconds"] = freshness["age_seconds"]
+            display = {
+                "symbol": self.symbol,
+                "interval": self.interval,
+                "decision": "NO TRADE",
+                "reason": freshness["reason"],
+                "stable_strategy": str(stable_strategy),
+                "stability_score": float(stability_score),
+                "strategy_supported": str(stable_strategy) == "momentum",
+                "signal": 0,
+                "signal_label": "NO TRADE",
+                "trend": "NEUTRAL",
+                "momentum": None,
+                "entry_price": None,
+                "stop_loss": None,
+                "tp1": None,
+                "tp2": None,
+                "tp3": None,
+                "take_profit": None,
+                "risk_distance": None,
+                "risk_reward_ratio": None,
+                "risk_reward_tp1": None,
+                "risk_reward_tp2": None,
+                "risk_reward_tp3": None,
+                "stop_loss_pct": None,
+                "take_profit_pct": None,
+                "tp1_multiplier": None,
+                "tp2_multiplier": None,
+                "tp3_multiplier": None,
+                "momentum_window": None,
+                "fast_window": None,
+                "slow_window": None,
+                "timestamp": freshness["candle_timestamp"],
+                "quote_stale": True,
+                "quote_age_seconds": freshness["age_seconds"],
+            }
         else:
+            runtime = build_live_runtime(
+                data,
+                stable_strategy=str(stable_strategy),
+                stability_score=float(stability_score),
+                symbol=self.symbol,
+                interval=self.interval,
+            )
+            display = dict(runtime.display)
             display["quote_stale"] = False
             display["quote_age_seconds"] = freshness["age_seconds"]
 

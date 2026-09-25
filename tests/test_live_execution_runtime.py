@@ -188,14 +188,16 @@ def test_live_execution_runtime_buy_signal_field_propagation(
     assert "produced_at" in prov
 
 
+@patch("src.evaluation.live_execution_runtime.build_live_runtime")
 @patch("src.evaluation.live_execution_runtime.load_production_selection")
 @patch("src.evaluation.live_execution_runtime.load_live_market_data")
 def test_live_execution_runtime_stale_data_blocked(
     mock_load_data,
     mock_load_selection,
+    mock_build_runtime,
     tmp_path,
 ) -> None:
-    """Verify that stale market data fails closed: decision set to NO TRADE, reason stale_market_data, quote_stale=True, and publication skipped if skip_if_no_trade=True."""
+    """Verify that stale market data fails closed: build_live_runtime is NOT called, decision is set to NO TRADE with reason stale_market_data and quote_stale=True."""
     df = make_buy_market_data()
     mock_load_data.return_value = df
     mock_load_selection.return_value = {
@@ -227,7 +229,10 @@ def test_live_execution_runtime_stale_data_blocked(
 
     result = runtime.run_once(publish=True, skip_if_no_trade=True, persist=True, reference_now=stale_ref_now)
 
-    # Signal must fail closed to NO TRADE
+    # CRITICAL INVARIANT: build_live_runtime MUST NOT BE CALLED FOR STALE DATA
+    assert not mock_build_runtime.called, "build_live_runtime was called for stale market data!"
+
+    # Signal must fail closed to NO TRADE with rejection reason
     assert result["decision"] == "NO TRADE"
     assert result["record"]["signal_label"] == "NO TRADE"
     assert result["record"]["quote_stale"] is True
