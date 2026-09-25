@@ -287,6 +287,10 @@ class LiveExecutionRuntime:
         now_iso = ref_now.isoformat()
         candle_iso = freshness["candle_timestamp"] or display.get("timestamp") or now_iso
 
+        # Event timestamp passed to contract payload must preserve the market observation timestamp (candle_iso)
+        # so that downstream publisher staleness check (Project2Publisher.is_stale) evaluates observation freshness.
+        contract_event_ts = candle_iso
+
         # 7. Construct canonical Contract v1.0 payload
         contract_payload = build_contract_v1_payload(
             symbol=self.symbol,
@@ -303,7 +307,7 @@ class LiveExecutionRuntime:
             tp3=display.get("tp3"),
             take_profit=display.get("take_profit"),
             risk_reward_ratio=display.get("risk_reward_ratio"),
-            timestamp=now_iso,
+            timestamp=contract_event_ts,
             candle_timestamp=candle_iso,
         )
 

@@ -359,7 +359,9 @@ def test_live_execution_runtime_persistence_freshness_isolation(
     tmp_path,
 ) -> None:
     """Verify that latest_execution.json snapshot is cleanly overwritten on every execution cycle with current publish results."""
-    mock_load_data.return_value = make_dummy_df()
+    df = make_dummy_df()
+    mock_load_data.return_value = df
+    ref_now = pd.to_datetime(df["openTime"], utc=True, errors="coerce").iloc[-1].to_pydatetime()
     mock_load_selection.return_value = {
         "stable_strategy": "momentum",
         "stability_score": 0.85,
@@ -384,7 +386,7 @@ def test_live_execution_runtime_persistence_freshness_isolation(
         store_path=store_path,
         snapshot_path=snapshot_path,
     )
-    res1 = runtime1.run_once(publish=True, persist=True)
+    res1 = runtime1.run_once(publish=True, persist=True, reference_now=ref_now)
     assert res1["publish_result"]["status"] == "SKIPPED_DISABLED"
 
     data_snap1 = json.loads(snapshot_path.read_text())
@@ -395,6 +397,7 @@ def test_live_execution_runtime_persistence_freshness_isolation(
         publish_url="https://api.example.com/signals",
         api_key="valid-key",
         enabled=True,
+        max_age_seconds=1000000000,
     )
     runtime2 = LiveExecutionRuntime(
         symbol="XAUUSD",
@@ -403,7 +406,7 @@ def test_live_execution_runtime_persistence_freshness_isolation(
         store_path=store_path,
         snapshot_path=snapshot_path,
     )
-    res2 = runtime2.run_once(publish=True, persist=True)
+    res2 = runtime2.run_once(publish=True, persist=True, reference_now=ref_now)
     assert res2["publish_result"]["status"] == "PUBLISHED"
 
     data_snap2 = json.loads(snapshot_path.read_text())
@@ -412,7 +415,7 @@ def test_live_execution_runtime_persistence_freshness_isolation(
     assert data_snap2["publish_result"]["published"] is True
 
     # Execution 3: Execution without publishing requested (publish=False)
-    res3 = runtime2.run_once(publish=False, persist=True)
+    res3 = runtime2.run_once(publish=False, persist=True, reference_now=ref_now)
     assert res3["publish_result"] is None
 
     data_snap3 = json.loads(snapshot_path.read_text())
