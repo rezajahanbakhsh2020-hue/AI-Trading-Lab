@@ -2,8 +2,11 @@
 from __future__ import annotations
 
 import argparse
+import datetime
+import json
 import logging
 import sys
+from pathlib import Path
 from typing import Any, Dict, Optional
 
 import pandas as pd
@@ -13,6 +16,8 @@ from app_live import (
     DEFAULT_LIMIT,
     fetch_xauusd_ohlc,
 )
+from src.evaluation.live_decision_record import build_live_decision_record
+from src.evaluation.live_decision_store import append_live_decision_to_store
 from src.evaluation.live_runtime import build_live_runtime
 from src.evaluation.production_live_bridge import load_production_selection
 from src.integration.project2_publisher import (
@@ -21,6 +26,9 @@ from src.integration.project2_publisher import (
 )
 
 logger = logging.getLogger(__name__)
+
+DEFAULT_STORE_PATH = Path("results/live/decision_history.json")
+DEFAULT_SNAPSHOT_PATH = Path("results/live/latest_execution.json")
 
 
 def load_live_market_data(
@@ -55,7 +63,7 @@ def load_live_market_data(
 
 
 class LiveExecutionRuntime:
-    """Headless runtime orchestrator that drives signal evaluation and optional Project 2 delivery."""
+    """Headless runtime orchestrator that drives signal evaluation, store persistence, and optional Project 2 delivery."""
 
     def __init__(
         self,
@@ -63,18 +71,23 @@ class LiveExecutionRuntime:
         interval: str = DEFAULT_INTERVAL,
         limit: int = DEFAULT_LIMIT,
         publisher: Optional[Project2Publisher] = None,
+        store_path: Path | str = DEFAULT_STORE_PATH,
+        snapshot_path: Path | str = DEFAULT_SNAPSHOT_PATH,
     ) -> None:
         self.symbol = symbol.upper()
         self.interval = interval
         self.limit = limit
         self.publisher = publisher or Project2Publisher()
+        self.store_path = Path(store_path)
+        self.snapshot_path = Path(snapshot_path)
 
     def run_once(
         self,
         publish: bool = True,
         skip_if_no_trade: bool = False,
+        persist: bool = True,
     ) -> Dict[str, Any]:
-        """Execute one full cycle: Ingestion -> Analysis -> Signal Artifact -> Project 2 Publish."""
+        """Execute one full cycle: Ingestion -> Analysis -> Persistence -> Signal Artifact -> Project 2 Publish."""
         # 1. Fetch market data
         data = load_live_market_data(
             symbol=self.symbol,
@@ -102,7 +115,16 @@ class LiveExecutionRuntime:
         display = runtime.display
         decision = runtime.decision
 
-        # 4. Construct canonical Contract v1.0 payload
+        # 4. Construct decision record & persist to store if enabled
+        record = build_live_decision_record(display)
+
+        if persist:
+            append_live_decision_to_store(record, self.store_path)
+
+        # Event execution timestamp: use now_iso to guarantee real-time delivery freshness
+        now_iso = datetime.datetime.now(datetime.timezone.utc).isoformat()
+
+        # 5. Construct canonical Contract v1.0 payload
         contract_payload = build_contract_v1_payload(
             symbol=self.symbol,
             interval=self.interval,
@@ -117,10 +139,10 @@ class LiveExecutionRuntime:
             tp2=display.get("tp2"),
             tp3=display.get("tp3"),
             take_profit=display.get("take_profit"),
-            timestamp=display.get("timestamp"),
+            timestamp=now_iso,
         )
 
-        # 5. Publish if enabled
+        # 6. Publish if enabled
         publish_result = None
         if publish:
             publish_result = self.publisher.publish(
@@ -128,15 +150,26 @@ class LiveExecutionRuntime:
                 skip_if_no_trade=skip_if_no_trade,
             )
 
-        return {
+        execution_result = {
             "symbol": self.symbol,
             "interval": self.interval,
             "decision": display["decision"],
             "strategy": display["stable_strategy"],
             "stability_score": display["stability_score"],
+            "record": record,
             "contract_payload": contract_payload,
             "publish_result": publish_result,
         }
+
+        # 7. Write latest snapshot state file
+        if persist:
+            self.snapshot_path.parent.mkdir(parents=True, exist_ok=True)
+            self.snapshot_path.write_text(
+                json.dumps(execution_result, ensure_ascii=False, indent=2),
+                encoding="utf-8",
+            )
+
+        return execution_result
 
 
 def main() -> None:
@@ -146,6 +179,7 @@ def main() -> None:
     parser.add_argument("--limit", type=int, default=100, help="Number of candles to fetch")
     parser.add_argument("--publish", action="store_true", help="Enable outbound publishing to Project 2")
     parser.add_argument("--skip-no-trade", action="store_true", help="Skip publishing when decision is NO TRADE")
+    parser.add_argument("--no-persist", action="store_true", help="Disable history persistence")
 
     args = parser.parse_args()
     logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
@@ -159,6 +193,7 @@ def main() -> None:
         result = runtime.run_once(
             publish=args.publish,
             skip_if_no_trade=args.skip_no_trade,
+            persist=not args.no_persist,
         )
 
         logger.info("Execution complete for %s %s", result["symbol"], result["interval"])
