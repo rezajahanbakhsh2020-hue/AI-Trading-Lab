@@ -15,6 +15,7 @@ from dataclasses import asdict, dataclass, field
 from enum import Enum
 import hashlib
 import json
+import math
 from typing import Any, Mapping, Sequence
 
 
@@ -82,11 +83,18 @@ class DatasetScope:
 class ExecutionAssumptions:
     """Execution and market friction assumptions."""
 
-    transaction_cost: float = 0.0
-    slippage: float = 0.0
-    latency_ms: float = 0.0
+    transaction_cost: float
+    slippage: float
+    latency_ms: float
 
     def __post_init__(self) -> None:
+        if not isinstance(self.transaction_cost, (int, float)) or math.isnan(self.transaction_cost):
+            raise TypeError("transaction_cost must be a valid float.")
+        if not isinstance(self.slippage, (int, float)) or math.isnan(self.slippage):
+            raise TypeError("slippage must be a valid float.")
+        if not isinstance(self.latency_ms, (int, float)) or math.isnan(self.latency_ms):
+            raise TypeError("latency_ms must be a valid float.")
+
         if self.transaction_cost < 0.0:
             raise ValueError("transaction_cost cannot be negative.")
         if self.slippage < 0.0:
@@ -123,8 +131,8 @@ class ResearchExperimentSpec:
     dataset_scope: DatasetScope
     execution_assumptions: ExecutionAssumptions
     code_provenance: CodeProvenance
+    benchmark_reference: str
     parameters: dict[str, Any] = field(default_factory=dict)
-    benchmark_reference: str = "BUY_AND_HOLD"
     random_seed: int | None = None
     fingerprint: str = field(init=False)
 
@@ -143,6 +151,8 @@ class ResearchExperimentSpec:
             raise TypeError("execution_assumptions must be an ExecutionAssumptions instance.")
         if not isinstance(self.code_provenance, CodeProvenance):
             raise TypeError("code_provenance must be a CodeProvenance instance.")
+        if not self.benchmark_reference or not self.benchmark_reference.strip():
+            raise ValueError("benchmark_reference must be a non-empty string.")
 
         computed_fingerprint = compute_experiment_fingerprint(
             hypothesis=self.hypothesis,
@@ -152,8 +162,8 @@ class ResearchExperimentSpec:
             dataset_scope=self.dataset_scope,
             execution_assumptions=self.execution_assumptions,
             code_provenance=self.code_provenance,
-            parameters=self.parameters,
             benchmark_reference=self.benchmark_reference,
+            parameters=self.parameters,
             random_seed=self.random_seed,
         )
         object.__setattr__(self, "fingerprint", computed_fingerprint)
@@ -168,8 +178,8 @@ def compute_experiment_fingerprint(
     dataset_scope: DatasetScope,
     execution_assumptions: ExecutionAssumptions,
     code_provenance: CodeProvenance,
+    benchmark_reference: str,
     parameters: Mapping[str, Any] | None = None,
-    benchmark_reference: str = "BUY_AND_HOLD",
     random_seed: int | None = None,
 ) -> str:
     """Compute deterministic SHA-256 fingerprint for a research experiment.
@@ -177,6 +187,9 @@ def compute_experiment_fingerprint(
     Excludes volatile timestamps or execution run IDs to ensure identical specs
     produce identical fingerprints.
     """
+    if not benchmark_reference or not benchmark_reference.strip():
+        raise ValueError("benchmark_reference must be a non-empty string.")
+
     canonical_payload = {
         "hypothesis": hypothesis.strip(),
         "methodology_version": methodology_version.strip(),
@@ -232,6 +245,20 @@ class EvidencePartition:
             raise ValueError("start_date must be a non-empty string.")
         if not self.end_date or not self.end_date.strip():
             raise ValueError("end_date must be a non-empty string.")
+        if self.start_date > self.end_date:
+            raise ValueError(
+                f"start_date '{self.start_date}' cannot be later than end_date '{self.end_date}'."
+            )
+
+        for metric_name, val in (
+            ("total_return", self.total_return),
+            ("max_drawdown", self.max_drawdown),
+            ("sharpe_ratio", self.sharpe_ratio),
+            ("win_rate", self.win_rate),
+            ("profit_factor", self.profit_factor),
+        ):
+            if not isinstance(val, (int, float)) or math.isnan(val) or math.isinf(val):
+                raise ValueError(f"Partition metric '{metric_name}' must be a finite float, got: {val}")
 
 
 @dataclass(frozen=True)
@@ -270,7 +297,11 @@ class ResearchEvidence:
         evidence_payload = {
             "experiment_fingerprint": self.experiment_fingerprint,
             "partitions": [asdict(p) for p in self.partitions],
+            "robustness_verdict": self.robustness_verdict,
+            "benchmark_comparison": self.benchmark_comparison,
             "promotion_status": self.promotion_status.value,
+            "rejection_reasons": [r.value for r in self.rejection_reasons],
+            "critique_notes": self.critique_notes.strip(),
         }
         serialized = json.dumps(evidence_payload, sort_keys=True, ensure_ascii=True)
         evidence_hash = hashlib.sha256(serialized.encode("utf-8")).hexdigest()[:16]
@@ -289,8 +320,8 @@ class ResearchEvidence:
                 "dataset_scope": asdict(self.spec.dataset_scope),
                 "execution_assumptions": asdict(self.spec.execution_assumptions),
                 "code_provenance": asdict(self.spec.code_provenance),
-                "parameters": self.spec.parameters,
                 "benchmark_reference": self.spec.benchmark_reference,
+                "parameters": self.spec.parameters,
                 "random_seed": self.spec.random_seed,
                 "fingerprint": self.spec.fingerprint,
             },

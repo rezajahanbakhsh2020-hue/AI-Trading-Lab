@@ -1,5 +1,6 @@
 """Focused unit tests for Research Constitution & Experiment Evidence Contract."""
 
+import json
 import tempfile
 from pathlib import Path
 import pytest
@@ -18,6 +19,7 @@ from src.evaluation.research_constitution import (
 )
 from src.evaluation.research_store import (
     load_research_experiment,
+    reconstruct_research_evidence,
     save_research_experiment,
 )
 
@@ -26,6 +28,7 @@ def _make_valid_spec(
     hypothesis: str = "Momentum breakout test",
     strategy_name: str = "momentum",
     commit_sha: str = "a1b2c3d4",
+    benchmark_reference: str = "BUY_AND_HOLD",
 ) -> ResearchExperimentSpec:
     dataset_scope = DatasetScope(
         dataset_id="ds_xauusd_1h",
@@ -52,8 +55,8 @@ def _make_valid_spec(
         dataset_scope=dataset_scope,
         execution_assumptions=execution_assumptions,
         code_provenance=code_provenance,
+        benchmark_reference=benchmark_reference,
         parameters={"lookback": 20},
-        benchmark_reference="BUY_AND_HOLD",
         random_seed=42,
     )
 
@@ -64,6 +67,11 @@ def test_valid_experiment_spec_accepted():
     assert spec.strategy_name == "momentum"
     assert spec.fingerprint is not None
     assert len(spec.fingerprint) == 64
+
+
+def test_missing_required_benchmark_fails_closed():
+    with pytest.raises(ValueError, match="benchmark_reference must be a non-empty string"):
+        _make_valid_spec(benchmark_reference="")
 
 
 def test_invalid_experiment_spec_fails_closed():
@@ -87,7 +95,35 @@ def test_invalid_experiment_spec_fails_closed():
 
     # Negative execution cost
     with pytest.raises(ValueError, match="transaction_cost cannot be negative"):
-        ExecutionAssumptions(transaction_cost=-0.01)
+        ExecutionAssumptions(
+            transaction_cost=-0.01,
+            slippage=0.0001,
+            latency_ms=0.0,
+        )
+
+
+def test_invalid_partition_date_range_is_rejected():
+    with pytest.raises(ValueError, match="cannot be later than end_date"):
+        EvidencePartition(
+            role=EvidencePartitionRole.IN_SAMPLE,
+            start_date="2023-12-31",
+            end_date="2023-01-01",
+            total_return=0.10,
+            max_drawdown=-0.05,
+            sharpe_ratio=1.2,
+        )
+
+
+def test_non_finite_partition_metric_is_rejected():
+    with pytest.raises(ValueError, match="must be a finite float"):
+        EvidencePartition(
+            role=EvidencePartitionRole.IN_SAMPLE,
+            start_date="2023-01-01",
+            end_date="2023-06-30",
+            total_return=float("nan"),
+            max_drawdown=-0.05,
+            sharpe_ratio=1.2,
+        )
 
 
 def test_fingerprint_is_deterministic_and_ignores_timestamps():
@@ -96,7 +132,6 @@ def test_fingerprint_is_deterministic_and_ignores_timestamps():
 
     assert spec1.fingerprint == spec2.fingerprint
 
-    # Create evidence objects with different created_at_utc timestamps
     partition = EvidencePartition(
         role=EvidencePartitionRole.IN_SAMPLE,
         start_date="2023-01-01",
@@ -122,9 +157,38 @@ def test_fingerprint_is_deterministic_and_ignores_timestamps():
         created_at_utc="2023-07-02T12:00:00Z",
     )
 
-    # Fingerprint stays identical regardless of creation timestamp
     assert ev1.spec.fingerprint == ev2.spec.fingerprint
     assert ev1.experiment_fingerprint == ev2.experiment_fingerprint
+
+
+def test_evidence_id_changes_when_authoritative_content_changes():
+    spec = _make_valid_spec()
+    partition = EvidencePartition(
+        role=EvidencePartitionRole.IN_SAMPLE,
+        start_date="2023-01-01",
+        end_date="2023-06-30",
+        total_return=0.15,
+        max_drawdown=-0.05,
+        sharpe_ratio=1.8,
+    )
+
+    ev1 = ResearchEvidence(
+        experiment_fingerprint=spec.fingerprint,
+        spec=spec,
+        partitions=(partition,),
+        promotion_status=PromotionStatus.VALIDATED,
+        critique_notes="Initial pass",
+    )
+
+    ev2 = ResearchEvidence(
+        experiment_fingerprint=spec.fingerprint,
+        spec=spec,
+        partitions=(partition,),
+        promotion_status=PromotionStatus.VALIDATED,
+        critique_notes="Updated pass with extra critique notes",
+    )
+
+    assert ev1.evidence_id != ev2.evidence_id
 
 
 def test_provenance_and_evidence_linkage():
@@ -175,7 +239,6 @@ def test_mismatched_fingerprint_raises_error():
 def test_rejection_reasons_represented():
     spec = _make_valid_spec()
 
-    # Rejected without reasons fails closed
     with pytest.raises(ValueError, match="REJECTED evidence must specify at least one RejectionReason"):
         ResearchEvidence(
             experiment_fingerprint=spec.fingerprint,
@@ -185,7 +248,6 @@ def test_rejection_reasons_represented():
             rejection_reasons=(),
         )
 
-    # Valid rejection with explicit critique/rejection reason
     evidence = ResearchEvidence(
         experiment_fingerprint=spec.fingerprint,
         spec=spec,
@@ -203,7 +265,24 @@ def test_rejection_reasons_represented():
     assert "Drawdown in OOS" in evidence.critique_notes
 
 
-def test_persistence_save_and_load():
+def test_malformed_persisted_evidence_fails_closed():
+    spec = _make_valid_spec()
+    evidence = ResearchEvidence(
+        experiment_fingerprint=spec.fingerprint,
+        spec=spec,
+        partitions=(),
+        promotion_status=PromotionStatus.PROPOSED,
+    )
+
+    raw_dict = evidence.as_dict()
+    # Remove required execution assumptions from spec dict
+    del raw_dict["spec"]["execution_assumptions"]
+
+    with pytest.raises(ValueError, match="Missing or invalid 'execution_assumptions'"):
+        reconstruct_research_evidence(raw_dict)
+
+
+def test_persistence_idempotent_and_overwrite_protection():
     spec = _make_valid_spec()
     partition = EvidencePartition(
         role=EvidencePartitionRole.WALK_FORWARD,
@@ -222,12 +301,22 @@ def test_persistence_save_and_load():
     )
 
     with tempfile.TemporaryDirectory() as tmpdir:
-        saved_path = save_research_experiment(evidence, base_dir=tmpdir)
-        assert saved_path.exists()
+        # First save
+        path1 = save_research_experiment(evidence, base_dir=tmpdir)
+        assert path1.exists()
 
-        loaded_evidence = load_research_experiment(spec.fingerprint, base_dir=tmpdir)
-        assert loaded_evidence.experiment_fingerprint == evidence.experiment_fingerprint
-        assert loaded_evidence.spec.hypothesis == evidence.spec.hypothesis
-        assert loaded_evidence.promotion_status == PromotionStatus.VALIDATED
-        assert len(loaded_evidence.partitions) == 1
-        assert loaded_evidence.partitions[0].role == EvidencePartitionRole.WALK_FORWARD
+        # Idempotent second save of identical evidence
+        path2 = save_research_experiment(evidence, base_dir=tmpdir)
+        assert path2 == path1
+
+        # Attempt to save conflicting evidence under same fingerprint
+        conflicting_evidence = ResearchEvidence(
+            experiment_fingerprint=spec.fingerprint,
+            spec=spec,
+            partitions=(partition,),
+            promotion_status=PromotionStatus.VALIDATED,
+            critique_notes="Conflicting critique notes",
+        )
+
+        with pytest.raises(FileExistsError, match="Cannot overwrite existing research evidence artifact"):
+            save_research_experiment(conflicting_evidence, base_dir=tmpdir)

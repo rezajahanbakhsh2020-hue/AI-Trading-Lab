@@ -1,7 +1,7 @@
 """Research experiment persistence store for Project 1.
 
 Persists and loads research experiments and their evidence adhering to Project 1 conventions.
-Fail-closed on corrupted or invalid research evidence objects.
+Fail-closed on corrupted, missing, or conflicting research evidence objects.
 """
 
 from __future__ import annotations
@@ -36,6 +36,10 @@ def save_research_experiment(
     """Persist a ResearchEvidence object to disk as JSON.
 
     Saves under `base_dir / <experiment_fingerprint> / evidence.json`.
+    If an evidence artifact already exists at the target path:
+      - If the existing evidence has the exact same evidence_id / content, operation is idempotent.
+      - If the existing evidence has conflicting content, fails closed with FileExistsError.
+
     Returns the file path where the evidence was saved.
     """
     if not isinstance(evidence, ResearchEvidence):
@@ -45,6 +49,18 @@ def save_research_experiment(
     target_dir.mkdir(parents=True, exist_ok=True)
 
     file_path = target_dir / "evidence.json"
+
+    if file_path.exists():
+        existing_evidence = load_research_experiment(file_path)
+        if existing_evidence.evidence_id == evidence.evidence_id:
+            # Idempotent save for identical evidence
+            return file_path
+        raise FileExistsError(
+            f"Cannot overwrite existing research evidence artifact at '{file_path}' "
+            f"with conflicting evidence (existing evidence_id: '{existing_evidence.evidence_id}', "
+            f"new evidence_id: '{evidence.evidence_id}')."
+        )
+
     content = json.dumps(evidence.as_dict(), indent=2)
     file_path.write_text(content, encoding="utf-8")
 
@@ -75,7 +91,10 @@ def load_research_experiment(
 
 
 def reconstruct_research_evidence(data: dict[str, Any]) -> ResearchEvidence:
-    """Reconstruct a validated ResearchEvidence object from a dictionary representation."""
+    """Reconstruct a validated ResearchEvidence object from a dictionary representation.
+
+    Strictly enforces presence of required fields without inventing silent defaults.
+    """
     if not isinstance(data, dict):
         raise TypeError("data must be a dictionary.")
 
@@ -83,7 +102,9 @@ def reconstruct_research_evidence(data: dict[str, Any]) -> ResearchEvidence:
     if not isinstance(spec_data, dict):
         raise ValueError("Missing or invalid 'spec' dictionary in evidence data.")
 
-    ds_data = spec_data.get("dataset_scope", {})
+    ds_data = spec_data.get("dataset_scope")
+    if not isinstance(ds_data, dict):
+        raise ValueError("Missing or invalid 'dataset_scope' in spec.")
     dataset_scope = DatasetScope(
         dataset_id=ds_data.get("dataset_id", ""),
         symbol=ds_data.get("symbol", ""),
@@ -92,19 +113,31 @@ def reconstruct_research_evidence(data: dict[str, Any]) -> ResearchEvidence:
         end_date=ds_data.get("end_date", ""),
     )
 
-    ea_data = spec_data.get("execution_assumptions", {})
+    ea_data = spec_data.get("execution_assumptions")
+    if not isinstance(ea_data, dict):
+        raise ValueError("Missing or invalid 'execution_assumptions' in spec.")
+    for req_field in ("transaction_cost", "slippage", "latency_ms"):
+        if req_field not in ea_data:
+            raise ValueError(f"Missing required execution assumption field: '{req_field}'.")
+
     execution_assumptions = ExecutionAssumptions(
-        transaction_cost=float(ea_data.get("transaction_cost", 0.0)),
-        slippage=float(ea_data.get("slippage", 0.0)),
-        latency_ms=float(ea_data.get("latency_ms", 0.0)),
+        transaction_cost=float(ea_data["transaction_cost"]),
+        slippage=float(ea_data["slippage"]),
+        latency_ms=float(ea_data["latency_ms"]),
     )
 
-    cp_data = spec_data.get("code_provenance", {})
+    cp_data = spec_data.get("code_provenance")
+    if not isinstance(cp_data, dict):
+        raise ValueError("Missing or invalid 'code_provenance' in spec.")
     code_provenance = CodeProvenance(
         commit_sha=cp_data.get("commit_sha", ""),
         repository_status=cp_data.get("repository_status", "clean"),
         author=cp_data.get("author", ""),
     )
+
+    benchmark_ref = spec_data.get("benchmark_reference")
+    if not benchmark_ref or not isinstance(benchmark_ref, str):
+        raise ValueError("Missing or invalid 'benchmark_reference' in spec.")
 
     spec = ResearchExperimentSpec(
         hypothesis=spec_data.get("hypothesis", ""),
@@ -114,14 +147,19 @@ def reconstruct_research_evidence(data: dict[str, Any]) -> ResearchEvidence:
         dataset_scope=dataset_scope,
         execution_assumptions=execution_assumptions,
         code_provenance=code_provenance,
+        benchmark_reference=benchmark_ref,
         parameters=spec_data.get("parameters", {}),
-        benchmark_reference=spec_data.get("benchmark_reference", "BUY_AND_HOLD"),
         random_seed=spec_data.get("random_seed"),
     )
 
-    partitions_data = data.get("partitions", [])
+    partitions_data = data.get("partitions")
+    if not isinstance(partitions_data, list):
+        raise ValueError("Missing or invalid 'partitions' list in evidence data.")
+
     partitions = []
     for p_data in partitions_data:
+        if not isinstance(p_data, dict):
+            raise ValueError("Partition entry must be a dictionary.")
         partitions.append(
             EvidencePartition(
                 role=EvidencePartitionRole(p_data["role"]),
@@ -141,13 +179,17 @@ def reconstruct_research_evidence(data: dict[str, Any]) -> ResearchEvidence:
         RejectionReason(r) for r in data.get("rejection_reasons", [])
     )
 
+    status_str = data.get("promotion_status")
+    if not status_str or not isinstance(status_str, str):
+        raise ValueError("Missing or invalid 'promotion_status' in evidence data.")
+
     return ResearchEvidence(
         experiment_fingerprint=data.get("experiment_fingerprint", ""),
         spec=spec,
         partitions=tuple(partitions),
         robustness_verdict=data.get("robustness_verdict", {}),
         benchmark_comparison=data.get("benchmark_comparison", {}),
-        promotion_status=PromotionStatus(data.get("promotion_status", "PROPOSED")),
+        promotion_status=PromotionStatus(status_str),
         rejection_reasons=rejection_reasons,
         critique_notes=data.get("critique_notes", ""),
         created_at_utc=data.get("created_at_utc", ""),
