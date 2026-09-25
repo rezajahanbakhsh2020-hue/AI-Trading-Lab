@@ -37,11 +37,11 @@ def load_live_market_data(
     limit: int = DEFAULT_LIMIT,
 ) -> pd.DataFrame:
     """Fetch live market data for a target symbol and interval."""
-    if symbol.upper() == "XAUUSD":
-        data = fetch_xauusd_ohlc(interval=interval, limit=limit)
-    else:
-        # Fallback or extension for multi-symbol market data ingestion
-        data = fetch_xauusd_ohlc(interval=interval, limit=limit)
+    symbol_clean = str(symbol).strip().upper()
+    if symbol_clean != "XAUUSD":
+        raise ValueError(f"Unsupported symbol for live market data: {symbol}. Only XAUUSD is supported.")
+
+    data = fetch_xauusd_ohlc(interval=interval, limit=limit)
 
     required = {"openTime", "open", "high", "low", "close"}
     missing = required.difference(data.columns)
@@ -121,8 +121,10 @@ class LiveExecutionRuntime:
         if persist:
             append_live_decision_to_store(record, self.store_path)
 
-        # Event execution timestamp: use now_iso to guarantee real-time delivery freshness
+        # Event execution timestamp: use current timestamp for contract event publication freshness,
+        # but encode candle timestamp into event identity if needed or pass now_iso for staleness tracking.
         now_iso = datetime.datetime.now(datetime.timezone.utc).isoformat()
+        candle_iso = display.get("timestamp") or now_iso
 
         # 5. Construct canonical Contract v1.0 payload
         contract_payload = build_contract_v1_payload(
@@ -140,6 +142,7 @@ class LiveExecutionRuntime:
             tp3=display.get("tp3"),
             take_profit=display.get("take_profit"),
             timestamp=now_iso,
+            candle_timestamp=candle_iso,
         )
 
         # 6. Publish if enabled
@@ -200,8 +203,24 @@ def main() -> None:
         logger.info("Decision: %s | Strategy: %s (Stability: %.3f)",
                     result["decision"], result["strategy"], result["stability_score"])
 
-        if result["publish_result"]:
-            logger.info("Publish Result: %s", result["publish_result"])
+        pub_res = result.get("publish_result")
+        if pub_res:
+            status = pub_res.get("status")
+            logger.info("Publish Result: %s", pub_res)
+            if status == "REJECTED":
+                logger.error("Publication REJECTED by Project 2 gateway: %s", pub_res.get("error"))
+                sys.exit(3)
+            elif status in ("FAILED", "MISCONFIGURED"):
+                reason = pub_res.get("reason") or pub_res.get("error") or ""
+                if "Missing" in reason or "configuration" in reason:
+                    logger.error("Publication misconfigured: %s", reason)
+                    sys.exit(2)
+                else:
+                    logger.error("Publication transport failed: %s", reason)
+                    sys.exit(4)
+            elif status == "TIMED_OUT":
+                logger.error("Publication timed out: %s", pub_res.get("error"))
+                sys.exit(4)
 
     except Exception as exc:
         logger.error("Headless live execution failed: %s", exc)

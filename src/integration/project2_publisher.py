@@ -38,13 +38,15 @@ def build_contract_v1_payload(
     take_profit: Optional[float] = None,
     risk_reward_ratio: Optional[float] = None,
     timestamp: Optional[str] = None,
+    candle_timestamp: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Construct a canonical Project 2 Integration Contract v1.0 payload."""
     now_iso = datetime.datetime.now(datetime.timezone.utc).isoformat()
     event_timestamp = timestamp if timestamp else now_iso
+    identity_timestamp = candle_timestamp if candle_timestamp else event_timestamp
 
-    # Unique event ID based on deterministic features + timestamp
-    hash_input = f"{symbol}:{interval}:{strategy}:{decision}:{event_timestamp}"
+    # Unique event ID based on deterministic features + candle timestamp for idempotency
+    hash_input = f"{symbol}:{interval}:{strategy}:{decision}:{identity_timestamp}"
     event_id = hashlib.sha256(hash_input.encode("utf-8")).hexdigest()[:32]
 
     return {
@@ -151,6 +153,13 @@ class Project2Publisher:
                 "reason": "Missing PROJECT2_PUBLISH_URL configuration",
             }
 
+        if not self.api_key:
+            return {
+                "status": "FAILED",
+                "published": False,
+                "reason": "Missing PROJECT2_API_KEY configuration",
+            }
+
         decision = payload.get("signal", {}).get("decision")
         if skip_if_no_trade and decision == "NO TRADE":
             return {
@@ -182,6 +191,9 @@ class Project2Publisher:
 
         attempt = 0
         last_error = ""
+        last_status_code = None
+        is_rejected = False
+        is_timeout = False
 
         while attempt < self.max_retries:
             attempt += 1
@@ -204,23 +216,43 @@ class Project2Publisher:
                             "response": _redact_secret(resp_body, self.api_key),
                             "attempts": attempt,
                         }
+                    last_status_code = code
                     last_error = f"HTTP status code {code}"
             except urllib.error.HTTPError as exc:
+                last_status_code = exc.code
                 err_content = exc.read().decode("utf-8") if exc.fp else ""
                 last_error = _redact_secret(f"HTTPError {exc.code}: {exc.reason} - {err_content}", self.api_key)
-                if exc.code in (400, 401, 403, 422):
-                    # Client errors shouldn't be retried
+                if exc.code in (400, 401, 403, 404, 422):
+                    is_rejected = True
                     break
+            except TimeoutError:
+                is_timeout = True
+                last_error = "Request timed out"
             except Exception as exc:
-                last_error = _redact_secret(f"Connection error: {exc}", self.api_key)
+                if "timed out" in str(exc).lower():
+                    is_timeout = True
+                    last_error = "Request timed out"
+                else:
+                    last_error = _redact_secret(f"Connection error: {exc}", self.api_key)
 
             if attempt < self.max_retries:
                 time.sleep(self.backoff_factor * (2 ** (attempt - 1)))
 
-        return {
-            "status": "FAILED",
+        if is_rejected:
+            final_status = "REJECTED"
+        elif is_timeout:
+            final_status = "TIMED_OUT"
+        else:
+            final_status = "FAILED"
+
+        result = {
+            "status": final_status,
             "published": False,
             "event_id": event_id,
             "error": last_error,
             "attempts": attempt,
         }
+        if last_status_code is not None:
+            result["http_code"] = last_status_code
+
+        return result

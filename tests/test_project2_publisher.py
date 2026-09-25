@@ -72,7 +72,7 @@ def test_publisher_disabled_by_default() -> None:
 
 
 def test_publisher_skip_no_trade() -> None:
-    publisher = Project2Publisher(publish_url="https://api.example.com/signals", enabled=True)
+    publisher = Project2Publisher(publish_url="https://api.example.com/signals", api_key="test-key", enabled=True)
     payload = build_contract_v1_payload(
         symbol="XAUUSD",
         interval="5m",
@@ -92,6 +92,7 @@ def test_publisher_skip_no_trade() -> None:
 def test_publisher_stale_detection() -> None:
     publisher = Project2Publisher(
         publish_url="https://api.example.com/signals",
+        api_key="test-key",
         enabled=True,
         max_age_seconds=60,
     )
@@ -172,3 +173,58 @@ def test_publisher_retry_and_failure(mock_urlopen) -> None:
     assert res["published"] is False
     assert res["attempts"] == 2
     assert "secret-key" not in res["error"]
+
+
+def test_publisher_missing_api_key() -> None:
+    publisher = Project2Publisher(
+        publish_url="https://api.example.com/signals",
+        api_key="",
+        enabled=True,
+    )
+    payload = build_contract_v1_payload(
+        symbol="XAUUSD",
+        interval="5m",
+        decision="BUY",
+        strategy="momentum",
+        stability_score=0.8,
+        signal_label="BUY",
+        trend="BULLISH",
+        entry_price=2000.0,
+        stop_loss=1980.0,
+    )
+    res = publisher.publish(payload)
+    assert res["status"] == "FAILED"
+    assert "PROJECT2_API_KEY" in res["reason"]
+
+
+@patch("urllib.request.urlopen")
+def test_publisher_rejected_http_401(mock_urlopen) -> None:
+    err = urllib.error.HTTPError(
+        url="https://api.example.com/signals",
+        code=401,
+        msg="Unauthorized",
+        hdrs={},
+        fp=MagicMock(read=lambda: b'{"error": "Invalid API Key"}'),
+    )
+    mock_urlopen.side_effect = err
+
+    publisher = Project2Publisher(
+        publish_url="https://api.example.com/signals",
+        api_key="bad-key",
+        enabled=True,
+    )
+    payload = build_contract_v1_payload(
+        symbol="XAUUSD",
+        interval="5m",
+        decision="BUY",
+        strategy="momentum",
+        stability_score=0.8,
+        signal_label="BUY",
+        trend="BULLISH",
+        entry_price=2000.0,
+        stop_loss=1980.0,
+    )
+    res = publisher.publish(payload)
+    assert res["status"] == "REJECTED"
+    assert res["http_code"] == 401
+    assert res["attempts"] == 1
