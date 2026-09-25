@@ -80,6 +80,98 @@ def load_live_market_data(
     return data.reset_index(drop=True)
 
 
+def validate_market_data_freshness(
+    data: pd.DataFrame,
+    max_age_seconds: float = 300.0,
+    reference_now: Optional[datetime.datetime] = None,
+) -> Dict[str, Any]:
+    """Validate event-time provenance and freshness of live market data."""
+    if reference_now is None:
+        now_dt = datetime.datetime.now(datetime.timezone.utc)
+    else:
+        now_dt = reference_now
+    if now_dt.tzinfo is None:
+        now_dt = now_dt.replace(tzinfo=datetime.timezone.utc)
+
+    if data is None or not isinstance(data, pd.DataFrame) or data.empty:
+        return {
+            "fresh": False,
+            "stale": True,
+            "reason": "missing_market_data",
+            "age_seconds": None,
+            "candle_timestamp": None,
+        }
+
+    if "timestamp" not in data.columns:
+        return {
+            "fresh": False,
+            "stale": True,
+            "reason": "missing_timestamp_column",
+            "age_seconds": None,
+            "candle_timestamp": None,
+        }
+
+    latest_ts = data["timestamp"].iloc[-1]
+    if pd.isna(latest_ts):
+        return {
+            "fresh": False,
+            "stale": True,
+            "reason": "invalid_candle_timestamp",
+            "age_seconds": None,
+            "candle_timestamp": None,
+        }
+
+    if isinstance(latest_ts, pd.Timestamp):
+        latest_dt = latest_ts.to_pydatetime()
+    elif isinstance(latest_ts, datetime.datetime):
+        latest_dt = latest_ts
+    else:
+        try:
+            latest_dt = datetime.datetime.fromisoformat(str(latest_ts).replace("Z", "+00:00"))
+        except Exception:
+            return {
+                "fresh": False,
+                "stale": True,
+                "reason": "invalid_candle_timestamp",
+                "age_seconds": None,
+                "candle_timestamp": str(latest_ts),
+            }
+
+    if latest_dt.tzinfo is None:
+        latest_dt = latest_dt.replace(tzinfo=datetime.timezone.utc)
+    else:
+        latest_dt = latest_dt.astimezone(datetime.timezone.utc)
+
+    age_seconds = (now_dt - latest_dt).total_seconds()
+    candle_iso = latest_dt.isoformat()
+
+    if age_seconds < 0:
+        return {
+            "fresh": False,
+            "stale": True,
+            "reason": "future_candle_timestamp",
+            "age_seconds": age_seconds,
+            "candle_timestamp": candle_iso,
+        }
+
+    if age_seconds > max_age_seconds:
+        return {
+            "fresh": False,
+            "stale": True,
+            "reason": "stale_market_data",
+            "age_seconds": age_seconds,
+            "candle_timestamp": candle_iso,
+        }
+
+    return {
+        "fresh": True,
+        "stale": False,
+        "reason": "fresh",
+        "age_seconds": age_seconds,
+        "candle_timestamp": candle_iso,
+    }
+
+
 class LiveExecutionRuntime:
     """Headless runtime orchestrator that drives signal evaluation, store persistence, and optional Project 2 delivery."""
 
@@ -91,21 +183,30 @@ class LiveExecutionRuntime:
         publisher: Optional[Project2Publisher] = None,
         store_path: Path | str = DEFAULT_STORE_PATH,
         snapshot_path: Path | str = DEFAULT_SNAPSHOT_PATH,
+        max_age_seconds: float = 300.0,
     ) -> None:
         self.symbol = symbol.upper()
         self.interval = interval
         self.limit = limit
-        self.publisher = publisher or Project2Publisher()
+        self.publisher = publisher or Project2Publisher(max_age_seconds=int(max_age_seconds))
         self.store_path = Path(store_path)
         self.snapshot_path = Path(snapshot_path)
+        self.max_age_seconds = max_age_seconds
 
     def run_once(
         self,
         publish: bool = True,
         skip_if_no_trade: bool = False,
         persist: bool = True,
+        reference_now: Optional[datetime.datetime] = None,
+        max_age_seconds: Optional[float] = None,
     ) -> Dict[str, Any]:
         """Execute one full cycle: Ingestion -> Analysis -> Persistence -> Signal Artifact -> Project 2 Publish."""
+        max_age = max_age_seconds if max_age_seconds is not None else self.max_age_seconds
+        ref_now = reference_now if reference_now is not None else datetime.datetime.now(datetime.timezone.utc)
+        if ref_now.tzinfo is None:
+            ref_now = ref_now.replace(tzinfo=datetime.timezone.utc)
+
         # 1. Fetch market data
         data = load_live_market_data(
             symbol=self.symbol,
@@ -113,7 +214,14 @@ class LiveExecutionRuntime:
             limit=self.limit,
         )
 
-        # 2. Load stable strategy selection
+        # 2. Evaluate market data freshness safety boundary
+        freshness = validate_market_data_freshness(
+            data=data,
+            max_age_seconds=max_age,
+            reference_now=ref_now,
+        )
+
+        # 3. Load stable strategy selection
         selection = load_production_selection()
         stable_strategy = selection.get("stable_strategy")
         stability_score = selection.get("stability_score")
@@ -121,7 +229,7 @@ class LiveExecutionRuntime:
         if not stable_strategy or stability_score is None:
             raise ValueError("Valid production strategy selection not found.")
 
-        # 3. Evaluate live runtime decision & trade levels
+        # 4. Evaluate live runtime decision & trade levels
         runtime = build_live_runtime(
             data,
             stable_strategy=str(stable_strategy),
@@ -130,21 +238,30 @@ class LiveExecutionRuntime:
             interval=self.interval,
         )
 
-        display = runtime.display
-        decision = runtime.decision
+        display = dict(runtime.display)
 
-        # 4. Construct decision record & persist to store if enabled
+        # 5. Enforce freshness boundary BEFORE persistence / publication
+        if not freshness["fresh"]:
+            display["decision"] = "NO TRADE"
+            display["reason"] = freshness["reason"]
+            display["signal"] = 0
+            display["signal_label"] = "NO TRADE"
+            display["quote_stale"] = True
+            display["quote_age_seconds"] = freshness["age_seconds"]
+        else:
+            display["quote_stale"] = False
+            display["quote_age_seconds"] = freshness["age_seconds"]
+
+        # 6. Construct decision record & persist to store if enabled
         record = build_live_decision_record(display)
 
         if persist:
             append_live_decision_to_store(record, self.store_path)
 
-        # Event execution timestamp: use current timestamp for contract event publication freshness,
-        # but encode candle timestamp into event identity if needed or pass now_iso for staleness tracking.
-        now_iso = datetime.datetime.now(datetime.timezone.utc).isoformat()
-        candle_iso = display.get("timestamp") or now_iso
+        now_iso = ref_now.isoformat()
+        candle_iso = freshness["candle_timestamp"] or display.get("timestamp") or now_iso
 
-        # 5. Construct canonical Contract v1.0 payload
+        # 7. Construct canonical Contract v1.0 payload
         contract_payload = build_contract_v1_payload(
             symbol=self.symbol,
             interval=self.interval,

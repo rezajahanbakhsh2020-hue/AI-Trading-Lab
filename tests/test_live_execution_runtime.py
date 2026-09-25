@@ -9,13 +9,14 @@ from src.integration.project2_publisher import Project2Publisher
 
 
 def make_dummy_df() -> pd.DataFrame:
-    timestamps = pd.date_range("2025-01-01 10:00", periods=100, freq="5min")
+    timestamps = pd.date_range("2025-01-01 10:00", periods=100, freq="5min", tz="UTC")
     df = pd.DataFrame({
-        "openTime": timestamps.view("int64") // 10**6,
+        "openTime": timestamps,
         "open": [2000.0 + i for i in range(100)],
         "high": [2005.0 + i for i in range(100)],
         "low": [1995.0 + i for i in range(100)],
         "close": [2002.0 + i for i in range(100)],
+        "timestamp": timestamps,
     })
     return df
 
@@ -102,17 +103,18 @@ def test_live_execution_runtime_idempotency_key(mock_load_data, mock_load_select
     assert len(event_id1) == 32
 
 
-def make_buy_market_data() -> pd.DataFrame:
+def make_buy_market_data(start_time="2025-01-01 10:00") -> pd.DataFrame:
     """Create market data that triggers a momentum BUY signal (upward trend and positive momentum)."""
-    timestamps = pd.date_range("2025-01-01 10:00", periods=100, freq="5min")
+    timestamps = pd.date_range(start_time, periods=100, freq="5min", tz="UTC")
     # Base prices increasing strongly to ensure positive momentum and UP trend
     prices = [2000.0 + (i * 2.0) for i in range(100)]
     df = pd.DataFrame({
-        "openTime": timestamps.view("int64") // 10**6,
+        "openTime": timestamps,
         "open": [p - 1.0 for p in prices],
         "high": [p + 3.0 for p in prices],
         "low": [p - 2.0 for p in prices],
         "close": prices,
+        "timestamp": timestamps,
     })
     return df
 
@@ -148,7 +150,10 @@ def test_live_execution_runtime_buy_signal_field_propagation(
         snapshot_path=snapshot_path,
     )
 
-    result = runtime.run_once(publish=True, persist=True)
+    df = mock_load_data.return_value
+    ref_now = pd.to_datetime(df["openTime"], utc=True, errors="coerce").iloc[-1].to_pydatetime()
+
+    result = runtime.run_once(publish=True, persist=True, reference_now=ref_now)
 
     # 1. Decision & Signal
     assert result["decision"] == "BUY"
@@ -181,6 +186,162 @@ def test_live_execution_runtime_buy_signal_field_propagation(
     prov = result["contract_payload"]["provenance"]
     assert prov["source"] == "AI-Trading-Lab"
     assert "produced_at" in prov
+
+
+@patch("src.evaluation.live_execution_runtime.load_production_selection")
+@patch("src.evaluation.live_execution_runtime.load_live_market_data")
+def test_live_execution_runtime_stale_data_blocked(
+    mock_load_data,
+    mock_load_selection,
+    tmp_path,
+) -> None:
+    """Verify that stale market data fails closed: decision set to NO TRADE, reason stale_market_data, quote_stale=True, and publication skipped if skip_if_no_trade=True."""
+    df = make_buy_market_data()
+    mock_load_data.return_value = df
+    mock_load_selection.return_value = {
+        "stable_strategy": "momentum",
+        "stability_score": 0.85,
+    }
+
+    mock_publisher = MagicMock()
+    mock_publisher.publish.return_value = {
+        "status": "SKIPPED_NO_TRADE",
+        "published": False,
+        "reason": "Decision is NO TRADE and skip_if_no_trade=True",
+    }
+
+    store_path = tmp_path / "decision_history.json"
+    snapshot_path = tmp_path / "latest_execution.json"
+
+    runtime = LiveExecutionRuntime(
+        symbol="XAUUSD",
+        interval="5m",
+        publisher=mock_publisher,
+        store_path=store_path,
+        snapshot_path=snapshot_path,
+        max_age_seconds=300.0,
+    )
+
+    df_ts = pd.to_datetime(df["openTime"], utc=True, errors="coerce").iloc[-1].to_pydatetime()
+    stale_ref_now = df_ts + pd.Timedelta(seconds=1000)
+
+    result = runtime.run_once(publish=True, skip_if_no_trade=True, persist=True, reference_now=stale_ref_now)
+
+    # Signal must fail closed to NO TRADE
+    assert result["decision"] == "NO TRADE"
+    assert result["record"]["signal_label"] == "NO TRADE"
+    assert result["record"]["quote_stale"] is True
+    assert result["record"]["quote_age_seconds"] == 1000.0
+
+    # Contract payload must reflect NO TRADE
+    assert result["contract_payload"]["signal"]["decision"] == "NO TRADE"
+    assert result["contract_payload"]["signal"]["signal_label"] == "NO TRADE"
+
+    # Publisher was called with NO TRADE payload, skipping publication
+    assert mock_publisher.publish.called
+
+
+@patch("src.evaluation.live_execution_runtime.load_production_selection")
+@patch("src.evaluation.live_execution_runtime.load_live_market_data")
+def test_live_execution_runtime_missing_invalid_timestamp_blocked(
+    mock_load_data,
+    mock_load_selection,
+    tmp_path,
+) -> None:
+    """Verify missing/invalid candle timestamps fail closed cleanly."""
+    df = make_buy_market_data()
+    # corrupt latest timestamp
+    df["timestamp"] = pd.NaT
+    mock_load_data.return_value = df
+    mock_load_selection.return_value = {
+        "stable_strategy": "momentum",
+        "stability_score": 0.85,
+    }
+
+    mock_publisher = MagicMock()
+    runtime = LiveExecutionRuntime(
+        symbol="XAUUSD",
+        interval="5m",
+        publisher=mock_publisher,
+        store_path=tmp_path / "store.json",
+        snapshot_path=tmp_path / "snap.json",
+    )
+
+    result = runtime.run_once(publish=False, persist=True)
+
+    assert result["decision"] == "NO TRADE"
+    assert result["record"]["quote_stale"] is True
+
+
+@patch("src.evaluation.live_execution_runtime.load_production_selection")
+@patch("src.evaluation.live_execution_runtime.load_live_market_data")
+def test_live_execution_runtime_future_timestamp_blocked(
+    mock_load_data,
+    mock_load_selection,
+    tmp_path,
+) -> None:
+    """Verify future candle timestamps fail closed with reason future_candle_timestamp."""
+    df = make_buy_market_data()
+    mock_load_data.return_value = df
+    mock_load_selection.return_value = {
+        "stable_strategy": "momentum",
+        "stability_score": 0.85,
+    }
+
+    df_ts = pd.to_datetime(df["openTime"], utc=True, errors="coerce").iloc[-1].to_pydatetime()
+    # reference_now is BEFORE candle timestamp (candle in future)
+    past_ref_now = df_ts - pd.Timedelta(seconds=100)
+
+    runtime = LiveExecutionRuntime(
+        symbol="XAUUSD",
+        interval="5m",
+        publisher=MagicMock(),
+        store_path=tmp_path / "store.json",
+        snapshot_path=tmp_path / "snap.json",
+    )
+
+    result = runtime.run_once(publish=False, persist=True, reference_now=past_ref_now)
+
+    assert result["decision"] == "NO TRADE"
+    assert result["record"]["quote_stale"] is True
+
+
+@patch("src.evaluation.live_execution_runtime.load_production_selection")
+@patch("src.evaluation.live_execution_runtime.load_live_market_data")
+def test_live_execution_runtime_freshness_boundary_conditions(
+    mock_load_data,
+    mock_load_selection,
+    tmp_path,
+) -> None:
+    """Verify exact boundary conditions around max_age_seconds (max_age-1 is fresh, max_age+1 is stale)."""
+    df = make_buy_market_data()
+    mock_load_data.return_value = df
+    mock_load_selection.return_value = {
+        "stable_strategy": "momentum",
+        "stability_score": 0.85,
+    }
+
+    df_ts = pd.to_datetime(df["openTime"], utc=True, errors="coerce").iloc[-1].to_pydatetime()
+    max_age = 300.0
+
+    runtime = LiveExecutionRuntime(
+        symbol="XAUUSD",
+        interval="5m",
+        publisher=MagicMock(),
+        store_path=tmp_path / "store.json",
+        snapshot_path=tmp_path / "snap.json",
+        max_age_seconds=max_age,
+    )
+
+    # 1. age = 299s <= 300s -> FRESH -> BUY
+    res_fresh = runtime.run_once(publish=False, persist=False, reference_now=df_ts + pd.Timedelta(seconds=299))
+    assert res_fresh["decision"] == "BUY"
+    assert res_fresh["record"]["quote_stale"] is False
+
+    # 2. age = 301s > 300s -> STALE -> NO TRADE
+    res_stale = runtime.run_once(publish=False, persist=False, reference_now=df_ts + pd.Timedelta(seconds=301))
+    assert res_stale["decision"] == "NO TRADE"
+    assert res_stale["record"]["quote_stale"] is True
 
 
 @patch("src.evaluation.live_execution_runtime.load_production_selection")
