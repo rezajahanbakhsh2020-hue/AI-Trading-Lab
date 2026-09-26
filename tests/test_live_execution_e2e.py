@@ -6,7 +6,18 @@ from unittest.mock import MagicMock, patch
 import pandas as pd
 import pytest
 
-from src.evaluation.live_execution_runtime import LiveExecutionRuntime
+from src.evaluation.live_execution_runtime import LiveExecutionRuntime, ProductionRuntimeConfig
+from src.evaluation.research_constitution import (
+    CodeProvenance,
+    DatasetScope,
+    EvidencePartition,
+    EvidencePartitionRole,
+    ExecutionAssumptions,
+    PromotionStatus,
+    ResearchEvidence,
+    ResearchExperimentSpec,
+)
+from src.evaluation.research_store import save_research_candidate
 from src.integration.project2_publisher import Project2Publisher, build_contract_v1_payload
 
 
@@ -49,12 +60,59 @@ def test_end_to_end_pipeline(mock_urlopen, mock_load_data, mock_load_selection, 
         enabled=True,
     )
 
+    ds = DatasetScope(
+        dataset_id="ds_xauusd_5m",
+        symbol="XAUUSD",
+        timeframe="5m",
+        start_date="2025-01-01",
+        end_date="2025-01-02",
+    )
+    spec = ResearchExperimentSpec(
+        hypothesis="Persisted e2e momentum candidate",
+        methodology_version="1.0",
+        strategy_name="momentum",
+        strategy_version="1.0",
+        dataset_scope=ds,
+        execution_assumptions=ExecutionAssumptions(
+            transaction_cost=0.001, slippage=0.001, latency_ms=10.0
+        ),
+        code_provenance=CodeProvenance(commit_sha="e52d95d1ede22cf3c8ce07dc216763ace4a4359c"),
+        benchmark_reference="buy_and_hold",
+        parameters={"momentum_window": 10, "stop_loss_pct": 0.01, "take_profit_pct": 0.02},
+    )
+    evidence = ResearchEvidence(
+        experiment_fingerprint=spec.fingerprint,
+        spec=spec,
+        partitions=(
+            EvidencePartition(
+                role=EvidencePartitionRole.OUT_OF_SAMPLE,
+                start_date="2025-01-01",
+                end_date="2025-01-02",
+                total_return=0.15,
+                max_drawdown=0.05,
+                sharpe_ratio=1.8,
+            ),
+        ),
+        robustness_verdict={"passed": True},
+        promotion_status=PromotionStatus.PROMOTABLE,
+        rejection_reasons=(),
+    )
+    save_research_candidate(candidate_id="cand_momentum_e2e", evidence=evidence, base_dir=tmp_path)
+
     runtime = LiveExecutionRuntime(
         symbol="XAUUSD",
         interval="5m",
         publisher=publisher,
         store_path=store_path,
         snapshot_path=snapshot_path,
+        research_dir=tmp_path,
+        production_config=ProductionRuntimeConfig(
+            symbol="XAUUSD",
+            timeframe="5m",
+            candidate_id="cand_momentum_e2e",
+            strategy_id="momentum",
+            research_dir=tmp_path,
+        ),
     )
 
     execution_result = runtime.run_once(publish=True, persist=True)
