@@ -79,6 +79,11 @@ class PromotedCandidateArtifact:
         if not self.timeframe or not self.timeframe.strip():
             raise ValueError("timeframe must be a non-empty string.")
 
+        merged_params = dict(self.evidence.spec.parameters) if (self.evidence and self.evidence.spec.parameters) else {}
+        if self.parameters:
+            merged_params.update(self.parameters)
+        object.__setattr__(self, "parameters", merged_params)
+
         validate_promotion_eligibility(self.evidence, policy=self.policy)
 
         if self.evidence.experiment_fingerprint != self.evidence.spec.fingerprint:
@@ -444,7 +449,12 @@ def evaluate_production_decision(
         from live_signal import generate_live_signal
         from live_trend import build_live_trend_snapshot
 
-        window = candidate.parameters.get("momentum_window", candidate.parameters.get("window", 10))
+        window = candidate.parameters.get("momentum_window", candidate.parameters.get("window"))
+        if window is None:
+            raise ValueError(
+                f"Candidate '{candidate.candidate_id}' parameters missing required "
+                f"'momentum_window' or 'window' parameter for momentum strategy."
+            )
         sig_df = generate_live_signal(data, window=int(window))
         sig_val = int(sig_df["signal"].iloc[-1])
 
@@ -723,18 +733,43 @@ def calculate_production_risk_levels(
     sl_pct = (
         stop_loss_pct
         if stop_loss_pct is not None
-        else candidate.parameters.get("stop_loss_pct", 0.01)
+        else candidate.parameters.get("stop_loss_pct")
     )
     tp_pct = (
         take_profit_pct
         if take_profit_pct is not None
-        else candidate.parameters.get("take_profit_pct", 0.02)
+        else candidate.parameters.get("take_profit_pct")
     )
+
+    if sl_pct is None:
+        raise ValueError(
+            f"Candidate '{candidate.candidate_id}' parameters missing required 'stop_loss_pct' risk parameter."
+        )
+    if tp_pct is None:
+        raise ValueError(
+            f"Candidate '{candidate.candidate_id}' parameters missing required 'take_profit_pct' risk parameter."
+        )
 
     if not math.isfinite(sl_pct) or sl_pct <= 0:
         raise ValueError("stop_loss_pct must be a positive finite float.")
     if not math.isfinite(tp_pct) or tp_pct <= 0:
         raise ValueError("take_profit_pct must be a positive finite float.")
+
+    tp1_mult = (
+        candidate.parameters.get("tp1_multiplier", tp1_multiplier)
+        if tp1_multiplier == 1.0
+        else tp1_multiplier
+    )
+    tp2_mult = (
+        candidate.parameters.get("tp2_multiplier", tp2_multiplier)
+        if tp2_multiplier == 2.0
+        else tp2_multiplier
+    )
+    tp3_mult = (
+        candidate.parameters.get("tp3_multiplier", tp3_multiplier)
+        if tp3_multiplier == 3.0
+        else tp3_multiplier
+    )
 
     entry = decision.entry_price
 
@@ -745,9 +780,9 @@ def calculate_production_risk_levels(
         reward_dist = take_profit - entry
         rr_ratio = reward_dist / risk_dist if risk_dist > 0 else None
 
-        tp1 = entry + (risk_dist * tp1_multiplier)
-        tp2 = entry + (risk_dist * tp2_multiplier)
-        tp3 = entry + (risk_dist * tp3_multiplier)
+        tp1 = entry + (risk_dist * tp1_mult)
+        tp2 = entry + (risk_dist * tp2_mult)
+        tp3 = entry + (risk_dist * tp3_mult)
         trailing = candidate.parameters.get("trailing_stop_level")
 
     elif decision.direction == Direction.SELL:
@@ -757,9 +792,9 @@ def calculate_production_risk_levels(
         reward_dist = entry - take_profit
         rr_ratio = reward_dist / risk_dist if risk_dist > 0 else None
 
-        tp1 = entry - (risk_dist * tp1_multiplier)
-        tp2 = entry - (risk_dist * tp2_multiplier)
-        tp3 = entry - (risk_dist * tp3_multiplier)
+        tp1 = entry - (risk_dist * tp1_mult)
+        tp2 = entry - (risk_dist * tp2_mult)
+        tp3 = entry - (risk_dist * tp3_mult)
         trailing = candidate.parameters.get("trailing_stop_level")
 
     else:
