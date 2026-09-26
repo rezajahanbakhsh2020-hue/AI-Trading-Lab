@@ -20,6 +20,11 @@ from typing import Any, Mapping, Sequence
 import pandas as pd
 
 from src.evaluation.candidate_generator import CandidateSpec, ResearchSearchSpace
+from src.evaluation.selection_governance import (
+    ResearchSelectionAssessment,
+    ResearchSelectionPolicy,
+    assess_research_selection,
+)
 from src.evaluation.research_constitution import (
     CodeProvenance,
     DatasetScope,
@@ -127,6 +132,9 @@ class DiscoveryRunResult:
     search_id: str = ""
     trial_ledger: tuple[ResearchTrialRecord, ...] = field(default_factory=tuple)
     search_truncated: bool = False
+    selection_assessments: tuple[ResearchSelectionAssessment, ...] = field(
+        default_factory=tuple
+    )
 
     @property
     def total_candidates(self) -> int:
@@ -325,6 +333,17 @@ class DiscoveryEngine:
         promoted_sorted = sorted(promoted, key=_evidence_rank_key)
         rejected_sorted = sorted(rejected, key=_evidence_rank_key)
 
+        # Generate selection governance assessments for all evaluated evidence artifacts
+        selection_assessments: list[ResearchSelectionAssessment] = []
+        all_evidence = promoted_sorted + rejected_sorted
+        for ev in all_evidence:
+            assessment = assess_research_selection(
+                evidence=ev,
+                trial_records=trial_records,
+                search_fingerprint=search_space.search_fingerprint,
+            )
+            selection_assessments.append(assessment)
+
         return DiscoveryRunResult(
             dataset_scope=dataset_scope,
             execution_assumptions=execution_assumptions,
@@ -336,6 +355,7 @@ class DiscoveryEngine:
             search_id=search_space.search_id,
             trial_ledger=tuple(trial_records),
             search_truncated=search_truncated,
+            selection_assessments=tuple(selection_assessments),
         )
 
     def _validate_dataset_scope(

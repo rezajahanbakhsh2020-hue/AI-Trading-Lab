@@ -1,4 +1,4 @@
-"""Tests for Research Discovery Engine and Candidate Generation in Project 1."""
+"""Tests for Research Discovery Engine, Selection Governance, and Candidate Generation in Project 1."""
 
 from __future__ import annotations
 
@@ -21,6 +21,10 @@ from src.evaluation.discovery_engine import (
     DiscoveryRunResult,
     ResearchSearchPolicy,
     ResearchTrialRecord,
+)
+from src.evaluation.selection_governance import (
+    ResearchSelectionAssessment,
+    SelectionGovernanceStatus,
 )
 from src.evaluation.research_constitution import (
     CodeProvenance,
@@ -159,6 +163,8 @@ def test_discovery_engine_full_vertical_slice(
         assert isinstance(res, DiscoveryRunResult)
         assert res.candidates_evaluated == 1
         assert len(res.promoted_evidence) + len(res.rejected_evidence) == 1
+        assert len(res.selection_assessments) == 1
+        assert isinstance(res.selection_assessments[0], ResearchSelectionAssessment)
 
         evidence = (
             res.promoted_evidence[0]
@@ -393,6 +399,9 @@ def test_trial_ledger_and_budget_truncation(
     assert len(res.trial_ledger) == 2
     assert res.trial_ledger[0].search_id == "search_budget"
     assert res.trial_ledger[0].trial_index == 0
+    assert len(res.selection_assessments) == 2
+    assert res.selection_assessments[0].status == SelectionGovernanceStatus.SELECTION_CONTEXT_RECORDED
+    assert res.selection_assessments[0].trial_count == 2
 
 
 def test_failure_isolation(
