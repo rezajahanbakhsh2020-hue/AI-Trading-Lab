@@ -274,6 +274,7 @@ def test_duplicate_identical_evidence_idempotent(source_candidate, sample_market
             dataset_scope=dataset_scope,
             execution_assumptions=execution_assumptions,
             code_provenance=code_provenance,
+            persist_evidence=True,
         )
         evidence = result.rejected_evidence[0] if result.rejected_evidence else result.promoted_evidence[0]
         p1 = save_research_experiment(evidence, base_dir=tmpdir)
