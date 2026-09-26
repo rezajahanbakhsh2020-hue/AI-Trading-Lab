@@ -1,0 +1,58 @@
+{
+  "evidence_id": "ev_65debba17584110c",
+  "experiment_fingerprint": "edc387680b24264ae29c66d6120f159770b573309359e2fbaf872ead957177a2",
+  "spec": {
+    "hypothesis": "Canonical moving_average candidate for 1d",
+    "methodology_version": "1.0",
+    "strategy_name": "moving_average",
+    "strategy_version": "1.0",
+    "dataset_scope": {
+      "dataset_id": "ds_moving_average_1d",
+      "symbol": "XAUUSD",
+      "timeframe": "1d",
+      "start_date": "2025-01-01",
+      "end_date": "2025-12-31"
+    },
+    "execution_assumptions": {
+      "transaction_cost": 0.001,
+      "slippage": 0.001,
+      "latency_ms": 10.0
+    },
+    "code_provenance": {
+      "commit_sha": "843dfa76cf86a9057dba0a127541d7093fb15e42",
+      "repository_status": "clean",
+      "author": ""
+    },
+    "benchmark_reference": "buy_and_hold",
+    "parameters": {
+      "fast_window": 20,
+      "slow_window": 50,
+      "stop_loss_pct": 0.01,
+      "take_profit_pct": 0.02
+    },
+    "random_seed": null,
+    "fingerprint": "edc387680b24264ae29c66d6120f159770b573309359e2fbaf872ead957177a2"
+  },
+  "partitions": [
+    {
+      "role": "OUT_OF_SAMPLE",
+      "start_date": "2025-01-01",
+      "end_date": "2025-12-31",
+      "total_return": 0.15,
+      "max_drawdown": 0.05,
+      "sharpe_ratio": 1.8,
+      "win_rate": 0.0,
+      "profit_factor": 0.0,
+      "observations": 0,
+      "additional_metrics": {}
+    }
+  ],
+  "robustness_verdict": {
+    "passed": true
+  },
+  "benchmark_comparison": {},
+  "promotion_status": "PROMOTABLE",
+  "rejection_reasons": [],
+  "critique_notes": "",
+  "created_at_utc": ""
+}
