@@ -1,0 +1,14 @@
+{
+  "candidate_id": "cand_momentum_5m",
+  "strategy_name": "momentum",
+  "strategy_version": "1.0",
+  "experiment_fingerprint": "e6b8a768fd1b98a7a0c914fdebf863f88923870eedcab35bb54d7acedb270c0b",
+  "evidence_id": "ev_b42e2a4d7d5c8e71",
+  "symbol": "XAUUSD",
+  "timeframe": "5m",
+  "parameters": {
+    "momentum_window": 10,
+    "stop_loss_pct": 0.01,
+    "take_profit_pct": 0.02
+  }
+}

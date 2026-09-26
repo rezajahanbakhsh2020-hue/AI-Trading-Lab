@@ -543,36 +543,40 @@ class LiveExecutionRuntime:
                 reference_now=ref_now,
                 max_age_seconds=max_age,
             )
-            if stability_score is not None:
-                runtime = build_live_runtime(
-                    data,
-                    stable_strategy=str(stable_strategy),
-                    stability_score=float(stability_score),
-                    symbol=self.symbol,
-                    interval=self.interval,
-                )
-                display = dict(runtime.display)
-            else:
-                display = {
-                    "symbol": self.symbol,
-                    "interval": self.interval,
-                    "decision": decision.direction.value,
-                    "reason": decision.reason,
-                    "stable_strategy": str(stable_strategy),
-                    "stability_score": None,
-                    "strategy_supported": str(stable_strategy) == "momentum",
-                    "signal": 1 if decision.direction == Direction.BUY else 0,
-                    "signal_label": decision.direction.value,
-                    "trend": "UP" if decision.direction == Direction.BUY else "NEUTRAL",
-                    "entry_price": decision.entry_price,
-                    "timestamp": decision.market_timestamp,
-                }
-            display["quote_stale"] = False
-            display["quote_age_seconds"] = freshness["age_seconds"]
+            signal = ProductionSignal.from_decision(decision)
+            risk = calculate_production_risk_levels(decision, candidate)
 
-        # Derive ProductionSignal & ProductionRiskLevels from ProductionDecision
-        signal = ProductionSignal.from_decision(decision)
-        risk = calculate_production_risk_levels(decision, candidate)
+            display = {
+                "symbol": self.symbol,
+                "interval": self.interval,
+                "decision": decision.direction.value,
+                "reason": decision.reason,
+                "stable_strategy": str(stable_strategy),
+                "stability_score": stability_score,
+                "strategy_supported": str(stable_strategy) == "momentum",
+                "signal": 1 if decision.direction == Direction.BUY else 0,
+                "signal_label": decision.direction.value,
+                "trend": "UP" if decision.direction == Direction.BUY else "NEUTRAL",
+                "momentum": float(data["close"].iloc[-1]) if "close" in data.columns and not data.empty else None,
+                "entry_price": risk.entry_price,
+                "stop_loss": risk.stop_loss,
+                "tp1": risk.tp1,
+                "tp2": risk.tp2,
+                "tp3": risk.tp3,
+                "take_profit": risk.tp2 if risk.tp2 is not None else risk.tp1,
+                "risk_distance": (risk.entry_price - risk.stop_loss) if (risk.entry_price is not None and risk.stop_loss is not None) else None,
+                "risk_reward_ratio": risk.risk_reward_ratio,
+                "stop_loss_pct": candidate.parameters.get("stop_loss_pct"),
+                "take_profit_pct": candidate.parameters.get("take_profit_pct"),
+                "momentum_window": candidate.parameters.get("momentum_window", candidate.parameters.get("window")),
+                "timestamp": decision.market_timestamp,
+                "quote_stale": False,
+                "quote_age_seconds": freshness["age_seconds"],
+            }
+
+        if 'signal' not in locals():
+            signal = ProductionSignal.from_decision(decision)
+            risk = calculate_production_risk_levels(decision, candidate)
 
         # Derive canonical ProductionIntelligencePublication
         publication = ProductionIntelligencePublication.from_artifacts(

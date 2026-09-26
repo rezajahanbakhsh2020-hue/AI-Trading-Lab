@@ -1,0 +1,15 @@
+{
+  "candidate_id": "cand_moving_average_5m",
+  "strategy_name": "moving_average",
+  "strategy_version": "1.0",
+  "experiment_fingerprint": "28a07a98d292a4328261b3eacf338f778217047b7b9824b745fdf2b13d138838",
+  "evidence_id": "ev_67bce5c5bd03ec42",
+  "symbol": "XAUUSD",
+  "timeframe": "5m",
+  "parameters": {
+    "fast_window": 20,
+    "slow_window": 50,
+    "stop_loss_pct": 0.01,
+    "take_profit_pct": 0.02
+  }
+}
