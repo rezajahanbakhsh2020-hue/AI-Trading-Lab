@@ -20,6 +20,14 @@ from typing import Any, Mapping, Sequence
 import pandas as pd
 
 from src.evaluation.candidate_generator import CandidateSpec, ResearchSearchSpace
+from src.evaluation.research_registry import (
+    ResearchRegistryRecord,
+    ResearchRegistryStore,
+    _compute_ea_id,
+    _compute_cp_id,
+    _compute_scope_id,
+    construct_registry_record_from_evidence,
+)
 from src.evaluation.research_robustness import (
     ResearchRobustnessAssessment,
     assess_research_robustness,
@@ -142,6 +150,9 @@ class DiscoveryRunResult:
     robustness_assessments: tuple[ResearchRobustnessAssessment, ...] = field(
         default_factory=tuple
     )
+    registry_records: tuple[ResearchRegistryRecord, ...] = field(
+        default_factory=tuple
+    )
 
     @property
     def total_candidates(self) -> int:
@@ -193,6 +204,7 @@ class DiscoveryEngine:
         wf_train_size: int | None = None,
         wf_test_size: int | None = None,
         persist_evidence: bool = False,
+        persist_registry_dir: str | Path | None = None,
     ) -> DiscoveryRunResult:
         """Execute discovery workflow over candidates using dataset partitioning.
 
@@ -340,9 +352,12 @@ class DiscoveryEngine:
         promoted_sorted = sorted(promoted, key=_evidence_rank_key)
         rejected_sorted = sorted(rejected, key=_evidence_rank_key)
 
-        # Generate selection governance and robustness assessments for all evaluated evidence artifacts
+        # Generate selection governance and robustness assessments, and record trial results in registry
         selection_assessments: list[ResearchSelectionAssessment] = []
         robustness_assessments: list[ResearchRobustnessAssessment] = []
+        registry_records: list[ResearchRegistryRecord] = []
+        registry_store = ResearchRegistryStore(base_dir=persist_registry_dir) if persist_evidence and persist_registry_dir else (ResearchRegistryStore() if persist_evidence else None)
+
         all_evidence = promoted_sorted + rejected_sorted
         for ev in all_evidence:
             assessment = assess_research_selection(
@@ -358,6 +373,95 @@ class DiscoveryEngine:
             )
             robustness_assessments.append(rob_assessment)
 
+            # Match evidence to its trial record
+            tr = next((t for t in trial_records if t.experiment_fingerprint == ev.experiment_fingerprint), None)
+            cand_id = tr.candidate_id if tr else None
+            tr_id = tr.trial_id if tr else None
+            tr_idx = tr.trial_index if tr else None
+            qual_stat = tr.status if tr else None
+
+            rec = construct_registry_record_from_evidence(
+                evidence=ev,
+                candidate_id=cand_id,
+                search_id=search_space.search_id,
+                search_fingerprint=search_space.search_fingerprint,
+                trial_id=tr_id,
+                trial_index=tr_idx,
+                selection_assessment=assessment,
+                robustness_assessment=rob_assessment,
+                qualification_status=qual_stat,
+            )
+            registry_records.append(rec)
+            if registry_store is not None:
+                registry_store.register(rec)
+
+        # Handle failed trials in registry
+        for tr in trial_records:
+            if tr.status == "FAILED":
+                failed_key = f"failed:{tr.trial_id}:{tr.candidate_id}"
+                failed_rec_id = hashlib.sha256(failed_key.encode("utf-8")).hexdigest()[:24]
+                ds_id = _compute_scope_id(dataset_scope)
+                ea_id = _compute_ea_id(execution_assumptions)
+                cp_id = _compute_cp_id(code_provenance)
+
+                from src.evaluation.research_registry import (
+                    RegistryStatus,
+                    ResearchEvidenceLineage,
+                    ResearchReproducibilityDescriptor,
+                )
+                repro = ResearchReproducibilityDescriptor(
+                    experiment_fingerprint=f"failed_{tr.candidate_id}",
+                    evidence_fingerprint=None,
+                    dataset_scope_id=ds_id,
+                    execution_assumptions_id=ea_id,
+                    code_provenance_id=cp_id,
+                    methodology_version=self.criteria.methodology_version,
+                    search_space_fingerprint=search_space.search_fingerprint,
+                    trial_id=tr.trial_id,
+                    candidate_id=tr.candidate_id,
+                )
+                lin = ResearchEvidenceLineage(
+                    search_id=search_space.search_id,
+                    search_fingerprint=search_space.search_fingerprint,
+                    trial_id=tr.trial_id,
+                    trial_index=tr.trial_index,
+                    candidate_id=tr.candidate_id,
+                    experiment_fingerprint=f"failed_{tr.candidate_id}",
+                    evidence_fingerprint=None,
+                    qualification_status="REJECTED",
+                    selection_assessment_id=None,
+                    robustness_assessment_id=None,
+                    promotion_status=PromotionStatus.REJECTED.value,
+                )
+                failed_rec = ResearchRegistryRecord(
+                    record_id=failed_rec_id,
+                    experiment_fingerprint=f"failed_{tr.candidate_id}",
+                    evidence_fingerprint=None,
+                    candidate_id=tr.candidate_id,
+                    search_fingerprint=search_space.search_fingerprint,
+                    search_id=search_space.search_id,
+                    trial_id=tr.trial_id,
+                    trial_index=tr.trial_index,
+                    status=RegistryStatus.FAILED,
+                    qualification_status="REJECTED",
+                    promotion_status=PromotionStatus.REJECTED.value,
+                    rejection_reasons=("SPECIFICATION_INVALID",),
+                    dataset_scope_id=ds_id,
+                    execution_assumptions_id=ea_id,
+                    code_provenance_id=cp_id,
+                    methodology_version=self.criteria.methodology_version,
+                    selection_assessment_id=None,
+                    robustness_assessment_id=None,
+                    benchmark_status=None,
+                    regime_status=None,
+                    error_message=tr.error_message,
+                    reproducibility=repro,
+                    lineage=lin,
+                )
+                registry_records.append(failed_rec)
+                if registry_store is not None:
+                    registry_store.register(failed_rec)
+
         return DiscoveryRunResult(
             dataset_scope=dataset_scope,
             execution_assumptions=execution_assumptions,
@@ -371,6 +475,7 @@ class DiscoveryEngine:
             search_truncated=search_truncated,
             selection_assessments=tuple(selection_assessments),
             robustness_assessments=tuple(robustness_assessments),
+            registry_records=tuple(registry_records),
         )
 
     def _validate_dataset_scope(
