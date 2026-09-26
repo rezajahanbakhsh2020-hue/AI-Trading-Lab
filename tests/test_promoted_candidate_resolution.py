@@ -76,18 +76,37 @@ def make_research_evidence(
         parameters=parameters
         or {"momentum_window": 10, "stop_loss_pct": 0.01, "take_profit_pct": 0.02},
     )
-    part = EvidencePartition(
+    part_is = EvidencePartition(
+        role=EvidencePartitionRole.IN_SAMPLE,
+        start_date="2025-01-01",
+        end_date="2025-01-02",
+        total_return=0.20,
+        max_drawdown=0.05,
+        sharpe_ratio=2.0,
+        observations=50,
+    )
+    part_oos = EvidencePartition(
         role=EvidencePartitionRole.OUT_OF_SAMPLE,
         start_date="2025-01-01",
         end_date="2025-01-02",
         total_return=0.15,
         max_drawdown=0.05,
         sharpe_ratio=1.8,
+        observations=30,
+    )
+    part_wf = EvidencePartition(
+        role=EvidencePartitionRole.WALK_FORWARD,
+        start_date="2025-01-01",
+        end_date="2025-01-02",
+        total_return=0.10,
+        max_drawdown=0.05,
+        sharpe_ratio=1.5,
+        observations=30,
     )
     return ResearchEvidence(
         experiment_fingerprint=spec.fingerprint,
         spec=spec,
-        partitions=(part,),
+        partitions=(part_is, part_oos, part_wf),
         robustness_verdict={"passed": robustness_passed},
         promotion_status=status,
         rejection_reasons=rejection_reasons,
@@ -170,14 +189,12 @@ def test_evidence_missing_is_blocked(tmp_path: Path) -> None:
 
 
 def test_evidence_not_promoted_is_blocked(tmp_path: Path) -> None:
-    persist_test_candidate(
-        tmp_path,
-        candidate_id="cand_proposed",
+    evidence = make_research_evidence(
         status=PromotionStatus.PROPOSED,
         hypothesis="Unpromoted proposed candidate",
     )
-    with pytest.raises(PromotionEligibilityError, match="not allowed for production"):
-        resolve_promoted_candidate(candidate_id="cand_proposed", base_dir=tmp_path)
+    with pytest.raises(PromotionEligibilityError, match="failed qualification"):
+        save_research_candidate(candidate_id="cand_proposed", evidence=evidence, base_dir=tmp_path)
 
 
 def test_fingerprint_mismatch_is_blocked(tmp_path: Path) -> None:
@@ -253,35 +270,27 @@ def test_stale_invalid_evidence_is_blocked(tmp_path: Path) -> None:
             base_dir=tmp_path,
             policy=policy,
         )
-    persist_test_candidate(
-        tmp_path,
-        candidate_id="cand_rejected",
+    rejected_evidence = make_research_evidence(
         status=PromotionStatus.REJECTED,
         rejection_reasons=(RejectionReason.FAILED_ROBUSTNESS,),
         hypothesis="Rejected evidence must not enter production",
         robustness_passed=False,
     )
-    with pytest.raises(PromotionEligibilityError, match="not allowed for production"):
-        resolve_promoted_candidate(candidate_id="cand_rejected", base_dir=tmp_path)
+    with pytest.raises(PromotionEligibilityError, match="failed qualification"):
+        save_research_candidate(candidate_id="cand_rejected", evidence=rejected_evidence, base_dir=tmp_path)
 
 
 def test_configuration_selecting_unpromoted_candidate_is_blocked(tmp_path: Path) -> None:
-    persist_test_candidate(
-        tmp_path,
-        candidate_id="cand_experimental",
+    exp_evidence = make_research_evidence(
         status=PromotionStatus.EXPERIMENTAL,
         hypothesis="Experimental candidate is not production eligible",
     )
-    blocked = resolve_authoritative_promoted_candidate(
-        ProductionRuntimeConfig(
-            symbol="XAUUSD",
-            timeframe="5m",
+    with pytest.raises(PromotionEligibilityError, match="failed qualification"):
+        save_research_candidate(
             candidate_id="cand_experimental",
-            strategy_id="momentum",
-            research_dir=tmp_path,
+            evidence=exp_evidence,
+            base_dir=tmp_path,
         )
-    )
-    assert blocked.reason == "PromotionEligibilityError"
 
 
 def test_no_fallback_candidate(tmp_path: Path) -> None:

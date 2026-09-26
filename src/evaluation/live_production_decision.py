@@ -222,60 +222,46 @@ def validate_promotion_eligibility(
 ) -> bool:
     """Validate that research evidence satisfies production promotion criteria.
 
+    Delegates strictly through canonical research evidence qualification.
     Fails closed if evidence is missing, unpromoted, rejected, or invalid.
     """
+    from src.evaluation.research_qualification import (
+        ResearchQualificationPolicy,
+        qualify_research_evidence,
+    )
+
     if policy is None:
         policy = ProductionPromotionPolicy()
 
     if not isinstance(evidence, ResearchEvidence):
         raise TypeError("evidence must be a ResearchEvidence instance.")
 
-    if evidence.promotion_status not in policy.allowed_statuses:
+    qual_policy = ResearchQualificationPolicy(
+        allowed_statuses=policy.allowed_statuses,
+        max_evidence_age_days=policy.max_evidence_age_days,
+        require_robustness=policy.require_robustness_pass,
+    )
+
+    qual_result = qualify_research_evidence(evidence, policy=qual_policy, now=now)
+    if not qual_result.qualified:
+        reasons = [r.value for r in qual_result.rejection_reasons]
+        if RejectionReason.STALE_INVALID_DATA in qual_result.rejection_reasons or "stale" in qual_result.qualification_notes:
+            raise ValueError(
+                f"Evidence '{evidence.evidence_id}' is stale or invalid ({qual_result.qualification_notes})."
+            )
+        if RejectionReason.CRITIQUE_REJECTED in qual_result.rejection_reasons or evidence.promotion_status not in policy.allowed_statuses:
+            raise ValueError(
+                f"Evidence '{evidence.evidence_id}' has status '{evidence.promotion_status.value}' "
+                f"which is not allowed for production (allowed: {[s.value for s in policy.allowed_statuses]})."
+            )
+        if evidence.rejection_reasons:
+            orig_reasons = [r.value for r in evidence.rejection_reasons]
+            raise ValueError(
+                f"Evidence '{evidence.evidence_id}' contains rejection reasons: {orig_reasons}"
+            )
         raise ValueError(
-            f"Evidence '{evidence.evidence_id}' has status '{evidence.promotion_status.value}' "
-            f"which is not allowed for production (allowed: {[s.value for s in policy.allowed_statuses]})."
+            f"Evidence '{evidence.evidence_id}' failed promotion qualification: {qual_result.qualification_notes} (reasons: {reasons})"
         )
-
-    if evidence.rejection_reasons:
-        reasons = [r.value for r in evidence.rejection_reasons]
-        raise ValueError(
-            f"Evidence '{evidence.evidence_id}' contains rejection reasons: {reasons}"
-        )
-
-    if policy.require_robustness_pass and evidence.robustness_verdict:
-        passed = evidence.robustness_verdict.get("passed")
-        if passed is False:
-            raise ValueError(
-                f"Evidence '{evidence.evidence_id}' failed robustness verdict."
-            )
-
-    if policy.max_evidence_age_days is not None:
-        if not evidence.created_at_utc or not str(evidence.created_at_utc).strip():
-            raise ValueError(
-                f"Evidence '{evidence.evidence_id}' is missing created_at_utc required for freshness validation."
-            )
-        try:
-            created = datetime.fromisoformat(str(evidence.created_at_utc).replace("Z", "+00:00"))
-        except ValueError as exc:
-            raise ValueError(
-                f"Evidence '{evidence.evidence_id}' has invalid created_at_utc '{evidence.created_at_utc}'."
-            ) from exc
-        if created.tzinfo is None:
-            created = created.replace(tzinfo=timezone.utc)
-        if now is None:
-            now = datetime.now(timezone.utc)
-        elif now.tzinfo is None:
-            now = now.replace(tzinfo=timezone.utc)
-        age_days = (now - created).total_seconds() / 86400.0
-        if age_days < 0:
-            raise ValueError(
-                f"Evidence '{evidence.evidence_id}' created_at_utc '{evidence.created_at_utc}' is in the future."
-            )
-        if age_days > float(policy.max_evidence_age_days):
-            raise ValueError(
-                f"Evidence '{evidence.evidence_id}' is stale "
-                f"({age_days:.1f} days old, max allowed: {policy.max_evidence_age_days} days)."
-            )
 
     return True
 

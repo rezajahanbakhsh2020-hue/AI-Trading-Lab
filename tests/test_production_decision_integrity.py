@@ -92,18 +92,37 @@ def make_promoted_evidence(
         benchmark_reference="buy_and_hold",
         parameters={"momentum_window": 10, "stop_loss_pct": 0.01, "take_profit_pct": 0.02},
     )
-    part = EvidencePartition(
+    part_is = EvidencePartition(
+        role=EvidencePartitionRole.IN_SAMPLE,
+        start_date="2025-01-01",
+        end_date="2025-01-02",
+        total_return=0.20,
+        max_drawdown=0.05,
+        sharpe_ratio=2.0,
+        observations=50,
+    )
+    part_oos = EvidencePartition(
         role=EvidencePartitionRole.OUT_OF_SAMPLE,
         start_date="2025-01-01",
         end_date="2025-01-02",
         total_return=0.15,
         max_drawdown=0.05,
         sharpe_ratio=1.8,
+        observations=30,
+    )
+    part_wf = EvidencePartition(
+        role=EvidencePartitionRole.WALK_FORWARD,
+        start_date="2025-01-01",
+        end_date="2025-01-02",
+        total_return=0.10,
+        max_drawdown=0.05,
+        sharpe_ratio=1.5,
+        observations=30,
     )
     return ResearchEvidence(
         experiment_fingerprint=spec.fingerprint,
         spec=spec,
-        partitions=(part,),
+        partitions=(part_is, part_oos, part_wf),
         robustness_verdict={"passed": robustness_passed},
         promotion_status=status,
         rejection_reasons=rejection_reasons,
@@ -502,36 +521,26 @@ def test_29_regression_coverage_pr6_robustness_validation():
 
 
 def test_missing_risk_parameters_fails_closed():
-    ds = DatasetScope("ds", "XAUUSD", "5m", "2025-01-01", "2025-01-02")
-    ea = ExecutionAssumptions(transaction_cost=0.001, slippage=0.001, latency_ms=10.0)
-    cp = CodeProvenance(commit_sha="843dfa76cf86a9057dba0a127541d7093fb15e42")
-    spec = ResearchExperimentSpec(
+    ev = make_promoted_evidence()
+    spec_no_risk = ResearchExperimentSpec(
         hypothesis="Missing risk params",
         methodology_version="1.0",
         strategy_name="momentum",
         strategy_version="1.0",
-        dataset_scope=ds,
-        execution_assumptions=ea,
-        code_provenance=cp,
+        dataset_scope=ev.spec.dataset_scope,
+        execution_assumptions=ev.spec.execution_assumptions,
+        code_provenance=ev.spec.code_provenance,
         benchmark_reference="buy_and_hold",
         parameters={"momentum_window": 10},
     )
-    part = EvidencePartition(
-        role=EvidencePartitionRole.OUT_OF_SAMPLE,
-        start_date="2025-01-01",
-        end_date="2025-01-02",
-        total_return=0.15,
-        max_drawdown=0.05,
-        sharpe_ratio=1.8,
-    )
-    ev = ResearchEvidence(
-        experiment_fingerprint=spec.fingerprint,
-        spec=spec,
-        partitions=(part,),
+    ev_no_risk = ResearchEvidence(
+        experiment_fingerprint=spec_no_risk.fingerprint,
+        spec=spec_no_risk,
+        partitions=ev.partitions,
         robustness_verdict={"passed": True},
         promotion_status=PromotionStatus.PROMOTABLE,
     )
-    cand = PromotedCandidateArtifact("cand_no_risk", "momentum", "1.0", ev, "XAUUSD", "5m")
+    cand = PromotedCandidateArtifact("cand_no_risk", "momentum", "1.0", ev_no_risk, "XAUUSD", "5m")
     data = make_market_data(trend="UP")
     dec = evaluate_production_decision(cand, data)
 
@@ -540,36 +549,26 @@ def test_missing_risk_parameters_fails_closed():
 
 
 def test_missing_strategy_window_parameter_fails_closed():
-    ds = DatasetScope("ds", "XAUUSD", "5m", "2025-01-01", "2025-01-02")
-    ea = ExecutionAssumptions(transaction_cost=0.001, slippage=0.001, latency_ms=10.0)
-    cp = CodeProvenance(commit_sha="843dfa76cf86a9057dba0a127541d7093fb15e42")
-    spec = ResearchExperimentSpec(
+    ev = make_promoted_evidence()
+    spec_no_window = ResearchExperimentSpec(
         hypothesis="Missing strategy window",
         methodology_version="1.0",
         strategy_name="momentum",
         strategy_version="1.0",
-        dataset_scope=ds,
-        execution_assumptions=ea,
-        code_provenance=cp,
+        dataset_scope=ev.spec.dataset_scope,
+        execution_assumptions=ev.spec.execution_assumptions,
+        code_provenance=ev.spec.code_provenance,
         benchmark_reference="buy_and_hold",
         parameters={"stop_loss_pct": 0.01, "take_profit_pct": 0.02},
     )
-    part = EvidencePartition(
-        role=EvidencePartitionRole.OUT_OF_SAMPLE,
-        start_date="2025-01-01",
-        end_date="2025-01-02",
-        total_return=0.15,
-        max_drawdown=0.05,
-        sharpe_ratio=1.8,
-    )
-    ev = ResearchEvidence(
-        experiment_fingerprint=spec.fingerprint,
-        spec=spec,
-        partitions=(part,),
+    ev_no_window = ResearchEvidence(
+        experiment_fingerprint=spec_no_window.fingerprint,
+        spec=spec_no_window,
+        partitions=ev.partitions,
         robustness_verdict={"passed": True},
         promotion_status=PromotionStatus.PROMOTABLE,
     )
-    cand = PromotedCandidateArtifact("cand_no_window", "momentum", "1.0", ev, "XAUUSD", "5m")
+    cand = PromotedCandidateArtifact("cand_no_window", "momentum", "1.0", ev_no_window, "XAUUSD", "5m")
     data = make_market_data(trend="UP")
 
     with pytest.raises(ValueError, match="missing required 'momentum_window' or 'window' parameter"):

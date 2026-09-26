@@ -3,7 +3,7 @@
   "strategy_name": "moving_average",
   "strategy_version": "1.0",
   "experiment_fingerprint": "edc387680b24264ae29c66d6120f159770b573309359e2fbaf872ead957177a2",
-  "evidence_id": "ev_65debba17584110c",
+  "evidence_id": "ev_89c02210b360ef7f",
   "symbol": "XAUUSD",
   "timeframe": "1d",
   "parameters": {

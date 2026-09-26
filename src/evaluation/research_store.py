@@ -231,15 +231,32 @@ def persist_promoted_candidate_binding(
     candidate_id: str,
     evidence: ResearchEvidence,
     base_dir: str | Path = DEFAULT_RESEARCH_DIR,
+    policy: Any | None = None,
 ) -> Path:
     """Persist an identity binding from a research candidate to already-saved evidence.
 
-    The binding never establishes promotion. It only records which persisted
-    ResearchEvidence identity a candidate refers to. Promotion status remains
-    whatever the evidence artifact itself stores.
+    Requires explicit research evidence qualification before binding. Fails closed
+    if the evidence fails qualification criteria.
     """
+    from src.evaluation.research_qualification import (
+        ResearchQualificationPolicy,
+        qualify_research_evidence,
+    )
+
     if not isinstance(evidence, ResearchEvidence):
         raise TypeError("evidence must be a ResearchEvidence instance.")
+
+    qualification = qualify_research_evidence(
+        evidence,
+        policy=policy if isinstance(policy, ResearchQualificationPolicy) else None,
+    )
+
+    if not qualification.qualified:
+        reasons = [r.value for r in qualification.rejection_reasons]
+        raise PromotionEligibilityError(
+            f"Cannot bind candidate '{candidate_id}': evidence '{evidence.evidence_id}' "
+            f"failed qualification ({qualification.qualification_notes}). Rejection reasons: {reasons}"
+        )
 
     candidate_id = _require_non_empty_str(candidate_id, "candidate_id")
     spec = evidence.spec
