@@ -169,7 +169,7 @@ def test_publisher_retry_and_failure(mock_urlopen) -> None:
     )
     res = publisher.publish(payload)
 
-    assert res["status"] == "FAILED"
+    assert res["status"] in ("UNAVAILABLE", "FAILED")
     assert res["published"] is False
     assert res["attempts"] == 2
     assert "secret-key" not in res["error"]
@@ -264,6 +264,6 @@ def test_publisher_rejected_http_401(mock_urlopen) -> None:
         stop_loss=1980.0,
     )
     res = publisher.publish(payload)
-    assert res["status"] == "REJECTED"
+    assert res["status"] == "AUTH_FAILED"
     assert res["http_code"] == 401
     assert res["attempts"] == 1

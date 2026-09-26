@@ -134,11 +134,18 @@ class Project2Publisher:
 
     def publish(
         self,
-        payload: Dict[str, Any],
+        payload: Any,
         *,
         skip_if_no_trade: bool = False,
     ) -> Dict[str, Any]:
         """Deliver contract payload to Project 2."""
+        if hasattr(payload, "to_contract_v1_payload"):
+            payload_dict = payload.to_contract_v1_payload()
+        elif isinstance(payload, dict):
+            payload_dict = payload
+        else:
+            raise TypeError("payload must be a dictionary or ProductionIntelligencePublication instance.")
+
         if not self.enabled:
             return {
                 "status": "SKIPPED_DISABLED",
@@ -160,7 +167,7 @@ class Project2Publisher:
                 "reason": "Missing PROJECT2_API_KEY configuration",
             }
 
-        decision = payload.get("signal", {}).get("decision")
+        decision = payload_dict.get("signal", {}).get("decision")
         if skip_if_no_trade and decision == "NO TRADE":
             return {
                 "status": "SKIPPED_NO_TRADE",
@@ -168,7 +175,7 @@ class Project2Publisher:
                 "reason": "Decision is NO TRADE and skip_if_no_trade=True",
             }
 
-        event_ts = payload.get("timestamp", "")
+        event_ts = payload_dict.get("timestamp", "")
         if event_ts and self.is_stale(event_ts):
             return {
                 "status": "SKIPPED_STALE",
@@ -176,8 +183,8 @@ class Project2Publisher:
                 "reason": f"Event timestamp {event_ts} exceeds max_age_seconds={self.max_age_seconds}",
             }
 
-        body_bytes = json.dumps(payload, separators=(",", ":")).encode("utf-8")
-        event_id = payload.get("event_id", "")
+        body_bytes = json.dumps(payload_dict, separators=(",", ":")).encode("utf-8")
+        event_id = payload_dict.get("event_id", "")
 
         headers = {
             "Content-Type": "application/json",
@@ -192,8 +199,7 @@ class Project2Publisher:
         attempt = 0
         last_error = ""
         last_status_code = None
-        is_rejected = False
-        is_timeout = False
+        final_status = "FAILED"
 
         while attempt < self.max_retries:
             attempt += 1
@@ -208,42 +214,77 @@ class Project2Publisher:
                     code = resp.getcode()
                     resp_body = resp.read().decode("utf-8")
                     if 200 <= code < 300:
+                        # Validate acknowledgement receipt
+                        receipt_json = None
+                        try:
+                            receipt_json = json.loads(resp_body)
+                        except Exception:
+                            receipt_json = None
+
+                        if isinstance(receipt_json, dict):
+                            # Verify publication identity in receipt if present
+                            ack_id = receipt_json.get("event_id") or receipt_json.get("publication_id") or receipt_json.get("id")
+                            if ack_id and ack_id != event_id:
+                                return {
+                                    "status": "INVALID_RESPONSE",
+                                    "published": False,
+                                    "http_code": code,
+                                    "event_id": event_id,
+                                    "error": f"Acknowledgement identity mismatch: expected '{event_id}', got '{ack_id}'",
+                                    "attempts": attempt,
+                                }
+
+                            ack_status = str(receipt_json.get("status", "")).upper()
+                            if ack_status in ("REJECTED", "DECLINED", "INVALID", "FAILED"):
+                                return {
+                                    "status": "REJECTED",
+                                    "published": False,
+                                    "http_code": code,
+                                    "event_id": event_id,
+                                    "error": f"Gateway explicitly rejected signal in receipt with status '{ack_status}'",
+                                    "attempts": attempt,
+                                }
+
                         return {
                             "status": "PUBLISHED",
                             "published": True,
                             "http_code": code,
                             "event_id": event_id,
+                            "publication_id": event_id,
                             "response": _redact_secret(resp_body, self.api_key),
                             "attempts": attempt,
                         }
+
                     last_status_code = code
                     last_error = f"HTTP status code {code}"
             except urllib.error.HTTPError as exc:
                 last_status_code = exc.code
                 err_content = exc.read().decode("utf-8") if exc.fp else ""
                 last_error = _redact_secret(f"HTTPError {exc.code}: {exc.reason} - {err_content}", self.api_key)
-                if exc.code in (400, 401, 403, 404, 422):
-                    is_rejected = True
+                if exc.code == 401:
+                    final_status = "AUTH_FAILED"
                     break
+                elif exc.code == 403:
+                    final_status = "FORBIDDEN"
+                    break
+                elif exc.code in (400, 422):
+                    final_status = "REJECTED"
+                    break
+                elif exc.code in (404, 500, 502, 503, 504):
+                    final_status = "UNAVAILABLE"
             except TimeoutError:
-                is_timeout = True
+                final_status = "TIMED_OUT"
                 last_error = "Request timed out"
             except Exception as exc:
                 if "timed out" in str(exc).lower():
-                    is_timeout = True
+                    final_status = "TIMED_OUT"
                     last_error = "Request timed out"
                 else:
+                    final_status = "UNAVAILABLE"
                     last_error = _redact_secret(f"Connection error: {exc}", self.api_key)
 
-            if attempt < self.max_retries:
+            if attempt < self.max_retries and final_status not in ("AUTH_FAILED", "FORBIDDEN", "REJECTED"):
                 time.sleep(self.backoff_factor * (2 ** (attempt - 1)))
-
-        if is_rejected:
-            final_status = "REJECTED"
-        elif is_timeout:
-            final_status = "TIMED_OUT"
-        else:
-            final_status = "FAILED"
 
         result = {
             "status": final_status,

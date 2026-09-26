@@ -52,7 +52,7 @@ def test_provider_capability_registry_custom_adapter(monkeypatch) -> None:
 
 @patch("src.evaluation.live_execution_runtime.load_production_selection")
 @patch("src.evaluation.live_execution_runtime.load_live_market_data")
-def test_live_execution_runtime_run_once(mock_load_data, mock_load_selection) -> None:
+def test_live_execution_runtime_run_once(mock_load_data, mock_load_selection, tmp_path) -> None:
     mock_load_data.return_value = make_dummy_df()
     mock_load_selection.return_value = {
         "stable_strategy": "momentum",
@@ -69,6 +69,8 @@ def test_live_execution_runtime_run_once(mock_load_data, mock_load_selection) ->
         symbol="XAUUSD",
         interval="5m",
         publisher=mock_publisher,
+        store_path=tmp_path / "store.json",
+        snapshot_path=tmp_path / "snap.json",
     )
 
     result = runtime.run_once(publish=True)
