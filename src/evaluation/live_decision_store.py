@@ -88,9 +88,14 @@ def load_live_decision_history(
 def append_live_decision_to_store(
     record: Mapping[str, Any],
     path: str | Path,
+    enforce_idempotency: bool = True,
 ) -> list[dict[str, Any]]:
     """
     Append one validated decision record to persistent history.
+
+    If enforce_idempotency is True, checks existing records for matching decision_id or signal_id:
+      - If existing record has identical content -> idempotent no-op (or return existing history).
+      - If existing record has conflicting content -> fail closed raising ValueError.
     """
     if not isinstance(record, Mapping):
         raise TypeError("record must be a mapping")
@@ -104,6 +109,35 @@ def append_live_decision_to_store(
         history = load_live_decision_history(target)
     else:
         history = []
+
+    if enforce_idempotency:
+        new_dec_id = new_record.get("decision_id")
+        new_sig_id = new_record.get("signal_id")
+
+        for existing in history:
+            ext_dec_id = existing.get("decision_id")
+            ext_sig_id = existing.get("signal_id")
+
+            id_match = (new_dec_id and new_dec_id == ext_dec_id) or (new_sig_id and new_sig_id == ext_sig_id)
+            if id_match:
+                # Compare canonical content
+                # Exclude runtime volatile timestamps if present
+                keys_to_compare = [k for k in new_record if k not in ("recorded_at", "created_at")]
+                match_all = True
+                for k in keys_to_compare:
+                    if existing.get(k) != new_record.get(k):
+                        match_all = False
+                        break
+
+                if match_all:
+                    # Idempotent replay: record already exists identically
+                    return history
+                else:
+                    # Conflicting replay for same identity -> fail closed
+                    raise ValueError(
+                        f"Conflicting replay detected for decision/signal identity '{new_dec_id or new_sig_id}'. "
+                        "Existing record differs from new record."
+                    )
 
     history.append(new_record)
     save_live_decision_history(history, target)
