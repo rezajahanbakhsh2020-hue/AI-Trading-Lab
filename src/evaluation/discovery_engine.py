@@ -35,7 +35,9 @@ from src.evaluation.research_constitution import (
     RejectionReason,
     ResearchEvidence,
     ResearchExperimentSpec,
+    RobustnessCriteria,
 )
+from src.evaluation.robustness_evaluator import RobustnessEvaluator
 from src.evaluation.research_store import save_research_experiment
 from src.evaluation.strategy_evaluator import evaluate_strategy
 from src.evaluation.walk_forward import generate_walk_forward_windows
@@ -59,12 +61,15 @@ class DiscoveryCriteria:
     benchmark_reference: str = "buy_and_hold"
     methodology_version: str = "discovery_v1.0"
     strategy_version: str = "1.0.0"
+    robustness_criteria: RobustnessCriteria = field(default_factory=RobustnessCriteria)
 
     def __post_init__(self) -> None:
         if self.min_observations_is <= 0:
             raise ValueError("min_observations_is must be positive.")
         if self.min_observations_oos <= 0:
             raise ValueError("min_observations_oos must be positive.")
+        if not isinstance(self.robustness_criteria, RobustnessCriteria):
+            raise TypeError("robustness_criteria must be a RobustnessCriteria instance.")
 
 
 @dataclass(frozen=True)
@@ -329,8 +334,24 @@ class DiscoveryEngine:
         # Benchmark comparison on full dataset
         benchmark_comp = self._evaluate_benchmark(df_is, is_part.total_return)
 
+        # 5. Robustness, Stress & Statistical Validation Step
+        df_ref = pd.concat([df_is, df_val]).sort_values("timestamp").reset_index(drop=True) if "timestamp" in df_is.columns else pd.concat([df_is, df_val])
+
+        robustness_eval = RobustnessEvaluator(
+            criteria=self.criteria.robustness_criteria,
+            registry=self.registry,
+        )
+        robustness_res = robustness_eval.evaluate_candidate_robustness(
+            candidate=cand,
+            df_reference=df_ref,
+            df_oos=df_oos,
+            dataset_scope=dataset_scope,
+            execution_assumptions=execution_assumptions,
+        )
+
+        rejection_reasons.extend(robustness_res.rejection_reasons)
+
         # Determine final promotion status
-        # Deduplicate rejection reasons while keeping order
         dedup_rejections = tuple(dict.fromkeys(rejection_reasons))
 
         if dedup_rejections:
@@ -344,6 +365,7 @@ class DiscoveryEngine:
             experiment_fingerprint=spec.fingerprint,
             spec=spec,
             partitions=tuple(partitions),
+            robustness_verdict=robustness_res.as_dict(),
             benchmark_comparison=benchmark_comp,
             promotion_status=status,
             rejection_reasons=dedup_rejections,

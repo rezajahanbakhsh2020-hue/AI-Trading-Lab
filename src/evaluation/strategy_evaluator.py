@@ -35,6 +35,7 @@ class StrategyEvaluation:
     exposure: float
     observations: int
     ranking_score: float
+    returns: pd.Series | None = None
 
     def as_dict(self) -> dict:
         return {
@@ -187,6 +188,8 @@ def evaluate_strategy(
         profit_factor_value=factor,
     )
 
+    strategy_returns = backtest_result["strategy_return"] if "strategy_return" in backtest_result.columns else None
+
     return StrategyEvaluation(
         name=strategy.name,
         category=strategy.category,
@@ -199,6 +202,7 @@ def evaluate_strategy(
         exposure=market_exposure,
         observations=len(strategy_result),
         ranking_score=score,
+        returns=strategy_returns if isinstance(strategy_returns, pd.Series) else None,
     )
 
 

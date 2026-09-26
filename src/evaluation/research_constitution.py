@@ -51,6 +51,48 @@ class RejectionReason(str, Enum):
     CRITIQUE_REJECTED = "CRITIQUE_REJECTED"
     DUPLICATE_CANDIDATE = "DUPLICATE_CANDIDATE"
     RESEARCH_LEAKAGE = "RESEARCH_LEAKAGE"
+    FAILED_PARAMETER_SENSITIVITY = "FAILED_PARAMETER_SENSITIVITY"
+    FAILED_COST_STRESS = "FAILED_COST_STRESS"
+    INSUFFICIENT_STATISTICAL_SAMPLE = "INSUFFICIENT_STATISTICAL_SAMPLE"
+    FAILED_STATISTICAL_VALIDATION = "FAILED_STATISTICAL_VALIDATION"
+    ANTI_OVERFITTING_VIOLATION = "ANTI_OVERFITTING_VIOLATION"
+    MISSING_ROBUSTNESS_EVIDENCE = "MISSING_ROBUSTNESS_EVIDENCE"
+    PERSISTENCE_FAILURE = "PERSISTENCE_FAILURE"
+
+
+@dataclass(frozen=True)
+class RobustnessCriteria:
+    """Configurable quantitative thresholds for candidate robustness & statistical validation."""
+
+    perturbation_pcts: tuple[float, ...] = (-0.10, 0.10)
+    min_perturbation_pass_rate: float = 0.80
+    cost_stress_multipliers: tuple[float, ...] = (1.5, 2.0)
+    min_cost_stress_pass_rate: float = 1.0
+    subsample_slices_count: int = 3
+    min_subsample_pass_rate: float = 0.66
+    min_statistical_observations: int = 30
+    min_t_stat: float = 1.65
+    max_p_value: float = 0.05
+    version: str = "robustness_v1.0"
+
+    def __post_init__(self) -> None:
+        if not (0.0 <= self.min_perturbation_pass_rate <= 1.0):
+            raise ValueError("min_perturbation_pass_rate must be between 0.0 and 1.0.")
+        if not (0.0 <= self.min_cost_stress_pass_rate <= 1.0):
+            raise ValueError("min_cost_stress_pass_rate must be between 0.0 and 1.0.")
+        if not (0.0 <= self.min_subsample_pass_rate <= 1.0):
+            raise ValueError("min_subsample_pass_rate must be between 0.0 and 1.0.")
+        if self.subsample_slices_count <= 0:
+            raise ValueError("subsample_slices_count must be positive.")
+        if self.min_statistical_observations <= 0:
+            raise ValueError("min_statistical_observations must be positive.")
+        if not math.isfinite(self.min_t_stat):
+            raise ValueError("min_t_stat must be a finite float.")
+        if not (0.0 <= self.max_p_value <= 1.0):
+            raise ValueError("max_p_value must be between 0.0 and 1.0.")
+        for mult in self.cost_stress_multipliers:
+            if not math.isfinite(mult) or mult < 0.0:
+                raise ValueError("cost_stress_multipliers must be finite non-negative numbers.")
 
 
 class EvidencePartitionRole(str, Enum):
