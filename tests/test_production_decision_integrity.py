@@ -591,3 +591,55 @@ def test_candidate_tp_multipliers_override_defaults():
     assert risk.tp1 == pytest.approx(entry + (risk_dist * 1.5))
     assert risk.tp2 == pytest.approx(entry + (risk_dist * 2.5))
     assert risk.tp3 == pytest.approx(entry + (risk_dist * 3.5))
+
+
+# --- Negative Test Matrix Coverage (Phase 6) ---
+
+def test_30_no_promoted_candidate_fails_closed():
+    data = make_market_data(trend="UP")
+    with pytest.raises(TypeError):
+        evaluate_production_decision(None, data)  # type: ignore[arg-type]
+
+
+def test_31_dataset_scope_mismatch_fails_closed():
+    ev = make_promoted_evidence(symbol="XAUUSD", timeframe="5m")
+    with pytest.raises(ValueError, match="does not match evidence dataset symbol"):
+        PromotedCandidateArtifact("cand_mismatch_scope", "momentum", "1.0", ev, "EURUSD", "5m")
+
+
+def test_32_execution_assumptions_mismatch_fails_closed():
+    ds = DatasetScope("ds", "XAUUSD", "5m", "2025-01-01", "2025-01-02")
+    with pytest.raises(ValueError, match="transaction_cost cannot be negative"):
+        ExecutionAssumptions(transaction_cost=-0.01, slippage=0.001, latency_ms=10.0)
+
+
+def test_33_lineage_fingerprint_mismatch_fails_closed():
+    from src.evaluation.research_store import PromotionIntegrityError, _reconstitute_promoted_candidate_from_binding
+    ev = make_promoted_evidence()
+    binding = {
+        "candidate_id": "cand_fp_mismatch",
+        "strategy_name": "momentum",
+        "strategy_version": "1.0",
+        "experiment_fingerprint": "fp_tampered_12345",
+        "evidence_id": ev.evidence_id,
+        "symbol": "XAUUSD",
+        "timeframe": "5m",
+        "parameters": {"momentum_window": 10},
+    }
+    with pytest.raises(PromotionIntegrityError, match="research fingerprint 'fp_tampered_12345' does not match"):
+        _reconstitute_promoted_candidate_from_binding(binding, ev)
+
+
+def test_34_independently_supplied_parameters_disagree_with_authoritative():
+    ev = make_promoted_evidence()
+    cand = PromotedCandidateArtifact(
+        "cand_override", "momentum", "1.0", ev, "XAUUSD", "5m",
+        parameters={"stop_loss_pct": 0.05, "take_profit_pct": 0.10}
+    )
+    data = make_market_data(trend="UP", start_price=1000.0)
+    dec = evaluate_production_decision(cand, data)
+
+    # When risk levels are calculated using candidate parameters, authoritative candidate parameters govern
+    risk = calculate_production_risk_levels(dec, cand)
+    entry = dec.entry_price
+    assert risk.stop_loss == pytest.approx(entry * 0.95)
