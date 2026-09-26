@@ -55,4 +55,6 @@ def build_production_runtime_decision(
             "strategy_stability_score"
         ],
         "portfolio_stability_score": runtime_gate[
-            "portfolio_stability
+            "portfolio_stability_score"
+        ],
+    }
