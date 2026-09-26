@@ -85,6 +85,48 @@ class CandidateGeneratorSpec:
                 raise TypeError(f"Grid values for parameter '{param}' must be a list or tuple.")
 
 
+@dataclass(frozen=True)
+class ResearchSearchSpace:
+    """Explicit, serializable, deterministic, fingerprintable research search space abstraction.
+
+    Candidates are automatically and deterministically ordered by candidate_id.
+    """
+
+    candidate_definitions: tuple[CandidateSpec, ...]
+    search_id: str = ""
+    random_seed: int | None = None
+    search_fingerprint: str = field(init=False)
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.candidate_definitions, tuple):
+            object.__setattr__(
+                self, "candidate_definitions", tuple(self.candidate_definitions)
+            )
+
+        for c in self.candidate_definitions:
+            if not isinstance(c, CandidateSpec):
+                raise TypeError("All items in candidate_definitions must be CandidateSpec instances.")
+
+        # Deterministic candidate ordering by candidate_id
+        ordered_candidates = tuple(
+            sorted(self.candidate_definitions, key=lambda c: c.candidate_id)
+        )
+        object.__setattr__(self, "candidate_definitions", ordered_candidates)
+
+        if not self.search_id:
+            sid = f"search_{hashlib.sha256(json.dumps([c.candidate_id for c in ordered_candidates], sort_keys=True).encode('utf-8')).hexdigest()[:12]}"
+            object.__setattr__(self, "search_id", sid)
+
+        payload = {
+            "search_id": self.search_id,
+            "candidate_ids": [c.candidate_id for c in ordered_candidates],
+            "random_seed": self.random_seed,
+        }
+        serialized = json.dumps(payload, sort_keys=True, ensure_ascii=True)
+        fp = hashlib.sha256(serialized.encode("utf-8")).hexdigest()
+        object.__setattr__(self, "search_fingerprint", fp)
+
+
 class CandidateGenerator:
     """Deterministic candidate generator that produces CandidateSpecs from search spaces."""
 
@@ -127,4 +169,5 @@ class CandidateGenerator:
             )
             candidates.append(cand)
 
-        return tuple(candidates)
+        # Order deterministically
+        return tuple(sorted(candidates, key=lambda c: c.candidate_id))

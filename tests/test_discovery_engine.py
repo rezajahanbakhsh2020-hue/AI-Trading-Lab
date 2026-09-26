@@ -13,11 +13,14 @@ from src.evaluation.candidate_generator import (
     CandidateGenerator,
     CandidateGeneratorSpec,
     CandidateSpec,
+    ResearchSearchSpace,
 )
 from src.evaluation.discovery_engine import (
     DiscoveryCriteria,
     DiscoveryEngine,
     DiscoveryRunResult,
+    ResearchSearchPolicy,
+    ResearchTrialRecord,
 )
 from src.evaluation.research_constitution import (
     CodeProvenance,
@@ -337,3 +340,150 @@ def test_discovery_dataset_scope_out_of_bounds(
             execution_assumptions=execution_assumptions,
             code_provenance=code_provenance,
         )
+
+
+def test_research_search_space_determinism():
+    c1 = CandidateSpec("grid", "1.0", "baseline", {"fast_window": 10})
+    c2 = CandidateSpec("grid", "1.0", "baseline", {"fast_window": 5})
+
+    # Passing in reverse order
+    space1 = ResearchSearchSpace(candidate_definitions=(c1, c2), search_id="search_test")
+    space2 = ResearchSearchSpace(candidate_definitions=(c2, c1), search_id="search_test")
+
+    # Candidates must be deterministically ordered by candidate_id
+    assert [c.candidate_id for c in space1.candidate_definitions] == [c.candidate_id for c in space2.candidate_definitions]
+    assert space1.search_fingerprint == space2.search_fingerprint
+
+
+def test_trial_ledger_and_budget_truncation(
+    sample_market_data, dataset_scope, execution_assumptions, code_provenance
+):
+    cands = tuple(
+        CandidateSpec("grid", "1.0", "baseline", {"fast_window": i}) for i in range(5)
+    )
+    space = ResearchSearchSpace(candidate_definitions=cands, search_id="search_budget")
+    policy = ResearchSearchPolicy(max_trials=2)
+
+    engine = DiscoveryEngine(
+        criteria=DiscoveryCriteria(
+            min_observations_is=10,
+            min_observations_oos=5,
+            min_is_sharpe=-10.0,
+            min_validation_sharpe=-10.0,
+            min_oos_sharpe=-10.0,
+            max_oos_sharpe_degradation=100.0,
+            min_walk_forward_positive_ratio=0.0,
+        )
+    )
+
+    res = engine.run_discovery(
+        df=sample_market_data,
+        candidates=space,
+        dataset_scope=dataset_scope,
+        execution_assumptions=execution_assumptions,
+        code_provenance=code_provenance,
+        search_policy=policy,
+        wf_train_size=30,
+        wf_test_size=15,
+    )
+
+    assert res.search_truncated is True
+    assert res.candidates_evaluated == 2
+    assert res.trial_count == 2
+    assert len(res.trial_ledger) == 2
+    assert res.trial_ledger[0].search_id == "search_budget"
+    assert res.trial_ledger[0].trial_index == 0
+
+
+def test_failure_isolation(
+    sample_market_data, dataset_scope, execution_assumptions, code_provenance, monkeypatch
+):
+    c1 = CandidateSpec("grid", "1.0", "baseline", {"fast_window": 3, "slow_window": 8})
+    c2 = CandidateSpec("grid", "1.0", "baseline", {"fast_window": 5, "slow_window": 10})
+
+    engine = DiscoveryEngine(
+        criteria=DiscoveryCriteria(
+            min_observations_is=10,
+            min_observations_oos=5,
+            min_is_sharpe=-10.0,
+            min_validation_sharpe=-10.0,
+            min_oos_sharpe=-10.0,
+            max_oos_sharpe_degradation=100.0,
+            min_walk_forward_positive_ratio=0.0,
+        )
+    )
+
+    orig_eval = engine._evaluate_candidate
+
+    def mock_eval(*args, **kwargs):
+        cand = kwargs.get("cand")
+        if cand.parameters.get("fast_window") == 3:
+            raise RuntimeError("Simulated execution failure")
+        return orig_eval(*args, **kwargs)
+
+    monkeypatch.setattr(engine, "_evaluate_candidate", mock_eval)
+
+    res = engine.run_discovery(
+        df=sample_market_data,
+        candidates=(c1, c2),
+        dataset_scope=dataset_scope,
+        execution_assumptions=execution_assumptions,
+        code_provenance=code_provenance,
+        search_policy=ResearchSearchPolicy(max_trials=10, fail_fast=False),
+        wf_train_size=30,
+        wf_test_size=15,
+    )
+
+    assert res.failed_trial_count == 1
+    assert res.successful_trial_count == 1
+    failed_record = [t for t in res.trial_ledger if t.status == "FAILED"][0]
+    assert "Simulated execution failure" in failed_record.error_message
+
+
+def test_reproducibility_repeated_runs(
+    sample_market_data, dataset_scope, execution_assumptions, code_provenance
+):
+    cand_spec = CandidateGeneratorSpec(
+        generator_name="grid_search",
+        generator_version="1.0",
+        strategy_name="baseline",
+        parameter_grid={"fast_window": [3, 5], "slow_window": [8, 12]},
+    )
+    candidates = CandidateGenerator(cand_spec).generate_candidates()
+    space = ResearchSearchSpace(candidate_definitions=candidates, search_id="search_repro")
+
+    engine = DiscoveryEngine(
+        criteria=DiscoveryCriteria(
+            min_observations_is=10,
+            min_observations_oos=5,
+            min_is_sharpe=-10.0,
+            min_validation_sharpe=-10.0,
+            min_oos_sharpe=-10.0,
+            max_oos_sharpe_degradation=100.0,
+            min_walk_forward_positive_ratio=0.0,
+        )
+    )
+
+    res1 = engine.run_discovery(
+        df=sample_market_data,
+        candidates=space,
+        dataset_scope=dataset_scope,
+        execution_assumptions=execution_assumptions,
+        code_provenance=code_provenance,
+        wf_train_size=30,
+        wf_test_size=15,
+    )
+
+    res2 = engine.run_discovery(
+        df=sample_market_data,
+        candidates=space,
+        dataset_scope=dataset_scope,
+        execution_assumptions=execution_assumptions,
+        code_provenance=code_provenance,
+        wf_train_size=30,
+        wf_test_size=15,
+    )
+
+    assert res1.search_space_fingerprint == res2.search_space_fingerprint
+    assert [t.candidate_id for t in res1.trial_ledger] == [t.candidate_id for t in res2.trial_ledger]
+    assert [ev.evidence_id for ev in res1.promoted_evidence] == [ev.evidence_id for ev in res2.promoted_evidence]

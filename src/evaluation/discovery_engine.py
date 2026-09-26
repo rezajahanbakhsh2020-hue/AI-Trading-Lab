@@ -10,14 +10,16 @@ No market data generation, silent substitution, or OOS leakage permitted.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
+import hashlib
+import json
 import math
 from typing import Any, Mapping, Sequence
 
 import pandas as pd
 
-from src.evaluation.candidate_generator import CandidateSpec
+from src.evaluation.candidate_generator import CandidateSpec, ResearchSearchSpace
 from src.evaluation.research_constitution import (
     CodeProvenance,
     DatasetScope,
@@ -64,6 +66,54 @@ class DiscoveryCriteria:
 
 
 @dataclass(frozen=True)
+class ResearchSearchPolicy:
+    """Policy governing research search budget and execution constraints."""
+
+    max_trials: int
+    fail_fast: bool = False
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.max_trials, int) or self.max_trials <= 0:
+            raise ValueError("max_trials must be a positive integer.")
+
+
+@dataclass(frozen=True)
+class ResearchTrialRecord:
+    """Canonical, immutable record of an attempted candidate research trial."""
+
+    search_id: str
+    trial_id: str
+    trial_index: int
+    candidate_id: str
+    candidate_fingerprint: str
+    experiment_fingerprint: str
+    evidence_fingerprint: str | None
+    qualification_status: PromotionStatus | None
+    rejection_reasons: tuple[RejectionReason, ...]
+    status: str  # PENDING, RUNNING, COMPLETED, FAILED, QUALIFIED, REJECTED
+    error_message: str = ""
+
+    def __post_init__(self) -> None:
+        if not self.search_id or not self.search_id.strip():
+            raise ValueError("search_id must be a non-empty string.")
+        if not self.trial_id or not self.trial_id.strip():
+            raise ValueError("trial_id must be a non-empty string.")
+        if self.trial_index < 0:
+            raise ValueError("trial_index must be non-negative.")
+        if not self.candidate_id or not self.candidate_id.strip():
+            raise ValueError("candidate_id must be a non-empty string.")
+        if self.status not in (
+            "PENDING",
+            "RUNNING",
+            "COMPLETED",
+            "FAILED",
+            "QUALIFIED",
+            "REJECTED",
+        ):
+            raise ValueError(f"Invalid trial status '{self.status}'.")
+
+
+@dataclass(frozen=True)
 class DiscoveryRunResult:
     """Aggregated result of a Research Discovery Engine execution run."""
 
@@ -73,10 +123,34 @@ class DiscoveryRunResult:
     candidates_evaluated: int
     promoted_evidence: tuple[ResearchEvidence, ...]
     rejected_evidence: tuple[ResearchEvidence, ...]
+    search_space_fingerprint: str = ""
+    search_id: str = ""
+    trial_ledger: tuple[ResearchTrialRecord, ...] = field(default_factory=tuple)
+    search_truncated: bool = False
 
     @property
     def total_candidates(self) -> int:
-        return len(self.promoted_evidence) + len(self.rejected_evidence)
+        return self.candidates_evaluated
+
+    @property
+    def trial_count(self) -> int:
+        return len(self.trial_ledger) if self.trial_ledger else self.candidates_evaluated
+
+    @property
+    def successful_trial_count(self) -> int:
+        return sum(1 for t in self.trial_ledger if t.status in ("COMPLETED", "QUALIFIED", "REJECTED"))
+
+    @property
+    def failed_trial_count(self) -> int:
+        return sum(1 for t in self.trial_ledger if t.status == "FAILED")
+
+    @property
+    def qualified_trial_count(self) -> int:
+        return sum(1 for t in self.trial_ledger if t.status == "QUALIFIED")
+
+    @property
+    def rejected_trial_count(self) -> int:
+        return sum(1 for t in self.trial_ledger if t.status == "REJECTED")
 
 
 class DiscoveryEngine:
@@ -93,11 +167,12 @@ class DiscoveryEngine:
     def run_discovery(
         self,
         df: pd.DataFrame,
-        candidates: Sequence[CandidateSpec],
+        candidates: Sequence[CandidateSpec] | ResearchSearchSpace,
         dataset_scope: DatasetScope,
         execution_assumptions: ExecutionAssumptions,
         code_provenance: CodeProvenance,
         *,
+        search_policy: ResearchSearchPolicy | None = None,
         val_ratio: float = 0.2,
         oos_ratio: float = 0.3,
         wf_train_size: int | None = None,
@@ -107,6 +182,8 @@ class DiscoveryEngine:
         """Execute discovery workflow over candidates using dataset partitioning.
 
         Delegates candidate evaluation strictly through run_research_experiment.
+        Registers every trial in an explicit trial ledger and passes results through
+        qualify_research_evidence before findings are synthesized.
         """
         if not isinstance(df, pd.DataFrame):
             raise TypeError("df must be a pandas DataFrame.")
@@ -128,6 +205,24 @@ class DiscoveryEngine:
         # Validate dataset scope vs DataFrame boundaries
         self._validate_dataset_scope(data, dataset_scope)
 
+        # Search space resolution
+        if isinstance(candidates, ResearchSearchSpace):
+            search_space = candidates
+        elif isinstance(candidates, (list, tuple)):
+            search_space = ResearchSearchSpace(candidate_definitions=tuple(candidates))
+        else:
+            raise TypeError("candidates must be a sequence of CandidateSpec or a ResearchSearchSpace.")
+
+        eval_candidates = search_space.candidate_definitions
+        search_truncated = False
+
+        if search_policy is not None:
+            if not isinstance(search_policy, ResearchSearchPolicy):
+                raise TypeError("search_policy must be a ResearchSearchPolicy instance.")
+            if len(eval_candidates) > search_policy.max_trials:
+                eval_candidates = eval_candidates[: search_policy.max_trials]
+                search_truncated = True
+
         # Chronological partitioning
         n = len(data)
         is_ratio = 1.0 - val_ratio - oos_ratio
@@ -146,22 +241,44 @@ class DiscoveryEngine:
 
         promoted: list[ResearchEvidence] = []
         rejected: list[ResearchEvidence] = []
+        trial_records: list[ResearchTrialRecord] = []
         seen_candidate_fingerprints: set[str] = set()
 
-        for cand in candidates:
-            evidence = self._evaluate_candidate(
-                cand=cand,
-                df_full=data,
-                df_is=df_is,
-                df_val=df_val,
-                df_oos=df_oos,
-                dataset_scope=dataset_scope,
-                execution_assumptions=execution_assumptions,
-                code_provenance=code_provenance,
-                wf_train_size=wf_train_size,
-                wf_test_size=wf_test_size,
-                seen_fingerprints=seen_candidate_fingerprints,
-            )
+        for idx, cand in enumerate(eval_candidates):
+            trial_id = f"{search_space.search_id}_trial_{idx}"
+            try:
+                evidence = self._evaluate_candidate(
+                    cand=cand,
+                    df_full=data,
+                    df_is=df_is,
+                    df_val=df_val,
+                    df_oos=df_oos,
+                    dataset_scope=dataset_scope,
+                    execution_assumptions=execution_assumptions,
+                    code_provenance=code_provenance,
+                    wf_train_size=wf_train_size,
+                    wf_test_size=wf_test_size,
+                    seen_fingerprints=seen_candidate_fingerprints,
+                )
+            except Exception as exc:
+                if search_policy and search_policy.fail_fast:
+                    raise
+
+                trial_record = ResearchTrialRecord(
+                    search_id=search_space.search_id,
+                    trial_id=trial_id,
+                    trial_index=idx,
+                    candidate_id=cand.candidate_id,
+                    candidate_fingerprint=cand.candidate_id,
+                    experiment_fingerprint="",
+                    evidence_fingerprint=None,
+                    qualification_status=PromotionStatus.REJECTED,
+                    rejection_reasons=(RejectionReason.SPECIFICATION_INVALID,),
+                    status="FAILED",
+                    error_message=str(exc),
+                )
+                trial_records.append(trial_record)
+                continue
 
             seen_candidate_fingerprints.add(evidence.experiment_fingerprint)
 
@@ -173,16 +290,52 @@ class DiscoveryEngine:
 
             if qual_res.qualified:
                 promoted.append(evidence)
+                trial_status = "QUALIFIED"
             else:
                 rejected.append(evidence)
+                trial_status = "REJECTED"
+
+            trial_record = ResearchTrialRecord(
+                search_id=search_space.search_id,
+                trial_id=trial_id,
+                trial_index=idx,
+                candidate_id=cand.candidate_id,
+                candidate_fingerprint=cand.candidate_id,
+                experiment_fingerprint=evidence.experiment_fingerprint,
+                evidence_fingerprint=evidence.evidence_id,
+                qualification_status=qual_res.status,
+                rejection_reasons=qual_res.rejection_reasons,
+                status=trial_status,
+                error_message="",
+            )
+            trial_records.append(trial_record)
+
+        # Deterministic ranking key for research findings (OOS Sharpe, Total Return, Fingerprint)
+        def _evidence_rank_key(ev: ResearchEvidence) -> tuple[float, float, str]:
+            oos_sharpe = next(
+                (p.sharpe_ratio for p in ev.partitions if p.role == EvidencePartitionRole.OUT_OF_SAMPLE),
+                -999.0,
+            )
+            total_return = next(
+                (p.total_return for p in ev.partitions if p.role == EvidencePartitionRole.OUT_OF_SAMPLE),
+                -999.0,
+            )
+            return (-oos_sharpe, -total_return, ev.experiment_fingerprint)
+
+        promoted_sorted = sorted(promoted, key=_evidence_rank_key)
+        rejected_sorted = sorted(rejected, key=_evidence_rank_key)
 
         return DiscoveryRunResult(
             dataset_scope=dataset_scope,
             execution_assumptions=execution_assumptions,
             code_provenance=code_provenance,
-            candidates_evaluated=len(candidates),
-            promoted_evidence=tuple(promoted),
-            rejected_evidence=tuple(rejected),
+            candidates_evaluated=len(eval_candidates),
+            promoted_evidence=tuple(promoted_sorted),
+            rejected_evidence=tuple(rejected_sorted),
+            search_space_fingerprint=search_space.search_fingerprint,
+            search_id=search_space.search_id,
+            trial_ledger=tuple(trial_records),
+            search_truncated=search_truncated,
         )
 
     def _validate_dataset_scope(
