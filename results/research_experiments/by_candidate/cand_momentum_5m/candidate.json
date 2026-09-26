@@ -3,7 +3,7 @@
   "strategy_name": "momentum",
   "strategy_version": "1.0",
   "experiment_fingerprint": "e6b8a768fd1b98a7a0c914fdebf863f88923870eedcab35bb54d7acedb270c0b",
-  "evidence_id": "ev_b42e2a4d7d5c8e71",
+  "evidence_id": "ev_dd81bc440136adb0",
   "symbol": "XAUUSD",
   "timeframe": "5m",
   "parameters": {

@@ -80,19 +80,37 @@ def test_end_to_end_pipeline(mock_urlopen, mock_load_data, mock_load_selection, 
         benchmark_reference="buy_and_hold",
         parameters={"momentum_window": 10, "stop_loss_pct": 0.01, "take_profit_pct": 0.02},
     )
+    part_is = EvidencePartition(
+        role=EvidencePartitionRole.IN_SAMPLE,
+        start_date="2025-01-01",
+        end_date="2025-01-02",
+        total_return=0.20,
+        max_drawdown=0.05,
+        sharpe_ratio=2.0,
+        observations=50,
+    )
+    part_oos = EvidencePartition(
+        role=EvidencePartitionRole.OUT_OF_SAMPLE,
+        start_date="2025-01-01",
+        end_date="2025-01-02",
+        total_return=0.15,
+        max_drawdown=0.05,
+        sharpe_ratio=1.8,
+        observations=30,
+    )
+    part_wf = EvidencePartition(
+        role=EvidencePartitionRole.WALK_FORWARD,
+        start_date="2025-01-01",
+        end_date="2025-01-02",
+        total_return=0.10,
+        max_drawdown=0.05,
+        sharpe_ratio=1.5,
+        observations=30,
+    )
     evidence = ResearchEvidence(
         experiment_fingerprint=spec.fingerprint,
         spec=spec,
-        partitions=(
-            EvidencePartition(
-                role=EvidencePartitionRole.OUT_OF_SAMPLE,
-                start_date="2025-01-01",
-                end_date="2025-01-02",
-                total_return=0.15,
-                max_drawdown=0.05,
-                sharpe_ratio=1.8,
-            ),
-        ),
+        partitions=(part_is, part_oos, part_wf),
         robustness_verdict={"passed": True},
         promotion_status=PromotionStatus.PROMOTABLE,
         rejection_reasons=(),

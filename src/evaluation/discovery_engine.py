@@ -168,10 +168,10 @@ class DiscoveryEngine:
             if persist_evidence:
                 save_research_experiment(evidence)
 
-            if evidence.promotion_status in (
-                PromotionStatus.PROMOTABLE,
-                PromotionStatus.VALIDATED,
-            ):
+            from src.evaluation.research_qualification import qualify_research_evidence
+            qual_res = qualify_research_evidence(evidence)
+
+            if qual_res.qualified:
                 promoted.append(evidence)
             else:
                 rejected.append(evidence)
