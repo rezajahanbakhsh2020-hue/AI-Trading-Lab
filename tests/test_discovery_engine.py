@@ -165,6 +165,9 @@ def test_discovery_engine_full_vertical_slice(
         assert len(res.promoted_evidence) + len(res.rejected_evidence) == 1
         assert len(res.selection_assessments) == 1
         assert isinstance(res.selection_assessments[0], ResearchSelectionAssessment)
+        assert len(res.robustness_assessments) == 1
+        from src.evaluation.research_robustness import ResearchRobustnessAssessment
+        assert isinstance(res.robustness_assessments[0], ResearchRobustnessAssessment)
 
         evidence = (
             res.promoted_evidence[0]
