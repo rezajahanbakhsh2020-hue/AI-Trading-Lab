@@ -4,8 +4,76 @@ import pandas as pd
 import pytest
 from unittest.mock import MagicMock, patch
 
-from src.evaluation.live_execution_runtime import LiveExecutionRuntime, load_live_market_data
+from src.evaluation.live_execution_runtime import (
+    LiveExecutionRuntime,
+    ProductionRuntimeConfig,
+    load_live_market_data,
+)
+from src.evaluation.research_constitution import (
+    CodeProvenance,
+    DatasetScope,
+    EvidencePartition,
+    EvidencePartitionRole,
+    ExecutionAssumptions,
+    PromotionStatus,
+    ResearchEvidence,
+    ResearchExperimentSpec,
+)
+from src.evaluation.research_store import save_research_candidate
 from src.integration.project2_publisher import Project2Publisher
+
+
+def persist_momentum_candidate(base_dir, candidate_id: str = "cand_momentum_live"):
+    ds = DatasetScope(
+        dataset_id="ds_xauusd_5m",
+        symbol="XAUUSD",
+        timeframe="5m",
+        start_date="2025-01-01",
+        end_date="2025-01-02",
+    )
+    spec = ResearchExperimentSpec(
+        hypothesis="Persisted live-runtime momentum candidate",
+        methodology_version="1.0",
+        strategy_name="momentum",
+        strategy_version="1.0",
+        dataset_scope=ds,
+        execution_assumptions=ExecutionAssumptions(
+            transaction_cost=0.001, slippage=0.001, latency_ms=10.0
+        ),
+        code_provenance=CodeProvenance(commit_sha="e52d95d1ede22cf3c8ce07dc216763ace4a4359c"),
+        benchmark_reference="buy_and_hold",
+        parameters={"momentum_window": 10, "stop_loss_pct": 0.01, "take_profit_pct": 0.02},
+    )
+    part = EvidencePartition(
+        role=EvidencePartitionRole.OUT_OF_SAMPLE,
+        start_date="2025-01-01",
+        end_date="2025-01-02",
+        total_return=0.15,
+        max_drawdown=0.05,
+        sharpe_ratio=1.8,
+    )
+    evidence = ResearchEvidence(
+        experiment_fingerprint=spec.fingerprint,
+        spec=spec,
+        partitions=(part,),
+        robustness_verdict={"passed": True},
+        promotion_status=PromotionStatus.PROMOTABLE,
+        rejection_reasons=(),
+    )
+    save_research_candidate(candidate_id=candidate_id, evidence=evidence, base_dir=base_dir)
+    return candidate_id
+
+
+def production_config_for(tmp_path, candidate_id: str = "cand_momentum_live") -> ProductionRuntimeConfig:
+    persist_momentum_candidate(tmp_path, candidate_id=candidate_id)
+    return ProductionRuntimeConfig(
+        symbol="XAUUSD",
+        timeframe="5m",
+        candidate_id=candidate_id,
+        strategy_id="momentum",
+        strategy_version="1.0",
+        research_dir=tmp_path,
+    )
 
 
 def make_dummy_df() -> pd.DataFrame:
@@ -71,6 +139,8 @@ def test_live_execution_runtime_run_once(mock_load_data, mock_load_selection, tm
         publisher=mock_publisher,
         store_path=tmp_path / "store.json",
         snapshot_path=tmp_path / "snap.json",
+        research_dir=tmp_path,
+        production_config=production_config_for(tmp_path),
     )
 
     result = runtime.run_once(publish=True)
@@ -86,14 +156,20 @@ def test_live_execution_runtime_run_once(mock_load_data, mock_load_selection, tm
 
 @patch("src.evaluation.live_execution_runtime.load_production_selection")
 @patch("src.evaluation.live_execution_runtime.load_live_market_data")
-def test_live_execution_runtime_idempotency_key(mock_load_data, mock_load_selection) -> None:
+def test_live_execution_runtime_idempotency_key(mock_load_data, mock_load_selection, tmp_path) -> None:
     mock_load_data.return_value = make_dummy_df()
     mock_load_selection.return_value = {
         "stable_strategy": "momentum",
         "stability_score": 0.85,
+        "candidate_id": "cand_momentum_live",
     }
 
-    runtime = LiveExecutionRuntime(symbol="XAUUSD", interval="5m")
+    runtime = LiveExecutionRuntime(
+        symbol="XAUUSD",
+        interval="5m",
+        research_dir=tmp_path,
+        production_config=production_config_for(tmp_path),
+    )
 
     res1 = runtime.run_once(publish=False, persist=False)
     res2 = runtime.run_once(publish=False, persist=False)
@@ -150,6 +226,8 @@ def test_live_execution_runtime_buy_signal_field_propagation(
         publisher=mock_publisher,
         store_path=store_path,
         snapshot_path=snapshot_path,
+        research_dir=tmp_path,
+        production_config=production_config_for(tmp_path),
     )
 
     df = mock_load_data.return_value
@@ -224,6 +302,8 @@ def test_live_execution_runtime_stale_data_blocked(
         store_path=store_path,
         snapshot_path=snapshot_path,
         max_age_seconds=300.0,
+        research_dir=tmp_path,
+        production_config=production_config_for(tmp_path),
     )
 
     df_ts = pd.to_datetime(df["openTime"], utc=True, errors="coerce").iloc[-1].to_pydatetime()
@@ -272,6 +352,8 @@ def test_live_execution_runtime_missing_invalid_timestamp_blocked(
         publisher=mock_publisher,
         store_path=tmp_path / "store.json",
         snapshot_path=tmp_path / "snap.json",
+        research_dir=tmp_path,
+        production_config=production_config_for(tmp_path),
     )
 
     result = runtime.run_once(publish=False, persist=True)
@@ -305,6 +387,8 @@ def test_live_execution_runtime_future_timestamp_blocked(
         publisher=MagicMock(),
         store_path=tmp_path / "store.json",
         snapshot_path=tmp_path / "snap.json",
+        research_dir=tmp_path,
+        production_config=production_config_for(tmp_path),
     )
 
     result = runtime.run_once(publish=False, persist=True, reference_now=past_ref_now)
@@ -338,6 +422,8 @@ def test_live_execution_runtime_freshness_boundary_conditions(
         store_path=tmp_path / "store.json",
         snapshot_path=tmp_path / "snap.json",
         max_age_seconds=max_age,
+        research_dir=tmp_path,
+        production_config=production_config_for(tmp_path),
     )
 
     # 1. age = 299s <= 300s -> FRESH -> BUY
@@ -387,6 +473,8 @@ def test_live_execution_runtime_persistence_freshness_isolation(
         publisher=publisher1,
         store_path=store_path,
         snapshot_path=snapshot_path,
+        research_dir=tmp_path,
+        production_config=production_config_for(tmp_path),
     )
     res1 = runtime1.run_once(publish=True, persist=True, reference_now=ref_now)
     assert res1["publish_result"]["status"] == "SKIPPED_DISABLED"
@@ -407,6 +495,8 @@ def test_live_execution_runtime_persistence_freshness_isolation(
         publisher=publisher2,
         store_path=store_path,
         snapshot_path=snapshot_path,
+        research_dir=tmp_path,
+        production_config=production_config_for(tmp_path),
     )
     res2 = runtime2.run_once(publish=True, persist=True, reference_now=ref_now)
     assert res2["publish_result"]["status"] == "PUBLISHED"

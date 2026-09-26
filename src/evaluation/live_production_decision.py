@@ -7,6 +7,7 @@ Connects promoted research candidates and evidence to the live execution decisio
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass, field
+from datetime import datetime, timezone
 from enum import Enum
 import hashlib
 import json
@@ -80,6 +81,23 @@ class PromotedCandidateArtifact:
 
         validate_promotion_eligibility(self.evidence, policy=self.policy)
 
+        if self.evidence.experiment_fingerprint != self.evidence.spec.fingerprint:
+            raise ValueError(
+                f"Candidate '{self.candidate_id}' research fingerprint "
+                f"'{self.evidence.experiment_fingerprint}' does not match "
+                f"evidence spec fingerprint '{self.evidence.spec.fingerprint}'."
+            )
+        if self.strategy_name != self.evidence.spec.strategy_name:
+            raise ValueError(
+                f"Candidate '{self.candidate_id}' strategy_name '{self.strategy_name}' does not match "
+                f"evidence strategy '{self.evidence.spec.strategy_name}'."
+            )
+        if self.strategy_version != self.evidence.spec.strategy_version:
+            raise ValueError(
+                f"Candidate '{self.candidate_id}' strategy_version '{self.strategy_version}' does not match "
+                f"evidence strategy_version '{self.evidence.spec.strategy_version}'."
+            )
+
         # Check scope match
         ds = self.evidence.spec.dataset_scope
         if ds.symbol.upper() != self.symbol.upper():
@@ -109,10 +127,93 @@ class PromotedCandidateArtifact:
             hashlib.sha256(serialized.encode("utf-8")).hexdigest(),
         )
 
+    @classmethod
+    def from_persisted_research(
+        cls,
+        *,
+        candidate_id: str,
+        evidence: ResearchEvidence,
+        symbol: str,
+        timeframe: str,
+        parameters: Optional[dict[str, Any]] = None,
+        policy: Optional[ProductionPromotionPolicy] = None,
+    ) -> "PromotedCandidateArtifact":
+        """Reconstitute a candidate solely from persisted research evidence.
+
+        This path cannot establish promotion. Eligibility is derived from the
+        persisted ResearchEvidence object, not from live configuration.
+        """
+        if not isinstance(evidence, ResearchEvidence):
+            raise TypeError("evidence must be a ResearchEvidence instance.")
+        return cls(
+            candidate_id=candidate_id,
+            strategy_name=evidence.spec.strategy_name,
+            strategy_version=evidence.spec.strategy_version,
+            evidence=evidence,
+            symbol=symbol,
+            timeframe=timeframe,
+            parameters=dict(parameters) if parameters is not None else dict(evidence.spec.parameters),
+            policy=policy if policy is not None else ProductionPromotionPolicy(),
+        )
+
+
+def validate_production_scope(
+    candidate: PromotedCandidateArtifact,
+    *,
+    current_symbol: Optional[str] = None,
+    current_timeframe: Optional[str] = None,
+    current_strategy_id: Optional[str] = None,
+    current_strategy_version: Optional[str] = None,
+    current_candidate_id: Optional[str] = None,
+    now: Optional[datetime] = None,
+) -> bool:
+    """Verify production scope against the persisted promoted artifact. Fail closed on mismatch."""
+    if not isinstance(candidate, PromotedCandidateArtifact):
+        raise TypeError("candidate must be a PromotedCandidateArtifact instance.")
+
+    validate_promotion_eligibility(candidate.evidence, policy=candidate.policy, now=now)
+
+    if candidate.evidence.experiment_fingerprint != candidate.evidence.spec.fingerprint:
+        raise ValueError(
+            f"Candidate '{candidate.candidate_id}' research fingerprint does not match persisted evidence fingerprint."
+        )
+    if current_candidate_id is not None and str(current_candidate_id).strip():
+        if candidate.candidate_id != str(current_candidate_id).strip():
+            raise ValueError(
+                f"Configured candidate_id '{current_candidate_id}' does not match "
+                f"resolved candidate '{candidate.candidate_id}'."
+            )
+    if current_strategy_id is not None and str(current_strategy_id).strip():
+        if candidate.strategy_name != str(current_strategy_id).strip():
+            raise ValueError(
+                f"Configured strategy_id '{current_strategy_id}' does not match "
+                f"resolved strategy '{candidate.strategy_name}'."
+            )
+    if current_strategy_version is not None and str(current_strategy_version).strip():
+        if candidate.strategy_version != str(current_strategy_version).strip():
+            raise ValueError(
+                f"Configured strategy_version '{current_strategy_version}' does not match "
+                f"resolved strategy_version '{candidate.strategy_version}'."
+            )
+    if current_symbol is not None and str(current_symbol).strip():
+        if candidate.symbol.upper() != str(current_symbol).strip().upper():
+            raise ValueError(
+                f"Configured symbol '{current_symbol}' does not match "
+                f"resolved candidate symbol '{candidate.symbol}'."
+            )
+    if current_timeframe is not None and str(current_timeframe).strip():
+        if candidate.timeframe != str(current_timeframe).strip():
+            raise ValueError(
+                f"Configured timeframe '{current_timeframe}' does not match "
+                f"resolved candidate timeframe '{candidate.timeframe}'."
+            )
+    return True
+
 
 def validate_promotion_eligibility(
     evidence: ResearchEvidence,
     policy: Optional[ProductionPromotionPolicy] = None,
+    now: Optional[datetime] = None,
 ) -> bool:
     """Validate that research evidence satisfies production promotion criteria.
 
@@ -141,6 +242,34 @@ def validate_promotion_eligibility(
         if passed is False:
             raise ValueError(
                 f"Evidence '{evidence.evidence_id}' failed robustness verdict."
+            )
+
+    if policy.max_evidence_age_days is not None:
+        if not evidence.created_at_utc or not str(evidence.created_at_utc).strip():
+            raise ValueError(
+                f"Evidence '{evidence.evidence_id}' is missing created_at_utc required for freshness validation."
+            )
+        try:
+            created = datetime.fromisoformat(str(evidence.created_at_utc).replace("Z", "+00:00"))
+        except ValueError as exc:
+            raise ValueError(
+                f"Evidence '{evidence.evidence_id}' has invalid created_at_utc '{evidence.created_at_utc}'."
+            ) from exc
+        if created.tzinfo is None:
+            created = created.replace(tzinfo=timezone.utc)
+        if now is None:
+            now = datetime.now(timezone.utc)
+        elif now.tzinfo is None:
+            now = now.replace(tzinfo=timezone.utc)
+        age_days = (now - created).total_seconds() / 86400.0
+        if age_days < 0:
+            raise ValueError(
+                f"Evidence '{evidence.evidence_id}' created_at_utc '{evidence.created_at_utc}' is in the future."
+            )
+        if age_days > float(policy.max_evidence_age_days):
+            raise ValueError(
+                f"Evidence '{evidence.evidence_id}' is stale "
+                f"({age_days:.1f} days old, max allowed: {policy.max_evidence_age_days} days)."
             )
 
     return True

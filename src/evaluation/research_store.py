@@ -28,6 +28,10 @@ DEFAULT_RESEARCH_DIR = (
     / "research_experiments"
 )
 
+CANDIDATE_INDEX_DIRNAME = "by_candidate"
+CANDIDATE_BINDING_FILENAME = "candidate.json"
+EVIDENCE_FILENAME = "evidence.json"
+
 
 def save_research_experiment(
     evidence: ResearchEvidence,
@@ -48,7 +52,7 @@ def save_research_experiment(
     target_dir = Path(base_dir) / evidence.experiment_fingerprint
     target_dir.mkdir(parents=True, exist_ok=True)
 
-    file_path = target_dir / "evidence.json"
+    file_path = target_dir / EVIDENCE_FILENAME
 
     if file_path.exists():
         existing_evidence = load_research_experiment(file_path)
@@ -77,7 +81,7 @@ def load_research_experiment(
     """
     path = Path(fingerprint_or_path)
     if not path.is_file():
-        path = Path(base_dir) / str(fingerprint_or_path) / "evidence.json"
+        path = Path(base_dir) / str(fingerprint_or_path) / EVIDENCE_FILENAME
 
     if not path.exists():
         raise FileNotFoundError(f"Research evidence file not found at: {path}")
@@ -194,3 +198,324 @@ def reconstruct_research_evidence(data: dict[str, Any]) -> ResearchEvidence:
         critique_notes=data.get("critique_notes", ""),
         created_at_utc=data.get("created_at_utc", ""),
     )
+
+
+class PromotionUnavailable(LookupError):
+    """Raised when a requested promoted candidate cannot be resolved from persisted research state."""
+
+
+class PromotionIntegrityError(ValueError):
+    """Raised when persisted candidate/evidence identity or fingerprint lineage is inconsistent."""
+
+
+class PromotionEligibilityError(ValueError):
+    """Raised when persisted evidence is present but not eligible for production execution."""
+
+
+def _candidate_index_dir(base_dir: str | Path) -> Path:
+    return Path(base_dir) / CANDIDATE_INDEX_DIRNAME
+
+
+def _candidate_binding_path(candidate_id: str, base_dir: str | Path) -> Path:
+    return _candidate_index_dir(base_dir) / candidate_id.strip() / CANDIDATE_BINDING_FILENAME
+
+
+def _require_non_empty_str(value: Any, field_name: str) -> str:
+    if not isinstance(value, str) or not value.strip():
+        raise PromotionIntegrityError(f"{field_name} must be a non-empty string.")
+    return value.strip()
+
+
+def persist_promoted_candidate_binding(
+    *,
+    candidate_id: str,
+    evidence: ResearchEvidence,
+    base_dir: str | Path = DEFAULT_RESEARCH_DIR,
+) -> Path:
+    """Persist an identity binding from a research candidate to already-saved evidence.
+
+    The binding never establishes promotion. It only records which persisted
+    ResearchEvidence identity a candidate refers to. Promotion status remains
+    whatever the evidence artifact itself stores.
+    """
+    if not isinstance(evidence, ResearchEvidence):
+        raise TypeError("evidence must be a ResearchEvidence instance.")
+
+    candidate_id = _require_non_empty_str(candidate_id, "candidate_id")
+    spec = evidence.spec
+    binding = {
+        "candidate_id": candidate_id,
+        "strategy_name": spec.strategy_name,
+        "strategy_version": spec.strategy_version,
+        "experiment_fingerprint": evidence.experiment_fingerprint,
+        "evidence_id": evidence.evidence_id,
+        "symbol": spec.dataset_scope.symbol,
+        "timeframe": spec.dataset_scope.timeframe,
+        "parameters": spec.parameters,
+    }
+
+    binding_path = _candidate_binding_path(candidate_id, base_dir)
+    binding_path.parent.mkdir(parents=True, exist_ok=True)
+
+    if binding_path.exists():
+        existing = json.loads(binding_path.read_text(encoding="utf-8"))
+        if existing != binding:
+            raise FileExistsError(
+                f"Cannot overwrite existing promoted candidate binding at '{binding_path}' "
+                f"with conflicting identity (existing evidence_id: "
+                f"'{existing.get('evidence_id')}', new evidence_id: '{evidence.evidence_id}')."
+            )
+        return binding_path
+
+    binding_path.write_text(json.dumps(binding, indent=2), encoding="utf-8")
+    return binding_path
+
+
+def save_research_candidate(
+    *,
+    candidate_id: str,
+    evidence: ResearchEvidence,
+    base_dir: str | Path = DEFAULT_RESEARCH_DIR,
+) -> Path:
+    """Persist research evidence and the candidate identity that produced it."""
+    save_research_experiment(evidence, base_dir=base_dir)
+    return persist_promoted_candidate_binding(
+        candidate_id=candidate_id,
+        evidence=evidence,
+        base_dir=base_dir,
+    )
+
+
+def load_candidate_binding(
+    candidate_id: str,
+    base_dir: str | Path = DEFAULT_RESEARCH_DIR,
+) -> dict[str, Any]:
+    """Load a persisted candidate identity binding. Does not invent defaults."""
+    candidate_id = _require_non_empty_str(candidate_id, "candidate_id")
+    binding_path = _candidate_binding_path(candidate_id, base_dir)
+    if not binding_path.exists():
+        raise FileNotFoundError(
+            f"Promoted candidate binding not found for candidate_id '{candidate_id}' at: {binding_path}"
+        )
+    try:
+        data = json.loads(binding_path.read_text(encoding="utf-8"))
+    except Exception as exc:
+        raise PromotionIntegrityError(
+            f"Failed to parse candidate binding JSON from {binding_path}: {exc}"
+        ) from exc
+    if not isinstance(data, dict):
+        raise PromotionIntegrityError(f"Candidate binding at {binding_path} is not a dictionary.")
+    return data
+
+
+def list_research_evidence(
+    base_dir: str | Path = DEFAULT_RESEARCH_DIR,
+) -> list[ResearchEvidence]:
+    """Load all persisted ResearchEvidence artifacts from the research store."""
+    root = Path(base_dir)
+    if not root.exists():
+        return []
+    artifacts: list[ResearchEvidence] = []
+    for evidence_path in sorted(root.glob(f"*/{EVIDENCE_FILENAME}")):
+        artifacts.append(load_research_experiment(evidence_path, base_dir=base_dir))
+    return artifacts
+
+
+def _reconstitute_promoted_candidate_from_binding(
+    binding: dict[str, Any],
+    evidence: ResearchEvidence,
+    policy: Any | None = None,
+) -> Any:
+    """Reconstitute a PromotedCandidateArtifact solely from persisted research state."""
+    from src.evaluation.live_production_decision import (
+        ProductionPromotionPolicy,
+        PromotedCandidateArtifact,
+        validate_promotion_eligibility,
+    )
+
+    candidate_id = _require_non_empty_str(binding.get("candidate_id"), "candidate_id")
+    strategy_name = _require_non_empty_str(binding.get("strategy_name"), "strategy_name")
+    strategy_version = _require_non_empty_str(binding.get("strategy_version"), "strategy_version")
+    fingerprint = _require_non_empty_str(
+        binding.get("experiment_fingerprint"), "experiment_fingerprint"
+    )
+    evidence_id = _require_non_empty_str(binding.get("evidence_id"), "evidence_id")
+    symbol = _require_non_empty_str(binding.get("symbol"), "symbol")
+    timeframe = _require_non_empty_str(binding.get("timeframe"), "timeframe")
+    parameters = binding.get("parameters")
+    if parameters is None:
+        parameters = evidence.spec.parameters
+    if not isinstance(parameters, dict):
+        raise PromotionIntegrityError("candidate binding parameters must be a dictionary.")
+
+    if fingerprint != evidence.experiment_fingerprint:
+        raise PromotionIntegrityError(
+            f"Candidate '{candidate_id}' research fingerprint '{fingerprint}' does not match "
+            f"persisted evidence fingerprint '{evidence.experiment_fingerprint}'."
+        )
+    if evidence_id != evidence.evidence_id:
+        raise PromotionIntegrityError(
+            f"Candidate '{candidate_id}' evidence_id '{evidence_id}' does not match "
+            f"persisted evidence_id '{evidence.evidence_id}'."
+        )
+    if strategy_name != evidence.spec.strategy_name:
+        raise PromotionIntegrityError(
+            f"Candidate '{candidate_id}' strategy_name '{strategy_name}' does not match "
+            f"persisted evidence strategy '{evidence.spec.strategy_name}'."
+        )
+    if strategy_version != evidence.spec.strategy_version:
+        raise PromotionIntegrityError(
+            f"Candidate '{candidate_id}' strategy_version '{strategy_version}' does not match "
+            f"persisted evidence strategy_version '{evidence.spec.strategy_version}'."
+        )
+
+    reconstitution_policy = policy if policy is not None else ProductionPromotionPolicy()
+    try:
+        validate_promotion_eligibility(evidence, policy=reconstitution_policy)
+        return PromotedCandidateArtifact.from_persisted_research(
+            candidate_id=candidate_id,
+            evidence=evidence,
+            symbol=symbol,
+            timeframe=timeframe,
+            parameters=dict(parameters),
+            policy=reconstitution_policy,
+        )
+    except PromotionEligibilityError:
+        raise
+    except ValueError as exc:
+        message = str(exc)
+        if "not allowed for production" in message or "rejection reasons" in message or "stale" in message:
+            raise PromotionEligibilityError(message) from exc
+        raise PromotionIntegrityError(message) from exc
+
+
+def resolve_promoted_candidate(
+    *,
+    candidate_id: str | None = None,
+    strategy_id: str | None = None,
+    strategy_version: str | None = None,
+    symbol: str | None = None,
+    timeframe: str | None = None,
+    base_dir: str | Path = DEFAULT_RESEARCH_DIR,
+    policy: Any | None = None,
+) -> Any | None:
+    """Resolve an already-persisted promoted candidate. Never manufactures promotion.
+
+    Returns the reconstituted PromotedCandidateArtifact, or None when the
+    requested identity is absent from persisted research state.
+    """
+    if candidate_id is not None and str(candidate_id).strip():
+        requested_id = str(candidate_id).strip()
+        try:
+            binding = load_candidate_binding(requested_id, base_dir=base_dir)
+        except FileNotFoundError:
+            return None
+        if str(binding.get("candidate_id", "")).strip() != requested_id:
+            raise PromotionIntegrityError(
+                f"Candidate binding identity '{binding.get('candidate_id')}' does not match "
+                f"requested candidate_id '{requested_id}'."
+            )
+
+        fingerprint = binding.get("experiment_fingerprint")
+        if not fingerprint:
+            raise PromotionIntegrityError(
+                f"Candidate '{requested_id}' binding is missing experiment_fingerprint."
+            )
+        evidence_path = Path(base_dir) / str(fingerprint) / EVIDENCE_FILENAME
+        if not evidence_path.exists():
+            raise PromotionIntegrityError(
+                f"Evidence missing for candidate '{requested_id}' "
+                f"(fingerprint '{fingerprint}') at: {evidence_path}"
+            )
+        evidence = load_research_experiment(evidence_path, base_dir=base_dir)
+        artifact = _reconstitute_promoted_candidate_from_binding(binding, evidence, policy=policy)
+
+        if strategy_id is not None and str(strategy_id).strip():
+            requested_strategy = str(strategy_id).strip()
+            if artifact.strategy_name != requested_strategy:
+                raise PromotionIntegrityError(
+                    f"Requested strategy_id '{requested_strategy}' does not match "
+                    f"persisted candidate '{artifact.candidate_id}' strategy "
+                    f"'{artifact.strategy_name}'."
+                )
+        if strategy_version is not None and str(strategy_version).strip():
+            requested_version = str(strategy_version).strip()
+            if artifact.strategy_version != requested_version:
+                raise PromotionIntegrityError(
+                    f"Requested strategy_version '{requested_version}' does not match "
+                    f"persisted candidate '{artifact.candidate_id}' strategy_version "
+                    f"'{artifact.strategy_version}'."
+                )
+        if symbol is not None and str(symbol).strip():
+            requested_symbol = str(symbol).strip().upper()
+            if artifact.symbol.upper() != requested_symbol:
+                raise PromotionEligibilityError(
+                    f"Requested symbol '{requested_symbol}' does not match "
+                    f"persisted candidate '{artifact.candidate_id}' symbol '{artifact.symbol}'."
+                )
+        if timeframe is not None and str(timeframe).strip():
+            requested_timeframe = str(timeframe).strip()
+            if artifact.timeframe != requested_timeframe:
+                raise PromotionEligibilityError(
+                    f"Requested timeframe '{requested_timeframe}' does not match "
+                    f"persisted candidate '{artifact.candidate_id}' timeframe '{artifact.timeframe}'."
+                )
+
+        return artifact
+
+    if strategy_id is None or not str(strategy_id).strip():
+        return None
+
+    requested_strategy = str(strategy_id).strip()
+    matches: list[Any] = []
+    index_root = _candidate_index_dir(base_dir)
+    if not index_root.exists():
+        return None
+
+    for binding_path in sorted(index_root.glob(f"*/{CANDIDATE_BINDING_FILENAME}")):
+        try:
+            binding = json.loads(binding_path.read_text(encoding="utf-8"))
+        except Exception as exc:
+            raise PromotionIntegrityError(
+                f"Failed to parse candidate binding JSON from {binding_path}: {exc}"
+            ) from exc
+        if not isinstance(binding, dict):
+            raise PromotionIntegrityError(f"Candidate binding at {binding_path} is not a dictionary.")
+        if binding.get("strategy_name") != requested_strategy:
+            continue
+        if strategy_version is not None and str(strategy_version).strip():
+            if binding.get("strategy_version") != str(strategy_version).strip():
+                continue
+        fingerprint = binding.get("experiment_fingerprint")
+        if not fingerprint:
+            raise PromotionIntegrityError(
+                f"Candidate binding at {binding_path} is missing experiment_fingerprint."
+            )
+        evidence_path = Path(base_dir) / str(fingerprint) / EVIDENCE_FILENAME
+        if not evidence_path.exists():
+            raise PromotionIntegrityError(
+                f"Evidence missing for candidate binding at {binding_path} "
+                f"(fingerprint '{fingerprint}')."
+            )
+        evidence = load_research_experiment(evidence_path, base_dir=base_dir)
+        try:
+            artifact = _reconstitute_promoted_candidate_from_binding(binding, evidence, policy=policy)
+        except PromotionEligibilityError:
+            continue
+        if symbol is not None and str(symbol).strip():
+            if artifact.symbol.upper() != str(symbol).strip().upper():
+                continue
+        if timeframe is not None and str(timeframe).strip():
+            if artifact.timeframe != str(timeframe).strip():
+                continue
+        matches.append(artifact)
+
+    if not matches:
+        return None
+    if len(matches) > 1:
+        ids = [m.candidate_id for m in matches]
+        raise PromotionIntegrityError(
+            f"Ambiguous promoted candidate resolution for strategy_id '{requested_strategy}': {ids}. "
+            "Specify candidate_id to select an already-promoted artifact."
+        )
+    return matches[0]

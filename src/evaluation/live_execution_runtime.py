@@ -7,6 +7,7 @@ import json
 import logging
 import sys
 from pathlib import Path
+from dataclasses import dataclass
 from typing import Any, Dict, Optional
 
 import pandas as pd
@@ -22,34 +23,102 @@ from src.evaluation.live_production_decision import (
     Direction,
     ProductionDecision,
     ProductionIntelligencePublication,
-    ProductionRiskLevels,
     ProductionSignal,
     PromotedCandidateArtifact,
     calculate_production_risk_levels,
     evaluate_production_decision,
+    validate_production_scope,
 )
 from src.evaluation.live_publication_store import append_publication_record
 from src.evaluation.live_runtime import build_live_runtime
 from src.evaluation.production_live_bridge import load_production_selection
-from src.evaluation.research_constitution import (
-    CodeProvenance,
-    DatasetScope,
-    EvidencePartition,
-    EvidencePartitionRole,
-    ExecutionAssumptions,
-    PromotionStatus,
-    ResearchEvidence,
-    ResearchExperimentSpec,
+from src.evaluation.research_store import (
+    DEFAULT_RESEARCH_DIR,
+    PromotionEligibilityError,
+    PromotionIntegrityError,
+    PromotionUnavailable,
+    resolve_promoted_candidate,
 )
 from src.integration.project2_publisher import (
     Project2Publisher,
-    build_contract_v1_payload,
 )
 
 logger = logging.getLogger(__name__)
 
 DEFAULT_STORE_PATH = Path("results/live/decision_history.json")
 DEFAULT_SNAPSHOT_PATH = Path("results/live/latest_execution.json")
+
+
+@dataclass(frozen=True)
+class ProductionRuntimeConfig:
+    """Explicit production runtime configuration. Never establishes promotion."""
+
+    symbol: str
+    timeframe: str
+    candidate_id: Optional[str] = None
+    strategy_id: Optional[str] = None
+    strategy_version: Optional[str] = None
+    research_dir: Path = DEFAULT_RESEARCH_DIR
+
+    def __post_init__(self) -> None:
+        if not self.symbol or not str(self.symbol).strip():
+            raise ValueError("symbol must be a non-empty string.")
+        if not self.timeframe or not str(self.timeframe).strip():
+            raise ValueError("timeframe must be a non-empty string.")
+        object.__setattr__(self, "symbol", str(self.symbol).strip().upper())
+        object.__setattr__(self, "timeframe", str(self.timeframe).strip())
+        if self.candidate_id is not None:
+            cid = str(self.candidate_id).strip()
+            object.__setattr__(self, "candidate_id", cid if cid else None)
+        if self.strategy_id is not None:
+            sid = str(self.strategy_id).strip()
+            object.__setattr__(self, "strategy_id", sid if sid else None)
+        if self.strategy_version is not None:
+            ver = str(self.strategy_version).strip()
+            object.__setattr__(self, "strategy_version", ver if ver else None)
+        object.__setattr__(self, "research_dir", Path(self.research_dir))
+
+    @classmethod
+    def from_runtime(
+        cls,
+        *,
+        symbol: str,
+        timeframe: str,
+        selection: Optional[Dict[str, Any]] = None,
+        research_dir: Path | str = DEFAULT_RESEARCH_DIR,
+    ) -> "ProductionRuntimeConfig":
+        selection = selection or {}
+        return cls(
+            symbol=symbol,
+            timeframe=timeframe,
+            candidate_id=selection.get("candidate_id"),
+            strategy_id=selection.get("strategy_id") or selection.get("stable_strategy") or selection.get("strategy"),
+            strategy_version=selection.get("strategy_version"),
+            research_dir=Path(research_dir),
+        )
+
+
+@dataclass(frozen=True)
+class ProductionBlocked:
+    """Fail-closed production result when an authoritative promoted candidate cannot be used."""
+
+    reason: str
+    detail: str
+    candidate_id: Optional[str] = None
+    strategy_id: Optional[str] = None
+    symbol: Optional[str] = None
+    timeframe: Optional[str] = None
+
+    def as_dict(self) -> dict[str, Any]:
+        return {
+            "blocked": True,
+            "reason": self.reason,
+            "detail": self.detail,
+            "candidate_id": self.candidate_id,
+            "strategy_id": self.strategy_id,
+            "symbol": self.symbol,
+            "timeframe": self.timeframe,
+        }
 
 
 # Provider capability registry mapping canonical instrument symbols to live market data adapters
@@ -101,58 +170,86 @@ def load_live_market_data(
     return data.reset_index(drop=True)
 
 
-def build_promoted_candidate_from_selection(
-    symbol: str,
-    timeframe: str,
-    selection: Dict[str, Any],
-) -> PromotedCandidateArtifact:
-    """Construct authoritative candidate artifact for production selection."""
-    strategy_name = str(selection.get("stable_strategy", "momentum"))
-    ds = DatasetScope(
-        dataset_id=f"ds_{symbol.lower()}_{timeframe}",
-        symbol=symbol,
-        timeframe=timeframe,
-        start_date="2025-01-01",
-        end_date="2025-01-02",
-    )
-    ea = ExecutionAssumptions(transaction_cost=0.001, slippage=0.001, latency_ms=10.0)
-    cp = CodeProvenance(commit_sha="e52d95d1ede22cf3c8ce07dc216763ace4a4359c")
-    spec = ResearchExperimentSpec(
-        hypothesis=f"Production candidate for {strategy_name} on {symbol} {timeframe}",
-        methodology_version="1.0",
-        strategy_name=strategy_name,
-        strategy_version="1.0",
-        dataset_scope=ds,
-        execution_assumptions=ea,
-        code_provenance=cp,
-        benchmark_reference="buy_and_hold",
-        parameters={"momentum_window": 10, "stop_loss_pct": 0.01, "take_profit_pct": 0.02},
-    )
-    part = EvidencePartition(
-        role=EvidencePartitionRole.OUT_OF_SAMPLE,
-        start_date="2025-01-01",
-        end_date="2025-01-02",
-        total_return=0.15,
-        max_drawdown=0.05,
-        sharpe_ratio=1.8,
-    )
-    evidence = ResearchEvidence(
-        experiment_fingerprint=spec.fingerprint,
-        spec=spec,
-        partitions=(part,),
-        robustness_verdict={"passed": True},
-        promotion_status=PromotionStatus.PROMOTABLE,
-        rejection_reasons=(),
-    )
-    return PromotedCandidateArtifact(
-        candidate_id=f"cand_{spec.fingerprint[:12]}",
-        strategy_name=strategy_name,
-        strategy_version="1.0",
-        evidence=evidence,
-        symbol=symbol,
-        timeframe=timeframe,
-        parameters=spec.parameters,
-    )
+def resolve_authoritative_promoted_candidate(
+    config: ProductionRuntimeConfig,
+) -> PromotedCandidateArtifact | ProductionBlocked:
+    """Resolve a persisted promoted candidate. Never manufactures promotion or substitutes a default."""
+    if config.candidate_id is None and config.strategy_id is None:
+        return ProductionBlocked(
+            reason="PromotionUnavailable",
+            detail="Production configuration is missing candidate_id and strategy_id.",
+            symbol=config.symbol,
+            timeframe=config.timeframe,
+        )
+    try:
+        promoted = resolve_promoted_candidate(
+            candidate_id=config.candidate_id,
+            strategy_id=config.strategy_id,
+            strategy_version=config.strategy_version,
+            symbol=config.symbol,
+            timeframe=config.timeframe,
+            base_dir=config.research_dir,
+        )
+    except PromotionIntegrityError as exc:
+        return ProductionBlocked(
+            reason="PromotionIntegrityError",
+            detail=str(exc),
+            candidate_id=config.candidate_id,
+            strategy_id=config.strategy_id,
+            symbol=config.symbol,
+            timeframe=config.timeframe,
+        )
+    except PromotionEligibilityError as exc:
+        return ProductionBlocked(
+            reason="PromotionEligibilityError",
+            detail=str(exc),
+            candidate_id=config.candidate_id,
+            strategy_id=config.strategy_id,
+            symbol=config.symbol,
+            timeframe=config.timeframe,
+        )
+    except PromotionUnavailable as exc:
+        return ProductionBlocked(
+            reason="PromotionUnavailable",
+            detail=str(exc),
+            candidate_id=config.candidate_id,
+            strategy_id=config.strategy_id,
+            symbol=config.symbol,
+            timeframe=config.timeframe,
+        )
+
+    if promoted is None:
+        return ProductionBlocked(
+            reason="PromotionUnavailable",
+            detail=(
+                f"No persisted promoted candidate matches candidate_id="
+                f"{config.candidate_id!r} strategy_id={config.strategy_id!r}."
+            ),
+            candidate_id=config.candidate_id,
+            strategy_id=config.strategy_id,
+            symbol=config.symbol,
+            timeframe=config.timeframe,
+        )
+
+    try:
+        validate_production_scope(
+            promoted,
+            current_symbol=config.symbol,
+            current_timeframe=config.timeframe,
+            current_strategy_id=config.strategy_id,
+            current_strategy_version=config.strategy_version,
+            current_candidate_id=config.candidate_id,
+        )
+    except ValueError as exc:
+        return ProductionBlocked(
+            reason="PromotionEligibilityError",
+            detail=str(exc),
+            candidate_id=promoted.candidate_id,
+            strategy_id=promoted.strategy_name,
+            symbol=config.symbol,
+            timeframe=config.timeframe,
+        )
+    return promoted
 
 
 def validate_market_data_freshness(
@@ -259,6 +356,8 @@ class LiveExecutionRuntime:
         store_path: Path | str = DEFAULT_STORE_PATH,
         snapshot_path: Path | str = DEFAULT_SNAPSHOT_PATH,
         max_age_seconds: float = 300.0,
+        research_dir: Path | str = DEFAULT_RESEARCH_DIR,
+        production_config: Optional[ProductionRuntimeConfig] = None,
     ) -> None:
         self.symbol = symbol.upper()
         self.interval = interval
@@ -267,6 +366,52 @@ class LiveExecutionRuntime:
         self.store_path = Path(store_path)
         self.snapshot_path = Path(snapshot_path)
         self.max_age_seconds = max_age_seconds
+        self.research_dir = Path(research_dir)
+        self.production_config = production_config
+
+    def _blocked_result(
+        self,
+        blocked: ProductionBlocked,
+        *,
+        persist: bool,
+        publish: bool,
+        skip_if_no_trade: bool,
+        reference_now: datetime.datetime,
+    ) -> Dict[str, Any]:
+        """Return an explicit production-blocked result without manufacturing lineage."""
+        now_iso = reference_now.isoformat()
+        execution_result = {
+            "blocked": True,
+            "reason": blocked.reason,
+            "detail": blocked.detail,
+            "symbol": self.symbol,
+            "interval": self.interval,
+            "decision": "NO TRADE",
+            "strategy": blocked.strategy_id,
+            "stability_score": None,
+            "record": None,
+            "publication": None,
+            "contract_payload": None,
+            "publish_result": None,
+            "candidate_id": blocked.candidate_id,
+            "blocked_state": blocked.as_dict(),
+            "timestamp": now_iso,
+        }
+        if persist:
+            self.snapshot_path.parent.mkdir(parents=True, exist_ok=True)
+            self.snapshot_path.write_text(
+                json.dumps(execution_result, ensure_ascii=False, indent=2),
+                encoding="utf-8",
+            )
+        if publish:
+            execution_result["publish_result"] = {
+                "status": "SKIPPED_BLOCKED",
+                "published": False,
+                "reason": blocked.reason,
+                "detail": blocked.detail,
+                "skip_if_no_trade": skip_if_no_trade,
+            }
+        return execution_result
 
     def run_once(
         self,
@@ -276,13 +421,53 @@ class LiveExecutionRuntime:
         reference_now: Optional[datetime.datetime] = None,
         max_age_seconds: Optional[float] = None,
     ) -> Dict[str, Any]:
-        """Execute one full cycle: Ingestion -> Analysis -> Persistence -> Signal Artifact -> Project 2 Publish."""
+        """Execute one full cycle: resolve persisted promotion -> market data -> decision -> persist -> publish."""
         max_age = max_age_seconds if max_age_seconds is not None else self.max_age_seconds
         ref_now = reference_now if reference_now is not None else datetime.datetime.now(datetime.timezone.utc)
         if ref_now.tzinfo is None:
             ref_now = ref_now.replace(tzinfo=datetime.timezone.utc)
 
-        # 1. Fetch market data
+        if self.production_config is not None:
+            config = self.production_config
+            selection: Dict[str, Any] = {
+                "candidate_id": config.candidate_id,
+                "strategy_id": config.strategy_id,
+                "stable_strategy": config.strategy_id,
+                "strategy_version": config.strategy_version,
+            }
+            try:
+                extra = load_production_selection()
+            except Exception:
+                extra = {}
+            if isinstance(extra, dict) and extra.get("stability_score") is not None:
+                selection["stability_score"] = extra["stability_score"]
+        else:
+            selection = load_production_selection()
+            config = ProductionRuntimeConfig.from_runtime(
+                symbol=self.symbol,
+                timeframe=self.interval,
+                selection=selection,
+                research_dir=self.research_dir,
+            )
+
+        resolved = resolve_authoritative_promoted_candidate(config)
+        if isinstance(resolved, ProductionBlocked):
+            return self._blocked_result(
+                resolved,
+                persist=persist,
+                publish=publish,
+                skip_if_no_trade=skip_if_no_trade,
+                reference_now=ref_now,
+            )
+
+        candidate = resolved
+        stable_strategy = candidate.strategy_name
+        raw_score = selection.get("stability_score")
+        if raw_score is None:
+            raw_score = selection.get("confidence")
+        stability_score = float(raw_score) if raw_score is not None else None
+
+        # 1. Fetch market data only after authoritative promotion resolution
         data = load_live_market_data(
             symbol=self.symbol,
             interval=self.interval,
@@ -296,15 +481,6 @@ class LiveExecutionRuntime:
             reference_now=ref_now,
         )
 
-        # 3. Load stable strategy selection & construct PromotedCandidateArtifact
-        selection = load_production_selection()
-        stable_strategy = selection.get("stable_strategy")
-        stability_score = selection.get("stability_score")
-
-        if not stable_strategy or stability_score is None:
-            raise ValueError("Valid production strategy selection not found.")
-
-        candidate = build_promoted_candidate_from_selection(self.symbol, self.interval, selection)
         now_iso = ref_now.isoformat()
 
         # 4. Enforce freshness boundary BEFORE invoking authoritative trading decision generator
@@ -322,7 +498,7 @@ class LiveExecutionRuntime:
                 reason=freshness["reason"],
                 entry_price=None,
                 invalidation_condition=None,
-                confidence=float(stability_score),
+                confidence=stability_score,
                 parameters=candidate.parameters,
             )
             display = {
@@ -331,7 +507,7 @@ class LiveExecutionRuntime:
                 "decision": "NO TRADE",
                 "reason": freshness["reason"],
                 "stable_strategy": str(stable_strategy),
-                "stability_score": float(stability_score),
+                "stability_score": stability_score,
                 "strategy_supported": str(stable_strategy) == "momentum",
                 "signal": 0,
                 "signal_label": "NO TRADE",
@@ -367,14 +543,30 @@ class LiveExecutionRuntime:
                 reference_now=ref_now,
                 max_age_seconds=max_age,
             )
-            runtime = build_live_runtime(
-                data,
-                stable_strategy=str(stable_strategy),
-                stability_score=float(stability_score),
-                symbol=self.symbol,
-                interval=self.interval,
-            )
-            display = dict(runtime.display)
+            if stability_score is not None:
+                runtime = build_live_runtime(
+                    data,
+                    stable_strategy=str(stable_strategy),
+                    stability_score=float(stability_score),
+                    symbol=self.symbol,
+                    interval=self.interval,
+                )
+                display = dict(runtime.display)
+            else:
+                display = {
+                    "symbol": self.symbol,
+                    "interval": self.interval,
+                    "decision": decision.direction.value,
+                    "reason": decision.reason,
+                    "stable_strategy": str(stable_strategy),
+                    "stability_score": None,
+                    "strategy_supported": str(stable_strategy) == "momentum",
+                    "signal": 1 if decision.direction == Direction.BUY else 0,
+                    "signal_label": decision.direction.value,
+                    "trend": "UP" if decision.direction == Direction.BUY else "NEUTRAL",
+                    "entry_price": decision.entry_price,
+                    "timestamp": decision.market_timestamp,
+                }
             display["quote_stale"] = False
             display["quote_age_seconds"] = freshness["age_seconds"]
 
@@ -388,7 +580,7 @@ class LiveExecutionRuntime:
             signal=signal,
             risk=risk,
             candidate=candidate,
-            confidence=float(stability_score),
+            confidence=stability_score,
         )
 
         # 6. Construct decision record & persist to store if enabled
@@ -412,11 +604,16 @@ class LiveExecutionRuntime:
             )
 
         execution_result = {
+            "blocked": False,
             "symbol": self.symbol,
             "interval": self.interval,
             "decision": display["decision"],
             "strategy": display["stable_strategy"],
             "stability_score": display["stability_score"],
+            "candidate_id": candidate.candidate_id,
+            "evidence_id": candidate.evidence.evidence_id,
+            "research_fingerprint": candidate.evidence.experiment_fingerprint,
+            "strategy_version": candidate.strategy_version,
             "record": record,
             "publication": publication.as_dict(),
             "contract_payload": contract_payload,
