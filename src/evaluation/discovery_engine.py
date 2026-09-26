@@ -1,8 +1,9 @@
 """Research Discovery Engine for Project 1.
 
 Orchestrates candidate generation, chronological dataset partitioning (In-Sample, Validation,
-Out-Of-Sample, Walk-Forward), strategy evaluation, Research Constitution evidence creation,
-fail-closed rejection/promotion decisioning, and optional evidence persistence.
+Out-Of-Sample, Walk-Forward), strategy evaluation via canonical research experiment runner,
+Research Constitution evidence creation, fail-closed rejection/promotion decisioning, and
+optional evidence persistence.
 
 No market data generation, silent substitution, or OOS leakage permitted.
 """
@@ -16,15 +17,7 @@ from typing import Any, Mapping, Sequence
 
 import pandas as pd
 
-from src.backtest.engine import run_backtest
 from src.evaluation.candidate_generator import CandidateSpec
-from src.evaluation.metrics import (
-    max_drawdown,
-    profit_factor,
-    sharpe_ratio,
-    total_return,
-    win_rate,
-)
 from src.evaluation.research_constitution import (
     CodeProvenance,
     DatasetScope,
@@ -37,10 +30,8 @@ from src.evaluation.research_constitution import (
     ResearchExperimentSpec,
     RobustnessCriteria,
 )
-from src.evaluation.robustness_evaluator import RobustnessEvaluator
+from src.evaluation.research_runner import run_research_experiment
 from src.evaluation.research_store import save_research_experiment
-from src.evaluation.strategy_evaluator import evaluate_strategy
-from src.evaluation.walk_forward import generate_walk_forward_windows
 from src.features.indicators import add_returns
 from src.strategies.registry import DEFAULT_REGISTRY, StrategyRegistry
 
@@ -115,11 +106,7 @@ class DiscoveryEngine:
     ) -> DiscoveryRunResult:
         """Execute discovery workflow over candidates using dataset partitioning.
 
-        Dataset is split chronologically into:
-          - In-Sample (IS)
-          - Validation
-          - Out-of-Sample (OOS)
-          - Walk-Forward (if specified or default windows constructed)
+        Delegates candidate evaluation strictly through run_research_experiment.
         """
         if not isinstance(df, pd.DataFrame):
             raise TypeError("df must be a pandas DataFrame.")
@@ -234,9 +221,7 @@ class DiscoveryEngine:
         wf_test_size: int | None,
         seen_fingerprints: set[str],
     ) -> ResearchEvidence:
-        """Evaluate a single candidate and produce a ResearchEvidence artifact."""
-        rejection_reasons: list[RejectionReason] = []
-
+        """Evaluate a single candidate by constructing a ResearchExperimentSpec and delegating to run_research_experiment."""
         hypothesis = (
             cand.hypothesis_template.replace("{candidate_id}", cand.candidate_id)
             if cand.hypothesis_template
@@ -256,291 +241,28 @@ class DiscoveryEngine:
             random_seed=cand.random_seed,
         )
 
-        # Check duplicate candidate
-        if spec.fingerprint in seen_fingerprints:
-            rejection_reasons.append(RejectionReason.DUPLICATE_CANDIDATE)
-
-        # Check strategy existence in registry
-        if not self.registry.contains(cand.strategy_name):
-            rejection_reasons.append(RejectionReason.SPECIFICATION_INVALID)
-
-        # Build partitions
-        partitions: list[EvidencePartition] = []
-
-        # 1. In-Sample Partition
-        is_part, is_rejections = self._evaluate_partition(
-            role=EvidencePartitionRole.IN_SAMPLE,
-            df_part=df_is,
-            cand=cand,
-            execution_assumptions=execution_assumptions,
-            min_obs=self.criteria.min_observations_is,
-        )
-        partitions.append(is_part)
-        rejection_reasons.extend(is_rejections)
-
-        # Check IS threshold criteria
-        if is_part.sharpe_ratio < self.criteria.min_is_sharpe:
-            rejection_reasons.append(RejectionReason.FAILED_VALIDATION)
-        if is_part.total_return < self.criteria.min_is_total_return:
-            rejection_reasons.append(RejectionReason.FAILED_VALIDATION)
-
-        # 2. Validation Partition
-        val_part, val_rejections = self._evaluate_partition(
-            role=EvidencePartitionRole.VALIDATION,
-            df_part=df_val,
-            cand=cand,
-            execution_assumptions=execution_assumptions,
-            min_obs=self.criteria.min_observations_oos,
-        )
-        partitions.append(val_part)
-        rejection_reasons.extend(val_rejections)
-
-        if val_part.sharpe_ratio < self.criteria.min_validation_sharpe:
-            rejection_reasons.append(RejectionReason.FAILED_VALIDATION)
-
-        # 3. Out-Of-Sample Partition
-        oos_part, oos_rejections = self._evaluate_partition(
-            role=EvidencePartitionRole.OUT_OF_SAMPLE,
-            df_part=df_oos,
-            cand=cand,
-            execution_assumptions=execution_assumptions,
-            min_obs=self.criteria.min_observations_oos,
-        )
-        partitions.append(oos_part)
-        rejection_reasons.extend(oos_rejections)
-
-        if oos_part.sharpe_ratio < self.criteria.min_oos_sharpe:
-            rejection_reasons.append(RejectionReason.FAILED_OOS)
-
-        # OOS Degradation check relative to IS
-        if is_part.sharpe_ratio > 0:
-            deg = (is_part.sharpe_ratio - oos_part.sharpe_ratio) / is_part.sharpe_ratio
-            if deg > self.criteria.max_oos_sharpe_degradation:
-                rejection_reasons.append(RejectionReason.FAILED_OOS)
-                rejection_reasons.append(RejectionReason.IS_ONLY_SUCCESS)
-
-        # 4. Walk-Forward Partition
-        wf_part, wf_rejections = self._evaluate_walk_forward(
-            df_full=df_full,
-            cand=cand,
-            execution_assumptions=execution_assumptions,
+        evidence = run_research_experiment(
+            spec=spec,
+            df=df_full,
+            criteria=self.criteria,
+            registry=self.registry,
             wf_train_size=wf_train_size,
             wf_test_size=wf_test_size,
-        )
-        rejection_reasons.extend(wf_rejections)
-        if wf_part is not None:
-            partitions.append(wf_part)
-
-        # Benchmark comparison on full dataset
-        benchmark_comp = self._evaluate_benchmark(df_is, is_part.total_return)
-
-        # 5. Robustness, Stress & Statistical Validation Step
-        df_ref = pd.concat([df_is, df_val]).sort_values("timestamp").reset_index(drop=True) if "timestamp" in df_is.columns else pd.concat([df_is, df_val])
-
-        robustness_eval = RobustnessEvaluator(
-            criteria=self.criteria.robustness_criteria,
-            registry=self.registry,
-        )
-        robustness_res = robustness_eval.evaluate_candidate_robustness(
-            candidate=cand,
-            df_reference=df_ref,
-            df_oos=df_oos,
-            dataset_scope=dataset_scope,
-            execution_assumptions=execution_assumptions,
+            persist_evidence=False,
         )
 
-        rejection_reasons.extend(robustness_res.rejection_reasons)
-
-        # Determine final promotion status
-        dedup_rejections = tuple(dict.fromkeys(rejection_reasons))
-
-        if dedup_rejections:
-            status = PromotionStatus.REJECTED
-        else:
-            status = PromotionStatus.PROMOTABLE
-
-        now_utc = datetime.now(timezone.utc).isoformat()
-
-        return ResearchEvidence(
-            experiment_fingerprint=spec.fingerprint,
-            spec=spec,
-            partitions=tuple(partitions),
-            robustness_verdict=robustness_res.as_dict(),
-            benchmark_comparison=benchmark_comp,
-            promotion_status=status,
-            rejection_reasons=dedup_rejections,
-            critique_notes=f"Discovery engine evaluation completed at {now_utc}.",
-            created_at_utc=now_utc,
-        )
-
-    def _evaluate_partition(
-        self,
-        role: EvidencePartitionRole,
-        df_part: pd.DataFrame,
-        cand: CandidateSpec,
-        execution_assumptions: ExecutionAssumptions,
-        min_obs: int,
-    ) -> tuple[EvidencePartition, list[RejectionReason]]:
-        """Evaluate candidate on a single partition DataFrame."""
-        rejections: list[RejectionReason] = []
-
-        if "timestamp" in df_part.columns:
-            ts = df_part["timestamp"]
-        else:
-            ts = df_part.index
-
-        start_str = pd.to_datetime(ts.min()).strftime("%Y-%m-%d") if len(df_part) > 0 else "1970-01-01"
-        end_str = pd.to_datetime(ts.max()).strftime("%Y-%m-%d") if len(df_part) > 0 else "1970-01-01"
-
-        if len(df_part) < min_obs:
-            rejections.append(RejectionReason.INSUFFICIENT_DATA)
-            return (
-                EvidencePartition(
-                    role=role,
-                    start_date=start_str,
-                    end_date=end_str,
-                    total_return=0.0,
-                    max_drawdown=0.0,
-                    sharpe_ratio=0.0,
-                    observations=len(df_part),
-                ),
-                rejections,
+        if spec.fingerprint in seen_fingerprints and RejectionReason.DUPLICATE_CANDIDATE not in evidence.rejection_reasons:
+            rejection_reasons = list(evidence.rejection_reasons) + [RejectionReason.DUPLICATE_CANDIDATE]
+            evidence = ResearchEvidence(
+                experiment_fingerprint=evidence.experiment_fingerprint,
+                spec=evidence.spec,
+                partitions=evidence.partitions,
+                robustness_verdict=evidence.robustness_verdict,
+                benchmark_comparison=evidence.benchmark_comparison,
+                promotion_status=PromotionStatus.REJECTED,
+                rejection_reasons=tuple(dict.fromkeys(rejection_reasons)),
+                critique_notes=evidence.critique_notes,
+                created_at_utc=evidence.created_at_utc,
             )
 
-        try:
-            eval_res = evaluate_strategy(
-                df=df_part,
-                name=cand.strategy_name,
-                registry=self.registry,
-                strategy_kwargs=cand.parameters,
-                transaction_cost=execution_assumptions.transaction_cost,
-                slippage=execution_assumptions.slippage,
-            )
-
-            part = EvidencePartition(
-                role=role,
-                start_date=start_str,
-                end_date=end_str,
-                total_return=eval_res.total_return,
-                max_drawdown=eval_res.max_drawdown,
-                sharpe_ratio=eval_res.sharpe_ratio,
-                win_rate=eval_res.win_rate,
-                profit_factor=eval_res.profit_factor,
-                observations=eval_res.observations,
-            )
-            return part, rejections
-        except Exception:
-            rejections.append(RejectionReason.SPECIFICATION_INVALID)
-            return (
-                EvidencePartition(
-                    role=role,
-                    start_date=start_str,
-                    end_date=end_str,
-                    total_return=0.0,
-                    max_drawdown=0.0,
-                    sharpe_ratio=0.0,
-                    observations=len(df_part),
-                ),
-                rejections,
-            )
-
-    def _evaluate_walk_forward(
-        self,
-        df_full: pd.DataFrame,
-        cand: CandidateSpec,
-        execution_assumptions: ExecutionAssumptions,
-        wf_train_size: int | None,
-        wf_test_size: int | None,
-    ) -> tuple[EvidencePartition | None, list[RejectionReason]]:
-        """Perform walk-forward validation across windows and return aggregated partition."""
-        rejections: list[RejectionReason] = []
-        n = len(df_full)
-
-        train_sz = wf_train_size or int(n * 0.4)
-        test_sz = wf_test_size or int(n * 0.15)
-
-        windows = generate_walk_forward_windows(
-            df_full, train_size=train_sz, test_size=test_sz
-        )
-
-        if not windows:
-            rejections.append(RejectionReason.INSUFFICIENT_DATA)
-            return None, rejections
-
-        wf_returns: list[float] = []
-        positive_windows = 0
-
-        for w in windows:
-            df_test = df_full.iloc[w.test_start : w.test_end]
-            if df_test.empty:
-                continue
-
-            try:
-                eval_res = evaluate_strategy(
-                    df=df_test,
-                    name=cand.strategy_name,
-                    registry=self.registry,
-                    strategy_kwargs=cand.parameters,
-                    transaction_cost=execution_assumptions.transaction_cost,
-                    slippage=execution_assumptions.slippage,
-                )
-                ret = eval_res.total_return
-                wf_returns.append(ret)
-                if ret > 0:
-                    positive_windows += 1
-            except Exception:
-                pass
-
-        if not wf_returns:
-            rejections.append(RejectionReason.FAILED_WALK_FORWARD)
-            return None, rejections
-
-        pos_ratio = positive_windows / len(wf_returns)
-        if pos_ratio < self.criteria.min_walk_forward_positive_ratio:
-            rejections.append(RejectionReason.FAILED_WALK_FORWARD)
-
-        if "timestamp" in df_full.columns:
-            ts = df_full["timestamp"]
-        else:
-            ts = df_full.index
-
-        start_str = pd.to_datetime(ts.min()).strftime("%Y-%m-%d")
-        end_str = pd.to_datetime(ts.max()).strftime("%Y-%m-%d")
-
-        mean_ret = sum(wf_returns) / len(wf_returns)
-
-        wf_partition = EvidencePartition(
-            role=EvidencePartitionRole.WALK_FORWARD,
-            start_date=start_str,
-            end_date=end_str,
-            total_return=round(mean_ret, 6),
-            max_drawdown=0.0,
-            sharpe_ratio=0.0,
-            observations=len(wf_returns),
-            additional_metrics={
-                "walk_forward_windows": float(len(wf_returns)),
-                "positive_window_ratio": float(pos_ratio),
-            },
-        )
-
-        return wf_partition, rejections
-
-    def _evaluate_benchmark(
-        self, df_is: pd.DataFrame, candidate_is_return: float
-    ) -> dict[str, Any]:
-        """Calculate benchmark comparison (buy and hold return) over In-Sample period."""
-        if "return" in df_is.columns:
-            benchmark_return = float((1.0 + df_is["return"]).prod() - 1.0)
-        elif "close" in df_is.columns and len(df_is) > 1:
-            benchmark_return = float(
-                (df_is["close"].iloc[-1] - df_is["close"].iloc[0])
-                / df_is["close"].iloc[0]
-            )
-        else:
-            benchmark_return = 0.0
-
-        return {
-            "benchmark_reference": self.criteria.benchmark_reference,
-            "benchmark_total_return": round(benchmark_return, 6),
-            "outperformed_benchmark": candidate_is_return > benchmark_return,
-        }
+        return evidence
