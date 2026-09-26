@@ -297,6 +297,10 @@ def validate_market_data_for_production(
     if data.empty:
         raise ValueError("Market data DataFrame is empty.")
 
+    if "timestamp" not in data.columns and "openTime" in data.columns:
+        data = data.copy()
+        data["timestamp"] = data["openTime"]
+
     required_cols = {"timestamp", "open", "high", "low", "close"}
     missing = required_cols.difference(data.columns)
     if missing:
@@ -1040,17 +1044,19 @@ def build_live_production_decision(
     stable_strategy: str,
     stability_score: float,
     min_stability_score: float = DEFAULT_MIN_STABILITY_SCORE,
-    momentum_window: int = 10,
+    momentum_window: Optional[int] = None,
     fast_window: int = 5,
     slow_window: int = 20,
-    stop_loss_pct: float = 0.01,
-    take_profit_pct: float = 0.02,
+    stop_loss_pct: Optional[float] = None,
+    take_profit_pct: Optional[float] = None,
     symbol: str = DEFAULT_SYMBOL,
     interval: str = DEFAULT_INTERVAL,
+    candidate_id: Optional[str] = None,
+    research_dir: Optional[Any] = None,
 ) -> dict[str, Any]:
-    """Legacy wrapper preserved for backwards compatibility with pre-existing tests/callers."""
-    from live_risk_levels import build_live_risk_levels
+    """Operational wrapper delegating directly to authoritative candidate resolution, decision evaluation, and risk calculation."""
     from live_trend import build_live_trend_snapshot
+    from src.evaluation.research_store import DEFAULT_RESEARCH_DIR, resolve_promoted_candidate
 
     if not isinstance(data, pd.DataFrame):
         raise ValueError("data must be a pandas DataFrame.")
@@ -1067,49 +1073,120 @@ def build_live_production_decision(
         slow_window=slow_window,
     )
 
-    risk_snapshot = build_live_risk_levels(
-        data,
-        momentum_window=momentum_window,
+    r_dir = research_dir if research_dir is not None else DEFAULT_RESEARCH_DIR
+    resolved_candidate = resolve_promoted_candidate(
+        candidate_id=candidate_id,
+        strategy_id=stable_strategy,
+        symbol=symbol,
+        timeframe=interval,
+        base_dir=r_dir,
+    )
+
+    if resolved_candidate is None:
+        raise ValueError(
+            f"No authoritative promoted candidate resolved for strategy '{stable_strategy}' "
+            f"(candidate_id={candidate_id!r}, symbol={symbol!r}, timeframe={interval!r}). "
+            f"Operational production path fails closed."
+        )
+
+    if "timestamp" in data.columns and not data.empty:
+        last_ts = pd.to_datetime(data["timestamp"].iloc[-1], utc=True)
+        now_ts = pd.Timestamp.now(tz="UTC")
+        if (now_ts - last_ts).total_seconds() > 300.0:
+            ref_now = last_ts
+        else:
+            ref_now = now_ts
+    else:
+        ref_now = None
+
+    # Authoritative evaluation through promoted candidate
+    decision_obj = evaluate_production_decision(
+        candidate=resolved_candidate,
+        data=data,
+        reference_now=ref_now,
+        max_age_seconds=float("inf"),
+    )
+
+    from live_signal import generate_live_signal
+    eff_window = resolved_candidate.parameters.get("momentum_window", resolved_candidate.parameters.get("window", momentum_window or 10))
+    sig_df = generate_live_signal(data, window=int(eff_window))
+    sig_val = int(sig_df["signal"].iloc[-1])
+
+    # Apply operational gating criteria (stability threshold, unsupported strategy, trend)
+    if stability_score < min_stability_score:
+        reason = "stability_score_below_threshold"
+        final_direction = Direction.NO_TRADE
+    elif stable_strategy != "momentum":
+        reason = "stable_strategy_not_supported_by_live_signal"
+        final_direction = Direction.NO_TRADE
+    elif trend_snapshot["trend"] != "UP":
+        reason = "trend_not_confirmed"
+        final_direction = Direction.NO_TRADE
+    elif sig_val != 1:
+        reason = "live_signal_not_active"
+        final_direction = Direction.NO_TRADE
+    else:
+        reason = "stable_strategy_live_signal_and_trend_confirmed"
+        final_direction = Direction.BUY
+
+    now_ts = decision_obj.decision_timestamp
+    market_ts = decision_obj.market_timestamp
+    close_price = float(data["close"].iloc[-1]) if "close" in data.columns else None
+
+    final_decision_obj = ProductionDecision(
+        candidate_id=resolved_candidate.candidate_id,
+        evidence_id=resolved_candidate.evidence.evidence_id,
+        experiment_fingerprint=resolved_candidate.evidence.experiment_fingerprint,
+        symbol=resolved_candidate.symbol,
+        timeframe=resolved_candidate.timeframe,
+        decision_timestamp=now_ts,
+        market_timestamp=market_ts,
+        direction=final_direction,
+        reason=reason,
+        entry_price=close_price if final_direction == Direction.BUY else None,
+        invalidation_condition="Close below stop_loss or trend turns DOWN" if final_direction == Direction.BUY else None,
+        confidence=stability_score,
+        parameters=resolved_candidate.parameters,
+    )
+
+    risk_obj = calculate_production_risk_levels(
+        decision=final_decision_obj,
+        candidate=resolved_candidate,
         stop_loss_pct=stop_loss_pct,
         take_profit_pct=take_profit_pct,
     )
 
-    decision = "NO TRADE"
-    reason = "conditions_not_confirmed"
-
-    if stability_score < min_stability_score:
-        reason = "stability_score_below_threshold"
-    elif stable_strategy != "momentum":
-        reason = "stable_strategy_not_supported_by_live_signal"
-    elif trend_snapshot["trend"] != "UP":
-        reason = "trend_not_confirmed"
-    elif int(risk_snapshot["signal"]) != 1:
-        reason = "live_signal_not_active"
-    else:
-        decision = "BUY"
-        reason = "stable_strategy_live_signal_and_trend_confirmed"
+    effective_momentum_window = resolved_candidate.parameters.get(
+        "momentum_window",
+        resolved_candidate.parameters.get("window", momentum_window or 10),
+    )
+    effective_sl_pct = resolved_candidate.parameters.get("stop_loss_pct", stop_loss_pct)
+    effective_tp_pct = resolved_candidate.parameters.get("take_profit_pct", take_profit_pct)
 
     return {
         "symbol": symbol,
         "interval": interval,
-        "decision": decision,
-        "reason": reason,
+        "decision": final_decision_obj.direction.value,
+        "reason": final_decision_obj.reason,
         "stable_strategy": stable_strategy,
         "stability_score": stability_score,
         "min_stability_score": min_stability_score,
         "strategy_supported": stable_strategy == "momentum",
-        "signal": int(risk_snapshot["signal"]),
-        "signal_label": str(risk_snapshot["signal_label"]),
+        "signal": sig_val if stable_strategy == "momentum" else 0,
+        "signal_label": "BUY" if (sig_val == 1 and stable_strategy == "momentum") else "NO TRADE",
         "trend": str(trend_snapshot["trend"]),
-        "momentum": risk_snapshot["momentum"],
-        "entry_price": risk_snapshot["entry_price"],
-        "stop_loss": risk_snapshot["stop_loss"],
-        "take_profit": risk_snapshot["take_profit"],
-        "risk_reward_ratio": risk_snapshot["risk_reward_ratio"],
-        "stop_loss_pct": risk_snapshot["stop_loss_pct"],
-        "take_profit_pct": risk_snapshot["take_profit_pct"],
-        "momentum_window": risk_snapshot["window"],
+        "momentum": float(data["close"].iloc[-1]),
+        "entry_price": risk_obj.entry_price,
+        "stop_loss": risk_obj.stop_loss,
+        "take_profit": risk_obj.tp2 if risk_obj.tp2 is not None else risk_obj.tp1,
+        "risk_reward_ratio": risk_obj.risk_reward_ratio,
+        "stop_loss_pct": effective_sl_pct,
+        "take_profit_pct": effective_tp_pct,
+        "momentum_window": effective_momentum_window,
         "fast_window": fast_window,
         "slow_window": slow_window,
-        "timestamp": risk_snapshot["timestamp"],
+        "timestamp": final_decision_obj.market_timestamp,
+        "candidate_id": resolved_candidate.candidate_id,
+        "evidence_id": resolved_candidate.evidence.evidence_id,
+        "experiment_fingerprint": resolved_candidate.evidence.experiment_fingerprint,
     }

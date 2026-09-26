@@ -643,3 +643,76 @@ def test_34_independently_supplied_parameters_disagree_with_authoritative():
     risk = calculate_production_risk_levels(dec, cand)
     entry = dec.entry_price
     assert risk.stop_loss == pytest.approx(entry * 0.95)
+
+
+def test_35_structural_ast_no_hardcoded_production_fallbacks():
+    """Verify that operational production wrappers do not reintroduce hardcoded fallbacks."""
+    import ast
+
+    wrapper_file = Path("src/evaluation/live_production_decision.py")
+    tree = ast.parse(wrapper_file.read_text(encoding="utf-8"), filename=str(wrapper_file))
+
+    for node in ast.walk(tree):
+        if isinstance(node, ast.FunctionDef) and node.name == "build_live_production_decision":
+            # Inspect default arg values
+            for default in node.args.defaults:
+                if isinstance(default, ast.Constant):
+                    assert default.value not in (10, 0.01, 0.02), (
+                        f"Forbidden operational default constant {default.value} found in "
+                        "build_live_production_decision definition signature."
+                    )
+
+
+def test_36_operational_wrapper_delegates_to_authoritative_chain(monkeypatch, tmp_path):
+    """Prove that build_live_production_decision delegates directly to candidate resolution and evaluation."""
+    from src.evaluation.research_store import save_research_experiment, persist_promoted_candidate_binding
+    from src.evaluation.live_production_decision import build_live_production_decision
+
+    ev = make_promoted_evidence(symbol="XAUUSD", timeframe="5m")
+    save_research_experiment(ev, base_dir=tmp_path)
+    persist_promoted_candidate_binding(candidate_id="cand_auth_test", evidence=ev, base_dir=tmp_path)
+
+    data = make_market_data(trend="UP")
+
+    # Run operational wrapper pointing to candidate in tmp_path
+    res = build_live_production_decision(
+        data,
+        stable_strategy="momentum",
+        stability_score=0.80,
+        candidate_id="cand_auth_test",
+        research_dir=tmp_path,
+    )
+
+    assert res["decision"] == "BUY"
+    assert res["candidate_id"] == "cand_auth_test"
+    assert res["evidence_id"] == ev.evidence_id
+    assert res["experiment_fingerprint"] == ev.experiment_fingerprint
+
+
+def test_37_missing_risk_parameter_fails_closed():
+    """Prove that candidate missing required risk parameter fails closed without fallback."""
+    ev = make_promoted_evidence()
+    spec_no_sl = ResearchExperimentSpec(
+        hypothesis="Missing SL",
+        methodology_version="1.0",
+        strategy_name="momentum",
+        strategy_version="1.0",
+        dataset_scope=ev.spec.dataset_scope,
+        execution_assumptions=ev.spec.execution_assumptions,
+        code_provenance=ev.spec.code_provenance,
+        benchmark_reference="buy_and_hold",
+        parameters={"momentum_window": 10, "take_profit_pct": 0.02}, # Missing stop_loss_pct
+    )
+    ev_no_sl = ResearchEvidence(
+        experiment_fingerprint=spec_no_sl.fingerprint,
+        spec=spec_no_sl,
+        partitions=ev.partitions,
+        robustness_verdict={"passed": True},
+        promotion_status=PromotionStatus.PROMOTABLE,
+    )
+    cand = PromotedCandidateArtifact("cand_no_sl", "momentum", "1.0", ev_no_sl, "XAUUSD", "5m")
+    data = make_market_data(trend="UP")
+    dec = evaluate_production_decision(cand, data)
+
+    with pytest.raises(ValueError, match="missing required 'stop_loss_pct' risk parameter"):
+        calculate_production_risk_levels(dec, cand)

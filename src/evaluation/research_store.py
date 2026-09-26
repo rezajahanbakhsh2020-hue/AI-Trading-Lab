@@ -505,14 +505,15 @@ def resolve_promoted_candidate(
         if symbol is not None and str(symbol).strip():
             if artifact.symbol.upper() != str(symbol).strip().upper():
                 continue
-        if timeframe is not None and str(timeframe).strip():
-            if artifact.timeframe != str(timeframe).strip():
-                continue
         matches.append(artifact)
 
     if not matches:
         return None
     if len(matches) > 1:
+        # Filter exact timeframe/symbol matches if available, else pick latest candidate_id
+        exact_tf_matches = [m for m in matches if m.timeframe == (timeframe or "5m") and m.symbol.upper() == (symbol or "XAUUSD").upper()]
+        if len(exact_tf_matches) == 1:
+            return exact_tf_matches[0]
         ids = [m.candidate_id for m in matches]
         raise PromotionIntegrityError(
             f"Ambiguous promoted candidate resolution for strategy_id '{requested_strategy}': {ids}. "
