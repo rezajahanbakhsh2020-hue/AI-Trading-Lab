@@ -499,3 +499,95 @@ def test_29_regression_coverage_pr6_robustness_validation():
     from src.evaluation.robustness_evaluator import RobustnessEvaluator
     evaluator = RobustnessEvaluator()
     assert evaluator is not None
+
+
+def test_missing_risk_parameters_fails_closed():
+    ds = DatasetScope("ds", "XAUUSD", "5m", "2025-01-01", "2025-01-02")
+    ea = ExecutionAssumptions(transaction_cost=0.001, slippage=0.001, latency_ms=10.0)
+    cp = CodeProvenance(commit_sha="843dfa76cf86a9057dba0a127541d7093fb15e42")
+    spec = ResearchExperimentSpec(
+        hypothesis="Missing risk params",
+        methodology_version="1.0",
+        strategy_name="momentum",
+        strategy_version="1.0",
+        dataset_scope=ds,
+        execution_assumptions=ea,
+        code_provenance=cp,
+        benchmark_reference="buy_and_hold",
+        parameters={"momentum_window": 10},
+    )
+    part = EvidencePartition(
+        role=EvidencePartitionRole.OUT_OF_SAMPLE,
+        start_date="2025-01-01",
+        end_date="2025-01-02",
+        total_return=0.15,
+        max_drawdown=0.05,
+        sharpe_ratio=1.8,
+    )
+    ev = ResearchEvidence(
+        experiment_fingerprint=spec.fingerprint,
+        spec=spec,
+        partitions=(part,),
+        robustness_verdict={"passed": True},
+        promotion_status=PromotionStatus.PROMOTABLE,
+    )
+    cand = PromotedCandidateArtifact("cand_no_risk", "momentum", "1.0", ev, "XAUUSD", "5m")
+    data = make_market_data(trend="UP")
+    dec = evaluate_production_decision(cand, data)
+
+    with pytest.raises(ValueError, match="missing required 'stop_loss_pct' risk parameter"):
+        calculate_production_risk_levels(dec, cand)
+
+
+def test_missing_strategy_window_parameter_fails_closed():
+    ds = DatasetScope("ds", "XAUUSD", "5m", "2025-01-01", "2025-01-02")
+    ea = ExecutionAssumptions(transaction_cost=0.001, slippage=0.001, latency_ms=10.0)
+    cp = CodeProvenance(commit_sha="843dfa76cf86a9057dba0a127541d7093fb15e42")
+    spec = ResearchExperimentSpec(
+        hypothesis="Missing strategy window",
+        methodology_version="1.0",
+        strategy_name="momentum",
+        strategy_version="1.0",
+        dataset_scope=ds,
+        execution_assumptions=ea,
+        code_provenance=cp,
+        benchmark_reference="buy_and_hold",
+        parameters={"stop_loss_pct": 0.01, "take_profit_pct": 0.02},
+    )
+    part = EvidencePartition(
+        role=EvidencePartitionRole.OUT_OF_SAMPLE,
+        start_date="2025-01-01",
+        end_date="2025-01-02",
+        total_return=0.15,
+        max_drawdown=0.05,
+        sharpe_ratio=1.8,
+    )
+    ev = ResearchEvidence(
+        experiment_fingerprint=spec.fingerprint,
+        spec=spec,
+        partitions=(part,),
+        robustness_verdict={"passed": True},
+        promotion_status=PromotionStatus.PROMOTABLE,
+    )
+    cand = PromotedCandidateArtifact("cand_no_window", "momentum", "1.0", ev, "XAUUSD", "5m")
+    data = make_market_data(trend="UP")
+
+    with pytest.raises(ValueError, match="missing required 'momentum_window' or 'window' parameter"):
+        evaluate_production_decision(cand, data)
+
+
+def test_candidate_tp_multipliers_override_defaults():
+    ev = make_promoted_evidence()
+    cand = PromotedCandidateArtifact(
+        "cand_tp_mult", "momentum", "1.0", ev, "XAUUSD", "5m",
+        parameters={"tp1_multiplier": 1.5, "tp2_multiplier": 2.5, "tp3_multiplier": 3.5}
+    )
+    data = make_market_data(trend="UP", start_price=1000.0)
+    dec = evaluate_production_decision(cand, data)
+    risk = calculate_production_risk_levels(dec, cand)
+
+    entry = dec.entry_price
+    risk_dist = entry - risk.stop_loss
+    assert risk.tp1 == pytest.approx(entry + (risk_dist * 1.5))
+    assert risk.tp2 == pytest.approx(entry + (risk_dist * 2.5))
+    assert risk.tp3 == pytest.approx(entry + (risk_dist * 3.5))
