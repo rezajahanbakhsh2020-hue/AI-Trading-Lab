@@ -20,6 +20,10 @@ from typing import Any, Mapping, Sequence
 import pandas as pd
 
 from src.evaluation.candidate_generator import CandidateSpec, ResearchSearchSpace
+from src.evaluation.research_robustness import (
+    ResearchRobustnessAssessment,
+    assess_research_robustness,
+)
 from src.evaluation.selection_governance import (
     ResearchSelectionAssessment,
     ResearchSelectionPolicy,
@@ -133,6 +137,9 @@ class DiscoveryRunResult:
     trial_ledger: tuple[ResearchTrialRecord, ...] = field(default_factory=tuple)
     search_truncated: bool = False
     selection_assessments: tuple[ResearchSelectionAssessment, ...] = field(
+        default_factory=tuple
+    )
+    robustness_assessments: tuple[ResearchRobustnessAssessment, ...] = field(
         default_factory=tuple
     )
 
@@ -333,8 +340,9 @@ class DiscoveryEngine:
         promoted_sorted = sorted(promoted, key=_evidence_rank_key)
         rejected_sorted = sorted(rejected, key=_evidence_rank_key)
 
-        # Generate selection governance assessments for all evaluated evidence artifacts
+        # Generate selection governance and robustness assessments for all evaluated evidence artifacts
         selection_assessments: list[ResearchSelectionAssessment] = []
+        robustness_assessments: list[ResearchRobustnessAssessment] = []
         all_evidence = promoted_sorted + rejected_sorted
         for ev in all_evidence:
             assessment = assess_research_selection(
@@ -343,6 +351,12 @@ class DiscoveryEngine:
                 search_fingerprint=search_space.search_fingerprint,
             )
             selection_assessments.append(assessment)
+
+            rob_assessment = assess_research_robustness(
+                evidence=ev,
+                robustness_criteria=self.criteria.robustness_criteria,
+            )
+            robustness_assessments.append(rob_assessment)
 
         return DiscoveryRunResult(
             dataset_scope=dataset_scope,
@@ -356,6 +370,7 @@ class DiscoveryEngine:
             trial_ledger=tuple(trial_records),
             search_truncated=search_truncated,
             selection_assessments=tuple(selection_assessments),
+            robustness_assessments=tuple(robustness_assessments),
         )
 
     def _validate_dataset_scope(
