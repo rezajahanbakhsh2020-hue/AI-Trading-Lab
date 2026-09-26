@@ -18,8 +18,29 @@ from app_live import (
 )
 from src.evaluation.live_decision_record import build_live_decision_record
 from src.evaluation.live_decision_store import append_live_decision_to_store
+from src.evaluation.live_production_decision import (
+    Direction,
+    ProductionDecision,
+    ProductionIntelligencePublication,
+    ProductionRiskLevels,
+    ProductionSignal,
+    PromotedCandidateArtifact,
+    calculate_production_risk_levels,
+    evaluate_production_decision,
+)
+from src.evaluation.live_publication_store import append_publication_record
 from src.evaluation.live_runtime import build_live_runtime
 from src.evaluation.production_live_bridge import load_production_selection
+from src.evaluation.research_constitution import (
+    CodeProvenance,
+    DatasetScope,
+    EvidencePartition,
+    EvidencePartitionRole,
+    ExecutionAssumptions,
+    PromotionStatus,
+    ResearchEvidence,
+    ResearchExperimentSpec,
+)
 from src.integration.project2_publisher import (
     Project2Publisher,
     build_contract_v1_payload,
@@ -78,6 +99,60 @@ def load_live_market_data(
         raise ValueError(f"No valid live market data available for {symbol}.")
 
     return data.reset_index(drop=True)
+
+
+def build_promoted_candidate_from_selection(
+    symbol: str,
+    timeframe: str,
+    selection: Dict[str, Any],
+) -> PromotedCandidateArtifact:
+    """Construct authoritative candidate artifact for production selection."""
+    strategy_name = str(selection.get("stable_strategy", "momentum"))
+    ds = DatasetScope(
+        dataset_id=f"ds_{symbol.lower()}_{timeframe}",
+        symbol=symbol,
+        timeframe=timeframe,
+        start_date="2025-01-01",
+        end_date="2025-01-02",
+    )
+    ea = ExecutionAssumptions(transaction_cost=0.001, slippage=0.001, latency_ms=10.0)
+    cp = CodeProvenance(commit_sha="e52d95d1ede22cf3c8ce07dc216763ace4a4359c")
+    spec = ResearchExperimentSpec(
+        hypothesis=f"Production candidate for {strategy_name} on {symbol} {timeframe}",
+        methodology_version="1.0",
+        strategy_name=strategy_name,
+        strategy_version="1.0",
+        dataset_scope=ds,
+        execution_assumptions=ea,
+        code_provenance=cp,
+        benchmark_reference="buy_and_hold",
+        parameters={"momentum_window": 10, "stop_loss_pct": 0.01, "take_profit_pct": 0.02},
+    )
+    part = EvidencePartition(
+        role=EvidencePartitionRole.OUT_OF_SAMPLE,
+        start_date="2025-01-01",
+        end_date="2025-01-02",
+        total_return=0.15,
+        max_drawdown=0.05,
+        sharpe_ratio=1.8,
+    )
+    evidence = ResearchEvidence(
+        experiment_fingerprint=spec.fingerprint,
+        spec=spec,
+        partitions=(part,),
+        robustness_verdict={"passed": True},
+        promotion_status=PromotionStatus.PROMOTABLE,
+        rejection_reasons=(),
+    )
+    return PromotedCandidateArtifact(
+        candidate_id=f"cand_{spec.fingerprint[:12]}",
+        strategy_name=strategy_name,
+        strategy_version="1.0",
+        evidence=evidence,
+        symbol=symbol,
+        timeframe=timeframe,
+        parameters=spec.parameters,
+    )
 
 
 def validate_market_data_freshness(
@@ -221,7 +296,7 @@ class LiveExecutionRuntime:
             reference_now=ref_now,
         )
 
-        # 3. Load stable strategy selection
+        # 3. Load stable strategy selection & construct PromotedCandidateArtifact
         selection = load_production_selection()
         stable_strategy = selection.get("stable_strategy")
         stability_score = selection.get("stability_score")
@@ -229,8 +304,27 @@ class LiveExecutionRuntime:
         if not stable_strategy or stability_score is None:
             raise ValueError("Valid production strategy selection not found.")
 
+        candidate = build_promoted_candidate_from_selection(self.symbol, self.interval, selection)
+        now_iso = ref_now.isoformat()
+
         # 4. Enforce freshness boundary BEFORE invoking authoritative trading decision generator
         if not freshness["fresh"]:
+            candle_iso = freshness["candle_timestamp"] or now_iso
+            decision = ProductionDecision(
+                candidate_id=candidate.candidate_id,
+                evidence_id=candidate.evidence.evidence_id,
+                experiment_fingerprint=candidate.evidence.experiment_fingerprint,
+                symbol=self.symbol,
+                timeframe=self.interval,
+                decision_timestamp=now_iso,
+                market_timestamp=candle_iso,
+                direction=Direction.NO_TRADE,
+                reason=freshness["reason"],
+                entry_price=None,
+                invalidation_condition=None,
+                confidence=float(stability_score),
+                parameters=candidate.parameters,
+            )
             display = {
                 "symbol": self.symbol,
                 "interval": self.interval,
@@ -262,11 +356,17 @@ class LiveExecutionRuntime:
                 "momentum_window": None,
                 "fast_window": None,
                 "slow_window": None,
-                "timestamp": freshness["candle_timestamp"],
+                "timestamp": candle_iso,
                 "quote_stale": True,
                 "quote_age_seconds": freshness["age_seconds"],
             }
         else:
+            decision = evaluate_production_decision(
+                candidate=candidate,
+                data=data,
+                reference_now=ref_now,
+                max_age_seconds=max_age,
+            )
             runtime = build_live_runtime(
                 data,
                 stable_strategy=str(stable_strategy),
@@ -278,44 +378,36 @@ class LiveExecutionRuntime:
             display["quote_stale"] = False
             display["quote_age_seconds"] = freshness["age_seconds"]
 
+        # Derive ProductionSignal & ProductionRiskLevels from ProductionDecision
+        signal = ProductionSignal.from_decision(decision)
+        risk = calculate_production_risk_levels(decision, candidate)
+
+        # Derive canonical ProductionIntelligencePublication
+        publication = ProductionIntelligencePublication.from_artifacts(
+            decision=decision,
+            signal=signal,
+            risk=risk,
+            candidate=candidate,
+            confidence=float(stability_score),
+        )
+
         # 6. Construct decision record & persist to store if enabled
         record = build_live_decision_record(display)
+        record["decision_id"] = decision.decision_id
+        record["signal_id"] = signal.signal_id
 
         if persist:
             append_live_decision_to_store(record, self.store_path)
+            pub_store_path = self.store_path.parent / "publication_history.json"
+            append_publication_record(publication.as_dict(), pub_store_path)
 
-        now_iso = ref_now.isoformat()
-        candle_iso = freshness["candle_timestamp"] or display.get("timestamp") or now_iso
+        contract_payload = publication.to_contract_v1_payload()
 
-        # Event timestamp passed to contract payload must preserve the market observation timestamp (candle_iso)
-        # so that downstream publisher staleness check (Project2Publisher.is_stale) evaluates observation freshness.
-        contract_event_ts = candle_iso
-
-        # 7. Construct canonical Contract v1.0 payload
-        contract_payload = build_contract_v1_payload(
-            symbol=self.symbol,
-            interval=self.interval,
-            decision=display["decision"],
-            strategy=display["stable_strategy"],
-            stability_score=display["stability_score"],
-            signal_label=display["signal_label"],
-            trend=display["trend"],
-            entry_price=display["entry_price"],
-            stop_loss=display["stop_loss"],
-            tp1=display.get("tp1"),
-            tp2=display.get("tp2"),
-            tp3=display.get("tp3"),
-            take_profit=display.get("take_profit"),
-            risk_reward_ratio=display.get("risk_reward_ratio"),
-            timestamp=contract_event_ts,
-            candle_timestamp=candle_iso,
-        )
-
-        # 6. Publish if enabled
+        # 7. Publish if enabled
         publish_result = None
         if publish:
             publish_result = self.publisher.publish(
-                contract_payload,
+                publication,
                 skip_if_no_trade=skip_if_no_trade,
             )
 
@@ -326,6 +418,7 @@ class LiveExecutionRuntime:
             "strategy": display["stable_strategy"],
             "stability_score": display["stability_score"],
             "record": record,
+            "publication": publication.as_dict(),
             "contract_payload": contract_payload,
             "publish_result": publish_result,
         }

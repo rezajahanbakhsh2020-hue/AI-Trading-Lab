@@ -653,6 +653,199 @@ def calculate_production_risk_levels(
     )
 
 
+@dataclass(frozen=True)
+class ProductionIntelligencePublication:
+    """Canonical, versioned, immutable publication artifact for Project 2 delivery."""
+
+    schema_version: str
+    publication_id: str
+    signal_id: str
+    decision_id: str
+    strategy_id: str
+    candidate_id: str
+    research_evidence_id: str
+    research_fingerprint: str
+    symbol: str
+    timeframe: str
+    decision_timestamp: str
+    market_data_timestamp: str
+    decision: str
+    confidence: Optional[float]
+    entry: Optional[float]
+    invalidation: Optional[str]
+    stop_loss: Optional[float]
+    tp1: Optional[float]
+    tp2: Optional[float]
+    tp3: Optional[float]
+    trailing_stop: Optional[float]
+    risk_reward_ratio: Optional[float]
+    provenance: dict[str, Any]
+
+    def __post_init__(self) -> None:
+        if not self.schema_version or not self.schema_version.strip():
+            raise ValueError("schema_version must be a non-empty string.")
+        if not self.publication_id or not self.publication_id.strip():
+            raise ValueError("publication_id must be a non-empty string.")
+        if not self.signal_id or not self.signal_id.strip():
+            raise ValueError("signal_id must be a non-empty string.")
+        if not self.decision_id or not self.decision_id.strip():
+            raise ValueError("decision_id must be a non-empty string.")
+        if not self.strategy_id or not self.strategy_id.strip():
+            raise ValueError("strategy_id must be a non-empty string.")
+        if not self.candidate_id or not self.candidate_id.strip():
+            raise ValueError("candidate_id must be a non-empty string.")
+        if not self.research_evidence_id or not self.research_evidence_id.strip():
+            raise ValueError("research_evidence_id must be a non-empty string.")
+        if not self.symbol or not self.symbol.strip():
+            raise ValueError("symbol must be a non-empty string.")
+        if not self.timeframe or not self.timeframe.strip():
+            raise ValueError("timeframe must be a non-empty string.")
+
+    @classmethod
+    def from_artifacts(
+        cls,
+        decision: ProductionDecision,
+        signal: ProductionSignal,
+        risk: ProductionRiskLevels,
+        candidate: PromotedCandidateArtifact,
+        confidence: Optional[float] = None,
+        schema_version: str = "1.0",
+    ) -> ProductionIntelligencePublication:
+        if not isinstance(decision, ProductionDecision):
+            raise TypeError("decision must be a ProductionDecision instance.")
+        if not isinstance(signal, ProductionSignal):
+            raise TypeError("signal must be a ProductionSignal instance.")
+        if not isinstance(risk, ProductionRiskLevels):
+            raise TypeError("risk must be a ProductionRiskLevels instance.")
+        if not isinstance(candidate, PromotedCandidateArtifact):
+            raise TypeError("candidate must be a PromotedCandidateArtifact instance.")
+
+        if signal.decision_id != decision.decision_id:
+            raise ValueError(f"Signal decision_id '{signal.decision_id}' does not match decision ID '{decision.decision_id}'.")
+        if risk.decision_id != decision.decision_id:
+            raise ValueError(f"Risk decision_id '{risk.decision_id}' does not match decision ID '{decision.decision_id}'.")
+
+        pub_raw = {
+            "signal_id": signal.signal_id,
+            "decision_id": decision.decision_id,
+            "candidate_id": candidate.candidate_id,
+            "evidence_id": candidate.evidence.evidence_id,
+            "experiment_fingerprint": candidate.evidence.experiment_fingerprint,
+            "symbol": decision.symbol.upper(),
+            "timeframe": decision.timeframe,
+            "market_timestamp": decision.market_timestamp,
+            "direction": decision.direction.value,
+            "entry_price": decision.entry_price,
+            "stop_loss": risk.stop_loss,
+            "tp1": risk.tp1,
+            "schema_version": schema_version,
+        }
+        serialized = json.dumps(pub_raw, sort_keys=True, ensure_ascii=True)
+        pub_id = hashlib.sha256(serialized.encode("utf-8")).hexdigest()[:32]
+
+        provenance = {
+            "source": "AI-Trading-Lab",
+            "produced_at": decision.decision_timestamp,
+            "candidate_id": candidate.candidate_id,
+            "evidence_id": candidate.evidence.evidence_id,
+            "experiment_fingerprint": candidate.evidence.experiment_fingerprint,
+            "artifact_fingerprint": candidate.artifact_fingerprint,
+            "policy_version": candidate.policy.policy_version,
+            "strategy_version": candidate.strategy_version,
+        }
+
+        conf = confidence if confidence is not None else decision.confidence
+
+        return cls(
+            schema_version=schema_version,
+            publication_id=pub_id,
+            signal_id=signal.signal_id,
+            decision_id=decision.decision_id,
+            strategy_id=candidate.strategy_name,
+            candidate_id=candidate.candidate_id,
+            research_evidence_id=candidate.evidence.evidence_id,
+            research_fingerprint=candidate.evidence.experiment_fingerprint,
+            symbol=decision.symbol.upper(),
+            timeframe=decision.timeframe,
+            decision_timestamp=decision.decision_timestamp,
+            market_data_timestamp=decision.market_timestamp,
+            decision=decision.direction.value,
+            confidence=conf,
+            entry=decision.entry_price,
+            invalidation=decision.invalidation_condition,
+            stop_loss=risk.stop_loss,
+            tp1=risk.tp1,
+            tp2=risk.tp2,
+            tp3=risk.tp3,
+            trailing_stop=risk.trailing_stop,
+            risk_reward_ratio=risk.risk_reward_ratio,
+            provenance=provenance,
+        )
+
+    def as_dict(self) -> dict[str, Any]:
+        return {
+            "schema_version": self.schema_version,
+            "publication_id": self.publication_id,
+            "signal_id": self.signal_id,
+            "decision_id": self.decision_id,
+            "strategy_id": self.strategy_id,
+            "candidate_id": self.candidate_id,
+            "research_evidence_id": self.research_evidence_id,
+            "research_fingerprint": self.research_fingerprint,
+            "symbol": self.symbol,
+            "timeframe": self.timeframe,
+            "decision_timestamp": self.decision_timestamp,
+            "market_data_timestamp": self.market_data_timestamp,
+            "decision": self.decision,
+            "confidence": self.confidence,
+            "entry": self.entry,
+            "invalidation": self.invalidation,
+            "stop_loss": self.stop_loss,
+            "tp1": self.tp1,
+            "tp2": self.tp2,
+            "tp3": self.tp3,
+            "trailing_stop": self.trailing_stop,
+            "risk_reward_ratio": self.risk_reward_ratio,
+            "provenance": dict(self.provenance),
+        }
+
+    def to_contract_v1_payload(self) -> dict[str, Any]:
+        """Convert publication artifact into Contract v1.0 payload dict for Project 2."""
+        return {
+            "contract_version": self.schema_version,
+            "event_id": self.publication_id,
+            "event_type": "TRADING_SIGNAL",
+            "timestamp": self.market_data_timestamp,
+            "instrument": {
+                "symbol": self.symbol,
+                "interval": self.timeframe,
+            },
+            "signal": {
+                "publication_id": self.publication_id,
+                "signal_id": self.signal_id,
+                "decision_id": self.decision_id,
+                "decision": self.decision,
+                "strategy": self.strategy_id,
+                "candidate_id": self.candidate_id,
+                "confidence": self.confidence,
+                "invalidation": self.invalidation,
+                "signal_label": self.decision,
+                "trend": "BULLISH" if self.decision == "BUY" else ("BEARISH" if self.decision == "SELL" else "NEUTRAL"),
+            },
+            "trade_setup": {
+                "entry_price": self.entry,
+                "stop_loss": self.stop_loss,
+                "tp1": self.tp1,
+                "tp2": self.tp2,
+                "tp3": self.tp3,
+                "take_profit": self.tp2 if self.tp2 is not None else self.tp1,
+                "risk_reward_ratio": self.risk_reward_ratio,
+                "trailing_stop": self.trailing_stop,
+            },
+            "provenance": dict(self.provenance),
+        }
+
+
 # Legacy wrapper function for backward compatibility with existing codebase/tests
 DEFAULT_MIN_STABILITY_SCORE = 0.50
 DEFAULT_SYMBOL = "XAUUSD"
