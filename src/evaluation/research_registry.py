@@ -852,6 +852,176 @@ class ResearchRegistryStore:
 
         return tuple(active)
 
+    def _knowledge_dir(self) -> Path:
+        return self.base_dir / "knowledge"
+
+    def register_pattern(self, pattern: Any) -> Any:
+        """Register a research knowledge pattern idempotently and atomically.
+
+        Fail closed if any supporting learning record identity is missing from registry store.
+        """
+        from src.evaluation.research_knowledge import ResearchKnowledgePattern
+
+        if not isinstance(pattern, ResearchKnowledgePattern):
+            raise TypeError("pattern must be a ResearchKnowledgePattern instance.")
+
+        # Fail closed: validate that all supporting learning record IDs exist in store
+        for lid in pattern.supporting_learning_ids:
+            found = False
+            for exp_fp in pattern.supporting_experiment_fingerprints:
+                if self.get_learning_by_id(lid, exp_fp) is not None:
+                    found = True
+                    break
+            if not found:
+                for lr in self.list_learning_records():
+                    if lr.learning_id == lid:
+                        found = True
+                        break
+            if not found:
+                raise RegistryValidationError(
+                    f"Cannot register pattern '{pattern.pattern_id}': "
+                    f"Supporting learning record '{lid}' does not exist in registry store."
+                )
+
+        target_dir = self._knowledge_dir()
+        target_dir.mkdir(parents=True, exist_ok=True)
+        file_path = target_dir / f"{pattern.pattern_id}.json"
+
+        if file_path.exists():
+            existing = self._load_pattern_file(file_path)
+            if existing.canonical_fingerprint == pattern.canonical_fingerprint:
+                return existing
+            raise RegistryConflictError(
+                f"Conflicting knowledge pattern exists for pattern_id '{pattern.pattern_id}'. "
+                f"Existing fingerprint: {existing.canonical_fingerprint}, "
+                f"New fingerprint: {pattern.canonical_fingerprint}."
+            )
+
+        serialized_content = json.dumps(pattern.as_dict(), indent=2, sort_keys=True)
+        fd, temp_path = tempfile.mkstemp(dir=target_dir, prefix="pat_tmp_", suffix=".json")
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as f:
+                f.write(serialized_content)
+            os.replace(temp_path, file_path)
+        except Exception:
+            if os.path.exists(temp_path):
+                try:
+                    os.remove(temp_path)
+                except OSError:
+                    pass
+            raise
+
+        return pattern
+
+    def _load_pattern_file(self, file_path: Path) -> Any:
+        from src.evaluation.research_knowledge import ResearchKnowledgePattern
+
+        if not file_path.exists():
+            raise FileNotFoundError(f"Pattern file not found: {file_path}")
+        try:
+            raw = json.loads(file_path.read_text(encoding="utf-8"))
+        except Exception as exc:
+            raise RegistryValidationError(f"Failed to parse JSON from {file_path}: {exc}") from exc
+        return ResearchKnowledgePattern.from_dict(raw)
+
+    def get_pattern_by_id(self, pattern_id: str) -> Any | None:
+        """Retrieve pattern by pattern_id."""
+        file_path = self._knowledge_dir() / f"{pattern_id}.json"
+        if not file_path.exists():
+            return None
+        return self._load_pattern_file(file_path)
+
+    def list_patterns(self) -> tuple[Any, ...]:
+        """List all persisted research knowledge patterns."""
+        k_dir = self._knowledge_dir()
+        if not k_dir.exists():
+            return ()
+        patterns: list[Any] = []
+        for file_path in sorted(k_dir.glob("*.json")):
+            if file_path.name.startswith("pat_tmp_"):
+                continue
+            patterns.append(self._load_pattern_file(file_path))
+        patterns.sort(key=lambda p: p.pattern_id)
+        return tuple(patterns)
+
+    def query_patterns(
+        self,
+        *,
+        category: Any | str | None = None,
+        symbol: str | None = None,
+        timeframe: str | None = None,
+        strategy_name: str | None = None,
+        is_contradictory: bool | None = None,
+        active_only: bool = True,
+    ) -> tuple[Any, ...]:
+        """Read-only query capability over persisted research knowledge patterns."""
+        from src.evaluation.research_knowledge import ResearchPatternCategory
+
+        all_patterns = self.list_patterns()
+        results: list[Any] = []
+
+        cat_val = category.value if isinstance(category, ResearchPatternCategory) else category
+
+        for pat in all_patterns:
+            if cat_val and pat.category.value != cat_val:
+                continue
+            if symbol and pat.normalized_conditions.symbol != symbol:
+                continue
+            if timeframe and pat.normalized_conditions.timeframe != timeframe:
+                continue
+            if strategy_name and pat.normalized_conditions.strategy_name != strategy_name:
+                continue
+            if is_contradictory is not None and pat.is_contradictory != is_contradictory:
+                continue
+            if active_only and not pat.is_active:
+                continue
+
+            results.append(pat)
+
+        results.sort(key=lambda p: p.pattern_id)
+        return tuple(results)
+
+    def record_pattern_supersession(
+        self,
+        newer_pattern: Any,
+        older_pattern: Any,
+    ) -> tuple[Any, Any]:
+        """Atomically record supersession between two knowledge patterns."""
+        from src.evaluation.research_knowledge import ResearchKnowledgePattern
+
+        if not isinstance(newer_pattern, ResearchKnowledgePattern) or not isinstance(older_pattern, ResearchKnowledgePattern):
+            raise TypeError("Both newer_pattern and older_pattern must be ResearchKnowledgePattern instances.")
+
+        older_dict = older_pattern.as_dict()
+        older_dict["is_active"] = False
+        older_dict["superseded_by_pattern_id"] = newer_pattern.pattern_id
+        updated_older = ResearchKnowledgePattern.from_dict(older_dict)
+
+        newer_dict = newer_pattern.as_dict()
+        newer_dict["supersedes_pattern_id"] = older_pattern.pattern_id
+        updated_newer = ResearchKnowledgePattern.from_dict(newer_dict)
+
+        registered_newer = self.register_pattern(updated_newer)
+
+        # Write updated older pattern file atomically
+        target_dir = self._knowledge_dir()
+        file_path = target_dir / f"{updated_older.pattern_id}.json"
+        serialized_content = json.dumps(updated_older.as_dict(), indent=2, sort_keys=True)
+        fd, temp_path = tempfile.mkstemp(dir=target_dir, prefix="pat_tmp_", suffix=".json")
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as f:
+                f.write(serialized_content)
+            os.replace(temp_path, file_path)
+        except Exception:
+            if os.path.exists(temp_path):
+                try:
+                    os.remove(temp_path)
+                except OSError:
+                    pass
+            raise
+
+        return registered_newer, updated_older
+
 
 @dataclass(frozen=True)
 class StructuredObservedConditions:
