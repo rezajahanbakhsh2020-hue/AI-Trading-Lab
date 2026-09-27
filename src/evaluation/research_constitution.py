@@ -399,3 +399,246 @@ class ResearchEvidence:
             "critique_notes": self.critique_notes,
             "created_at_utc": self.created_at_utc,
         }
+
+
+@dataclass(frozen=True)
+class ResearchHypothesis:
+    """Authoritative domain representation of a trading research hypothesis.
+
+    Captures hypothesis statement, dataset scope, execution assumptions,
+    code provenance, benchmark reference, and parameters. Computes a deterministic
+    `hypothesis_id` and fingerprint using SHA-256 without relying on volatile timestamps.
+    """
+
+    statement: str
+    methodology_version: str
+    strategy_name: str
+    strategy_version: str
+    dataset_scope: DatasetScope
+    execution_assumptions: ExecutionAssumptions
+    code_provenance: CodeProvenance
+    benchmark_reference: str
+    parameters: dict[str, Any] = field(default_factory=dict)
+    random_seed: int | None = None
+    hypothesis_id: str = field(init=False)
+    fingerprint: str = field(init=False)
+
+    def __post_init__(self) -> None:
+        if not self.statement or not self.statement.strip():
+            raise ValueError("statement must be a non-empty string.")
+        if not self.methodology_version or not self.methodology_version.strip():
+            raise ValueError("methodology_version must be a non-empty string.")
+        if not self.strategy_name or not self.strategy_name.strip():
+            raise ValueError("strategy_name must be a non-empty string.")
+        if not self.strategy_version or not self.strategy_version.strip():
+            raise ValueError("strategy_version must be a non-empty string.")
+        if not isinstance(self.dataset_scope, DatasetScope):
+            raise TypeError("dataset_scope must be a DatasetScope instance.")
+        if not isinstance(self.execution_assumptions, ExecutionAssumptions):
+            raise TypeError("execution_assumptions must be an ExecutionAssumptions instance.")
+        if not isinstance(self.code_provenance, CodeProvenance):
+            raise TypeError("code_provenance must be a CodeProvenance instance.")
+        if not self.benchmark_reference or not self.benchmark_reference.strip():
+            raise ValueError("benchmark_reference must be a non-empty string.")
+
+        fp = compute_experiment_fingerprint(
+            hypothesis=self.statement,
+            methodology_version=self.methodology_version,
+            strategy_name=self.strategy_name,
+            strategy_version=self.strategy_version,
+            dataset_scope=self.dataset_scope,
+            execution_assumptions=self.execution_assumptions,
+            code_provenance=self.code_provenance,
+            benchmark_reference=self.benchmark_reference,
+            parameters=self.parameters,
+            random_seed=self.random_seed,
+        )
+        object.__setattr__(self, "fingerprint", fp)
+        object.__setattr__(self, "hypothesis_id", f"hyp_{fp[:16]}")
+
+    def to_experiment_spec(self) -> ResearchExperimentSpec:
+        """Convert hypothesis into a ResearchExperimentSpec."""
+        return ResearchExperimentSpec(
+            hypothesis=self.statement,
+            methodology_version=self.methodology_version,
+            strategy_name=self.strategy_name,
+            strategy_version=self.strategy_version,
+            dataset_scope=self.dataset_scope,
+            execution_assumptions=self.execution_assumptions,
+            code_provenance=self.code_provenance,
+            benchmark_reference=self.benchmark_reference,
+            parameters=dict(self.parameters),
+            random_seed=self.random_seed,
+        )
+
+    @classmethod
+    def from_experiment_spec(cls, spec: ResearchExperimentSpec) -> ResearchHypothesis:
+        if not isinstance(spec, ResearchExperimentSpec):
+            raise TypeError("spec must be a ResearchExperimentSpec instance.")
+        return cls(
+            statement=spec.hypothesis,
+            methodology_version=spec.methodology_version,
+            strategy_name=spec.strategy_name,
+            strategy_version=spec.strategy_version,
+            dataset_scope=spec.dataset_scope,
+            execution_assumptions=spec.execution_assumptions,
+            code_provenance=spec.code_provenance,
+            benchmark_reference=spec.benchmark_reference,
+            parameters=dict(spec.parameters),
+            random_seed=spec.random_seed,
+        )
+
+    def as_dict(self) -> dict[str, Any]:
+        return {
+            "hypothesis_id": self.hypothesis_id,
+            "statement": self.statement,
+            "methodology_version": self.methodology_version,
+            "strategy_name": self.strategy_name,
+            "strategy_version": self.strategy_version,
+            "dataset_scope": asdict(self.dataset_scope),
+            "execution_assumptions": asdict(self.execution_assumptions),
+            "code_provenance": asdict(self.code_provenance),
+            "benchmark_reference": self.benchmark_reference,
+            "parameters": dict(self.parameters),
+            "random_seed": self.random_seed,
+            "fingerprint": self.fingerprint,
+        }
+
+
+@dataclass(frozen=True)
+class ResearchCandidate:
+    """Authoritative domain representation of a generated/evaluated research candidate.
+
+    Binds hypothesis, experiment spec, optional evidence, validation state,
+    promotion status, and rejection reasons.
+
+    Enforces strict separation from live production signals and production decisions.
+    """
+
+    candidate_id: str
+    hypothesis: ResearchHypothesis
+    evidence: ResearchEvidence | None = None
+    validation_status: PromotionStatus = PromotionStatus.PROPOSED
+    promotion_status: PromotionStatus = PromotionStatus.PROPOSED
+    rejection_reasons: tuple[RejectionReason, ...] = field(default_factory=tuple)
+    created_at_utc: str = ""
+
+    def __post_init__(self) -> None:
+        if not self.candidate_id or not self.candidate_id.strip():
+            raise ValueError("candidate_id must be a non-empty string.")
+        if not isinstance(self.hypothesis, ResearchHypothesis):
+            raise TypeError("hypothesis must be a ResearchHypothesis instance.")
+        if self.evidence is not None:
+            if not isinstance(self.evidence, ResearchEvidence):
+                raise TypeError("evidence must be a ResearchEvidence instance.")
+            if self.evidence.experiment_fingerprint != self.hypothesis.fingerprint:
+                raise ValueError(
+                    f"Candidate evidence fingerprint '{self.evidence.experiment_fingerprint}' "
+                    f"does not match hypothesis fingerprint '{self.hypothesis.fingerprint}'."
+                )
+        if not isinstance(self.validation_status, PromotionStatus):
+            raise TypeError("validation_status must be a PromotionStatus enum member.")
+        if not isinstance(self.promotion_status, PromotionStatus):
+            raise TypeError("promotion_status must be a PromotionStatus enum member.")
+
+        for r in self.rejection_reasons:
+            if not isinstance(r, RejectionReason):
+                raise TypeError(f"Rejection reason '{r}' must be a RejectionReason enum member.")
+
+        if self.promotion_status in (PromotionStatus.VALIDATED, PromotionStatus.PROMOTABLE):
+            if self.evidence is None:
+                raise ValueError("Validated or Promotable ResearchCandidate requires non-None evidence.")
+
+    def has_provenance(self) -> bool:
+        """Verify that candidate has non-empty code provenance."""
+        cp = self.hypothesis.code_provenance
+        return bool(cp and cp.commit_sha and cp.commit_sha.strip())
+
+    def has_evidence(self) -> bool:
+        """Verify that research evidence is attached and matching fingerprint."""
+        if self.evidence is None:
+            return False
+        return self.evidence.experiment_fingerprint == self.hypothesis.fingerprint
+
+    def has_reproducible_scope(self) -> bool:
+        """Verify dataset scope and execution assumptions are validly attached."""
+        ds = self.hypothesis.dataset_scope
+        ea = self.hypothesis.execution_assumptions
+        return bool(
+            isinstance(ds, DatasetScope)
+            and ds.dataset_id
+            and ds.symbol
+            and ds.timeframe
+            and isinstance(ea, ExecutionAssumptions)
+        )
+
+    def has_validation_state(self) -> bool:
+        """Verify candidate carries an explicit validation status."""
+        return isinstance(self.validation_status, PromotionStatus)
+
+    def is_distinct_from_live_decision(self) -> bool:
+        """Assert that ResearchCandidate is strictly a research object, distinct from live trading signals or decisions."""
+        class_name = self.__class__.__name__
+        return class_name == "ResearchCandidate" and class_name not in ("ProductionDecision", "ProductionSignal", "ProductionIntelligencePublication")
+
+    def lineage_reaches_original_experiment(self) -> bool:
+        """Trace candidate lineage back to hypothesis and experiment spec."""
+        if not self.hypothesis.fingerprint:
+            return False
+        if self.evidence is not None:
+            return (
+                self.evidence.experiment_fingerprint == self.hypothesis.fingerprint
+                and self.evidence.spec.fingerprint == self.hypothesis.fingerprint
+            )
+        return True
+
+    def can_promote(self, policy: Any | None = None) -> bool:
+        """Check whether candidate can be promoted to production."""
+        if self.evidence is None:
+            return False
+        if self.promotion_status not in (PromotionStatus.VALIDATED, PromotionStatus.PROMOTABLE):
+            return False
+        from src.evaluation.research_qualification import (
+            ResearchQualificationPolicy,
+            qualify_research_evidence,
+        )
+        qual_res = qualify_research_evidence(
+            self.evidence,
+            policy=policy if isinstance(policy, ResearchQualificationPolicy) else None,
+        )
+        return qual_res.qualified
+
+    def promote_to_production_artifact(
+        self,
+        symbol: str,
+        timeframe: str,
+        policy: Any | None = None,
+    ) -> Any:
+        """Convert a qualified ResearchCandidate into a PromotedCandidateArtifact for production.
+
+        Fails closed if the candidate is unvalidated, rejected, or unqualified.
+        """
+        if self.evidence is None:
+            raise ValueError(
+                f"Cannot promote ResearchCandidate '{self.candidate_id}': evidence is missing."
+            )
+        from src.evaluation.live_production_decision import PromotedCandidateArtifact
+        return PromotedCandidateArtifact.from_persisted_research(
+            candidate_id=self.candidate_id,
+            evidence=self.evidence,
+            symbol=symbol,
+            timeframe=timeframe,
+            parameters=dict(self.hypothesis.parameters),
+            policy=policy,
+        )
+
+    def as_dict(self) -> dict[str, Any]:
+        return {
+            "candidate_id": self.candidate_id,
+            "hypothesis": self.hypothesis.as_dict(),
+            "evidence": self.evidence.as_dict() if self.evidence else None,
+            "validation_status": self.validation_status.value,
+            "promotion_status": self.promotion_status.value,
+            "rejection_reasons": [r.value for r in self.rejection_reasons],
+            "created_at_utc": self.created_at_utc,
+        }

@@ -45,8 +45,10 @@ from src.evaluation.research_constitution import (
     ExecutionAssumptions,
     PromotionStatus,
     RejectionReason,
+    ResearchCandidate,
     ResearchEvidence,
     ResearchExperimentSpec,
+    ResearchHypothesis,
     RobustnessCriteria,
 )
 from src.evaluation.research_runner import run_research_experiment
@@ -151,6 +153,9 @@ class DiscoveryRunResult:
         default_factory=tuple
     )
     registry_records: tuple[ResearchRegistryRecord, ...] = field(
+        default_factory=tuple
+    )
+    research_candidates: tuple[ResearchCandidate, ...] = field(
         default_factory=tuple
     )
 
@@ -269,10 +274,29 @@ class DiscoveryEngine:
         promoted: list[ResearchEvidence] = []
         rejected: list[ResearchEvidence] = []
         trial_records: list[ResearchTrialRecord] = []
+        research_candidates: list[ResearchCandidate] = []
         seen_candidate_fingerprints: set[str] = set()
 
         for idx, cand in enumerate(eval_candidates):
             trial_id = f"{search_space.search_id}_trial_{idx}"
+            hypothesis_stmt = (
+                cand.hypothesis_template.replace("{candidate_id}", cand.candidate_id)
+                if cand.hypothesis_template
+                else f"Hypothesis for candidate {cand.candidate_id}"
+            )
+            hypothesis = ResearchHypothesis(
+                statement=hypothesis_stmt,
+                methodology_version=self.criteria.methodology_version,
+                strategy_name=cand.strategy_name,
+                strategy_version=self.criteria.strategy_version,
+                dataset_scope=dataset_scope,
+                execution_assumptions=execution_assumptions,
+                code_provenance=code_provenance,
+                benchmark_reference=self.criteria.benchmark_reference,
+                parameters=dict(cand.parameters),
+                random_seed=cand.random_seed,
+            )
+
             try:
                 evidence = self._evaluate_candidate(
                     cand=cand,
@@ -305,6 +329,16 @@ class DiscoveryEngine:
                     error_message=str(exc),
                 )
                 trial_records.append(trial_record)
+
+                research_cand = ResearchCandidate(
+                    candidate_id=cand.candidate_id,
+                    hypothesis=hypothesis,
+                    evidence=None,
+                    validation_status=PromotionStatus.REJECTED,
+                    promotion_status=PromotionStatus.REJECTED,
+                    rejection_reasons=(RejectionReason.SPECIFICATION_INVALID,),
+                )
+                research_candidates.append(research_cand)
                 continue
 
             seen_candidate_fingerprints.add(evidence.experiment_fingerprint)
@@ -336,6 +370,17 @@ class DiscoveryEngine:
                 error_message="",
             )
             trial_records.append(trial_record)
+
+            research_cand = ResearchCandidate(
+                candidate_id=cand.candidate_id,
+                hypothesis=hypothesis,
+                evidence=evidence,
+                validation_status=qual_res.status,
+                promotion_status=qual_res.status,
+                rejection_reasons=qual_res.rejection_reasons,
+                created_at_utc=evidence.created_at_utc,
+            )
+            research_candidates.append(research_cand)
 
         # Deterministic ranking key for research findings (OOS Sharpe, Total Return, Fingerprint)
         def _evidence_rank_key(ev: ResearchEvidence) -> tuple[float, float, str]:
@@ -476,6 +521,7 @@ class DiscoveryEngine:
             selection_assessments=tuple(selection_assessments),
             robustness_assessments=tuple(robustness_assessments),
             registry_records=tuple(registry_records),
+            research_candidates=tuple(research_candidates),
         )
 
     def _validate_dataset_scope(

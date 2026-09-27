@@ -35,6 +35,7 @@ from src.evaluation.research_constitution import (
     RejectionReason,
     ResearchEvidence,
     ResearchExperimentSpec,
+    ResearchHypothesis,
     RobustnessCriteria,
 )
 from src.evaluation.research_store import DEFAULT_RESEARCH_DIR, save_research_experiment
@@ -166,7 +167,7 @@ def validate_and_prepare_dataset(
 
 
 def run_research_experiment(
-    spec: ResearchExperimentSpec,
+    spec: ResearchExperimentSpec | ResearchHypothesis,
     df: pd.DataFrame | None = None,
     *,
     criteria: DiscoveryCriteria | None = None,
@@ -185,8 +186,10 @@ def run_research_experiment(
 
     Does NOT promote candidates or alter production decision bindings.
     """
-    if not isinstance(spec, ResearchExperimentSpec):
-        raise TypeError("spec must be a ResearchExperimentSpec instance.")
+    if isinstance(spec, ResearchHypothesis):
+        spec = spec.to_experiment_spec()
+    elif not isinstance(spec, ResearchExperimentSpec):
+        raise TypeError("spec must be a ResearchExperimentSpec or ResearchHypothesis instance.")
     if not isinstance(spec.dataset_scope, DatasetScope):
         raise TypeError("spec.dataset_scope must be a DatasetScope instance.")
     if not isinstance(spec.execution_assumptions, ExecutionAssumptions):
