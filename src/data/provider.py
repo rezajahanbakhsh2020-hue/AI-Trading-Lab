@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import inspect
 from collections.abc import Callable, Iterable
 from typing import Any, Protocol, runtime_checkable
 
@@ -77,6 +78,7 @@ def resolve_provider_for_symbol(
 class FunctionMarketDataProvider:
     """
     Adapter converting symbol-specific or generic market data functions into a MarketDataProvider.
+    Inspects signature parameters explicitly instead of relying on broad TypeError catches.
     """
 
     def __init__(
@@ -130,15 +132,23 @@ class FunctionMarketDataProvider:
                 f"No market-data provider supports {requested}"
             )
 
-        try:
-            df = self._ohlc_fetcher(symbol=requested, timeframe=timeframe, limit=limit)
-        except TypeError:
-            try:
-                df = self._ohlc_fetcher(interval=timeframe, limit=limit)
-            except TypeError:
-                df = self._ohlc_fetcher()
+        sig = inspect.signature(self._ohlc_fetcher)
+        params = sig.parameters
+        has_var_kwargs = any(
+            p.kind == inspect.Parameter.VAR_KEYWORD for p in params.values()
+        )
 
-        return df
+        kwargs: dict[str, Any] = {}
+        if "symbol" in params or has_var_kwargs:
+            kwargs["symbol"] = requested
+        if "timeframe" in params:
+            kwargs["timeframe"] = timeframe
+        elif "interval" in params or has_var_kwargs:
+            kwargs["interval"] = timeframe
+        if "limit" in params or has_var_kwargs:
+            kwargs["limit"] = limit
+
+        return self._ohlc_fetcher(**kwargs)
 
 
 class BiQuoteProvider:

@@ -69,7 +69,7 @@ def build_live_status_panel(snapshot: Mapping[str, Any]) -> go.Figure:
             stability_text = "N/A"
 
     rows = [
-        ("Symbol", _text(snapshot.get("symbol"), "XAU/USD")),
+        ("Symbol", _text(snapshot.get("symbol"), "N/A")),
         ("Interval", _text(snapshot.get("interval"))),
         ("Signal", signal),
         ("Trend", trend),

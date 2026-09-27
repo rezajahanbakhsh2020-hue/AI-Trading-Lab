@@ -14,7 +14,7 @@ def build_live_visual_dashboard(
     snapshots: Sequence[Mapping],
 ) -> str:
     """
-    Build the complete visual dashboard for live XAU/USD decisions.
+    Build the complete visual dashboard for live decisions.
 
     The dashboard combines:
     - the current live visual suite,
@@ -51,7 +51,7 @@ def build_live_visual_dashboard(
         config={"responsive": True},
     )
 
-    symbol = str(snapshot.get("symbol", "XAU/USD"))
+    symbol = str(snapshot.get("symbol") or "N/A")
     interval = str(snapshot.get("interval", "N/A"))
 
     return f"""<!DOCTYPE html>
