@@ -981,6 +981,111 @@ class ResearchRegistryStore:
         results.sort(key=lambda p: p.pattern_id)
         return tuple(results)
 
+    def _feedback_dir(self) -> Path:
+        return self.base_dir / "feedback"
+
+    def register_feedback(self, feedback: Any) -> Any:
+        """Register a research discovery feedback record idempotently and atomically."""
+        from src.evaluation.discovery_feedback import ResearchDiscoveryFeedback
+
+        if not isinstance(feedback, ResearchDiscoveryFeedback):
+            raise TypeError("feedback must be a ResearchDiscoveryFeedback instance.")
+
+        target_dir = self._feedback_dir()
+        target_dir.mkdir(parents=True, exist_ok=True)
+        file_path = target_dir / f"{feedback.feedback_id}.json"
+
+        if file_path.exists():
+            existing = self._load_feedback_file(file_path)
+            if existing.canonical_fingerprint == feedback.canonical_fingerprint:
+                return existing
+            raise RegistryConflictError(
+                f"Conflicting feedback record exists for feedback_id '{feedback.feedback_id}'. "
+                f"Existing fingerprint: {existing.canonical_fingerprint}, "
+                f"New fingerprint: {feedback.canonical_fingerprint}."
+            )
+
+        serialized_content = json.dumps(feedback.as_dict(), indent=2, sort_keys=True)
+        fd, temp_path = tempfile.mkstemp(dir=target_dir, prefix="fb_tmp_", suffix=".json")
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as f:
+                f.write(serialized_content)
+            os.replace(temp_path, file_path)
+        except Exception:
+            if os.path.exists(temp_path):
+                try:
+                    os.remove(temp_path)
+                except OSError:
+                    pass
+            raise
+
+        return feedback
+
+    def _load_feedback_file(self, file_path: Path) -> Any:
+        from src.evaluation.discovery_feedback import ResearchDiscoveryFeedback
+
+        if not file_path.exists():
+            raise FileNotFoundError(f"Feedback file not found: {file_path}")
+        try:
+            raw = json.loads(file_path.read_text(encoding="utf-8"))
+        except Exception as exc:
+            raise RegistryValidationError(f"Failed to parse JSON from {file_path}: {exc}") from exc
+        return ResearchDiscoveryFeedback.from_dict(raw)
+
+    def get_feedback_by_id(self, feedback_id: str) -> Any | None:
+        """Retrieve feedback by feedback_id."""
+        file_path = self._feedback_dir() / f"{feedback_id}.json"
+        if not file_path.exists():
+            return None
+        return self._load_feedback_file(file_path)
+
+    def list_feedback(self) -> tuple[Any, ...]:
+        """List all persisted research discovery feedback records."""
+        fb_dir = self._feedback_dir()
+        if not fb_dir.exists():
+            return ()
+        records: list[Any] = []
+        for file_path in sorted(fb_dir.glob("*.json")):
+            if file_path.name.startswith("fb_tmp_"):
+                continue
+            records.append(self._load_feedback_file(file_path))
+        records.sort(key=lambda fb: fb.feedback_id)
+        return tuple(records)
+
+    def query_feedback(
+        self,
+        *,
+        candidate_id: str | None = None,
+        experiment_fingerprint: str | None = None,
+        pattern_id: str | None = None,
+        feedback_type: Any | str | None = None,
+        search_id: str | None = None,
+    ) -> tuple[Any, ...]:
+        """Read-only query capability over persisted research discovery feedback records."""
+        from src.evaluation.discovery_feedback import DiscoveryFeedbackType
+
+        all_feedback = self.list_feedback()
+        results: list[Any] = []
+
+        type_val = feedback_type.value if isinstance(feedback_type, DiscoveryFeedbackType) else feedback_type
+
+        for fb in all_feedback:
+            if candidate_id and fb.candidate_id != candidate_id:
+                continue
+            if experiment_fingerprint and fb.experiment_fingerprint != experiment_fingerprint:
+                continue
+            if pattern_id and fb.pattern_id != pattern_id:
+                continue
+            if type_val and fb.feedback_type.value != type_val:
+                continue
+            if search_id and fb.search_id != search_id:
+                continue
+
+            results.append(fb)
+
+        results.sort(key=lambda fb: fb.feedback_id)
+        return tuple(results)
+
     def record_pattern_supersession(
         self,
         newer_pattern: Any,

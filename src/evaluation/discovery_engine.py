@@ -20,11 +20,16 @@ from typing import Any, Mapping, Sequence
 import pandas as pd
 
 from src.evaluation.candidate_generator import CandidateSpec, ResearchSearchSpace
+from src.evaluation.discovery_feedback import (
+    ResearchDiscoveryFeedback,
+    evaluate_candidate_discovery_feedback,
+)
 from src.evaluation.memory_governance import (
     DiscoveryMemoryGovernanceResult,
     MemoryGovernanceDecision,
     evaluate_candidate_memory_governance,
 )
+from src.evaluation.research_knowledge import ResearchKnowledgePattern
 from src.evaluation.research_registry import (
     DoNotRepeatConstraint,
     ResearchLearningRecord,
@@ -181,6 +186,9 @@ class DiscoveryRunResult:
     memory_governance_results: tuple[DiscoveryMemoryGovernanceResult, ...] = field(
         default_factory=tuple
     )
+    discovery_feedback: tuple[ResearchDiscoveryFeedback, ...] = field(
+        default_factory=tuple
+    )
     campaign: ResearchCampaign | None = None
 
     @property
@@ -259,6 +267,8 @@ class DiscoveryEngine:
         persist_registry_dir: str | Path | None = None,
         memory_store: ResearchRegistryStore | Sequence[DoNotRepeatConstraint] | None = None,
         enable_memory_governance: bool = True,
+        knowledge_patterns: Sequence[ResearchKnowledgePattern] | None = None,
+        enable_discovery_feedback: bool = True,
     ) -> DiscoveryRunResult:
         """Execute discovery workflow over candidates using dataset partitioning.
 
@@ -373,6 +383,20 @@ class DiscoveryEngine:
                     except Exception:
                         active_constraints = ()
 
+        # Resolve knowledge patterns for Controlled Discovery Feedback
+        effective_patterns: tuple[ResearchKnowledgePattern, ...] = ()
+        if enable_discovery_feedback:
+            if knowledge_patterns is not None:
+                effective_patterns = tuple(k for k in knowledge_patterns if isinstance(k, ResearchKnowledgePattern))
+            else:
+                eff_store = memory_store if isinstance(memory_store, ResearchRegistryStore) else self.memory_store
+                if eff_store is not None and hasattr(eff_store, "list_patterns"):
+                    try:
+                        effective_patterns = eff_store.list_patterns()
+                    except Exception:
+                        effective_patterns = ()
+
+        discovery_feedback_records: list[ResearchDiscoveryFeedback] = []
         seen_candidate_fingerprints: set[str] = set()
 
         for idx, cand in enumerate(eval_candidates):
@@ -396,7 +420,28 @@ class DiscoveryEngine:
                 walk_forward_protocol=wf_protocol,
             )
 
-            # Stage 0: Memory-Aware Discovery Governance
+            # Stage 0a: Controlled Discovery Feedback
+            if enable_discovery_feedback:
+                cand_feedbacks = evaluate_candidate_discovery_feedback(
+                    candidate=cand,
+                    dataset_scope=dataset_scope,
+                    execution_assumptions=execution_assumptions,
+                    code_provenance=code_provenance,
+                    knowledge_patterns=effective_patterns,
+                    search_id=search_space.search_id,
+                    search_fingerprint=search_space.search_fingerprint,
+                    registry_store=registry_store,
+                    methodology_version=self.criteria.methodology_version,
+                )
+                for fb in cand_feedbacks:
+                    discovery_feedback_records.append(fb)
+                    if registry_store is not None:
+                        try:
+                            registry_store.register_feedback(fb)
+                        except Exception:
+                            pass
+
+            # Stage 0b: Memory-Aware Discovery Governance
             if enable_memory_governance and active_constraints:
                 gov_res = evaluate_candidate_memory_governance(
                     candidate=cand,
@@ -801,6 +846,7 @@ class DiscoveryEngine:
             learning_records=tuple(learning_records),
             research_candidates=tuple(research_candidates),
             memory_governance_results=tuple(memory_governance_results),
+            discovery_feedback=tuple(discovery_feedback_records),
             campaign=campaign,
         )
 
