@@ -29,6 +29,14 @@ class PromotionStatus(str, Enum):
     REJECTED = "REJECTED"
 
 
+class ResearchCampaignStatus(str, Enum):
+    """Explicit lifecycle status for a Research Campaign / Discovery Run."""
+
+    COMPLETED = "COMPLETED"
+    TRUNCATED = "TRUNCATED"
+    FAILED = "FAILED"
+
+
 class RejectionReason(str, Enum):
     """Explicit failure and critique reasons for research experiments."""
 
@@ -641,4 +649,177 @@ class ResearchCandidate:
             "promotion_status": self.promotion_status.value,
             "rejection_reasons": [r.value for r in self.rejection_reasons],
             "created_at_utc": self.created_at_utc,
+        }
+
+
+def compute_search_policy_fingerprint(*, max_trials: int, fail_fast: bool) -> str:
+    """Compute deterministic SHA-256 fingerprint for a ResearchSearchPolicy."""
+    payload = {
+        "max_trials": int(max_trials),
+        "fail_fast": bool(fail_fast),
+    }
+    return hashlib.sha256(json.dumps(payload, sort_keys=True).encode("utf-8")).hexdigest()[:24]
+
+
+def compute_criteria_fingerprint(criteria: Any) -> str:
+    """Compute deterministic SHA-256 fingerprint for DiscoveryCriteria."""
+    payload = {
+        "min_observations_is": int(criteria.min_observations_is),
+        "min_observations_oos": int(criteria.min_observations_oos),
+        "min_is_sharpe": float(criteria.min_is_sharpe),
+        "min_is_total_return": float(criteria.min_is_total_return),
+        "max_is_drawdown": float(criteria.max_is_drawdown),
+        "min_validation_sharpe": float(criteria.min_validation_sharpe),
+        "min_oos_sharpe": float(criteria.min_oos_sharpe),
+        "max_oos_sharpe_degradation": float(criteria.max_oos_sharpe_degradation),
+        "min_walk_forward_positive_ratio": float(criteria.min_walk_forward_positive_ratio),
+        "benchmark_reference": str(criteria.benchmark_reference),
+        "methodology_version": str(criteria.methodology_version),
+        "strategy_version": str(criteria.strategy_version),
+        "robustness_criteria": {
+            "version": str(criteria.robustness_criteria.version),
+            "perturbation_pcts": [float(p) for p in criteria.robustness_criteria.perturbation_pcts],
+            "min_perturbation_pass_rate": float(criteria.robustness_criteria.min_perturbation_pass_rate),
+            "cost_stress_multipliers": [float(m) for m in criteria.robustness_criteria.cost_stress_multipliers],
+            "min_cost_stress_pass_rate": float(criteria.robustness_criteria.min_cost_stress_pass_rate),
+            "subsample_slices_count": int(criteria.robustness_criteria.subsample_slices_count),
+            "min_subsample_pass_rate": float(criteria.robustness_criteria.min_subsample_pass_rate),
+            "min_statistical_observations": int(criteria.robustness_criteria.min_statistical_observations),
+            "min_t_stat": float(criteria.robustness_criteria.min_t_stat),
+            "max_p_value": float(criteria.robustness_criteria.max_p_value),
+        },
+    }
+    return hashlib.sha256(json.dumps(payload, sort_keys=True).encode("utf-8")).hexdigest()[:24]
+
+
+def compute_campaign_fingerprint(
+    *,
+    search_space_fingerprint: str,
+    search_policy_fingerprint: str,
+    criteria_fingerprint: str,
+    dataset_scope: DatasetScope,
+    execution_assumptions: ExecutionAssumptions,
+    code_provenance: CodeProvenance,
+    candidate_ids: Sequence[str],
+) -> str:
+    """Compute deterministic SHA-256 identity fingerprint for a Research Campaign."""
+    payload = {
+        "search_space_fingerprint": str(search_space_fingerprint).strip(),
+        "search_policy_fingerprint": str(search_policy_fingerprint).strip(),
+        "criteria_fingerprint": str(criteria_fingerprint).strip(),
+        "dataset_scope": {
+            "dataset_id": dataset_scope.dataset_id.strip(),
+            "symbol": dataset_scope.symbol.strip(),
+            "timeframe": dataset_scope.timeframe.strip(),
+            "start_date": dataset_scope.start_date.strip(),
+            "end_date": dataset_scope.end_date.strip(),
+        },
+        "execution_assumptions": {
+            "transaction_cost": float(execution_assumptions.transaction_cost),
+            "slippage": float(execution_assumptions.slippage),
+            "latency_ms": float(execution_assumptions.latency_ms),
+        },
+        "code_provenance": {
+            "commit_sha": code_provenance.commit_sha.strip(),
+            "repository_status": code_provenance.repository_status.strip(),
+            "author": code_provenance.author.strip(),
+        },
+        "candidate_ids": sorted(str(cid) for cid in candidate_ids),
+    }
+    return hashlib.sha256(json.dumps(payload, sort_keys=True).encode("utf-8")).hexdigest()[:24]
+
+
+@dataclass(frozen=True)
+class ResearchCampaign:
+    """Authoritative domain representation of a multi-experiment Research Campaign / Discovery Run.
+
+    Preserves a multi-experiment discovery run as a single scientific unit,
+    binding search space, search policy, criteria, dataset scope, execution assumptions,
+    trial ledger, evaluated evidence fingerprints, and selection results with deterministic
+    reproducibility fingerprinting.
+    """
+
+    campaign_id: str
+    search_space_fingerprint: str
+    search_policy_fingerprint: str
+    criteria_fingerprint: str
+    dataset_scope: DatasetScope
+    execution_assumptions: ExecutionAssumptions
+    code_provenance: CodeProvenance
+    candidate_ids: tuple[str, ...]
+    evidence_fingerprints: tuple[str, ...]
+    selected_candidate_ids: tuple[str, ...]
+    status: ResearchCampaignStatus
+    created_at_utc: str = ""
+    reproducibility_fingerprint: str = field(init=False)
+
+    def __post_init__(self) -> None:
+        if not self.campaign_id or not self.campaign_id.strip():
+            raise ValueError("campaign_id must be a non-empty string.")
+        if not self.search_space_fingerprint or not self.search_space_fingerprint.strip():
+            raise ValueError("search_space_fingerprint must be a non-empty string.")
+        if not self.search_policy_fingerprint or not self.search_policy_fingerprint.strip():
+            raise ValueError("search_policy_fingerprint must be a non-empty string.")
+        if not self.criteria_fingerprint or not self.criteria_fingerprint.strip():
+            raise ValueError("criteria_fingerprint must be a non-empty string.")
+        if not isinstance(self.dataset_scope, DatasetScope):
+            raise TypeError("dataset_scope must be a DatasetScope instance.")
+        if not isinstance(self.execution_assumptions, ExecutionAssumptions):
+            raise TypeError("execution_assumptions must be an ExecutionAssumptions instance.")
+        if not isinstance(self.code_provenance, CodeProvenance):
+            raise TypeError("code_provenance must be a CodeProvenance instance.")
+        if not isinstance(self.status, ResearchCampaignStatus):
+            raise TypeError("status must be a ResearchCampaignStatus enum member.")
+
+        expected_campaign_id = compute_campaign_fingerprint(
+            search_space_fingerprint=self.search_space_fingerprint,
+            search_policy_fingerprint=self.search_policy_fingerprint,
+            criteria_fingerprint=self.criteria_fingerprint,
+            dataset_scope=self.dataset_scope,
+            execution_assumptions=self.execution_assumptions,
+            code_provenance=self.code_provenance,
+            candidate_ids=self.candidate_ids,
+        )
+
+        if self.campaign_id != expected_campaign_id:
+            raise ValueError(
+                f"Invalid campaign_id '{self.campaign_id}'. Expected calculated fingerprint '{expected_campaign_id}'."
+            )
+
+        # Calculate reproducibility fingerprint over specs and evaluation outputs
+        repro_payload = {
+            "campaign_id": self.campaign_id,
+            "search_space_fingerprint": self.search_space_fingerprint,
+            "search_policy_fingerprint": self.search_policy_fingerprint,
+            "criteria_fingerprint": self.criteria_fingerprint,
+            "dataset_scope_id": f"{self.dataset_scope.dataset_id}:{self.dataset_scope.symbol}:{self.dataset_scope.timeframe}:{self.dataset_scope.start_date}:{self.dataset_scope.end_date}",
+            "execution_assumptions": {
+                "transaction_cost": float(self.execution_assumptions.transaction_cost),
+                "slippage": float(self.execution_assumptions.slippage),
+                "latency_ms": float(self.execution_assumptions.latency_ms),
+            },
+            "code_provenance": self.code_provenance.commit_sha,
+            "candidate_ids": sorted(self.candidate_ids),
+            "evidence_fingerprints": sorted(self.evidence_fingerprints),
+            "selected_candidate_ids": sorted(self.selected_candidate_ids),
+            "status": self.status.value,
+        }
+        computed_repro = hashlib.sha256(json.dumps(repro_payload, sort_keys=True).encode("utf-8")).hexdigest()
+        object.__setattr__(self, "reproducibility_fingerprint", computed_repro)
+
+    def as_dict(self) -> dict[str, Any]:
+        return {
+            "campaign_id": self.campaign_id,
+            "search_space_fingerprint": self.search_space_fingerprint,
+            "search_policy_fingerprint": self.search_policy_fingerprint,
+            "criteria_fingerprint": self.criteria_fingerprint,
+            "dataset_scope": asdict(self.dataset_scope),
+            "execution_assumptions": asdict(self.execution_assumptions),
+            "code_provenance": asdict(self.code_provenance),
+            "candidate_ids": list(self.candidate_ids),
+            "evidence_fingerprints": list(self.evidence_fingerprints),
+            "selected_candidate_ids": list(self.selected_candidate_ids),
+            "status": self.status.value,
+            "created_at_utc": self.created_at_utc,
+            "reproducibility_fingerprint": self.reproducibility_fingerprint,
         }

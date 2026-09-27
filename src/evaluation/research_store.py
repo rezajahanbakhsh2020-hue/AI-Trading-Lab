@@ -18,6 +18,8 @@ from src.evaluation.research_constitution import (
     ExecutionAssumptions,
     PromotionStatus,
     RejectionReason,
+    ResearchCampaign,
+    ResearchCampaignStatus,
     ResearchEvidence,
     ResearchExperimentSpec,
 )
@@ -28,9 +30,115 @@ DEFAULT_RESEARCH_DIR = (
     / "research_experiments"
 )
 
+DEFAULT_CAMPAIGN_DIR = (
+    Path(__file__).resolve().parents[2]
+    / "results"
+    / "research_campaigns"
+)
+
 CANDIDATE_INDEX_DIRNAME = "by_candidate"
 CANDIDATE_BINDING_FILENAME = "candidate.json"
 EVIDENCE_FILENAME = "evidence.json"
+CAMPAIGN_FILENAME = "campaign.json"
+
+
+def save_research_campaign(
+    campaign: ResearchCampaign,
+    base_dir: str | Path = DEFAULT_CAMPAIGN_DIR,
+) -> Path:
+    """Persist a ResearchCampaign object to disk as JSON.
+
+    Saves under `base_dir / <campaign_id> / campaign.json`.
+    Fail-closed on conflicting contents for identical campaign IDs.
+    """
+    if not isinstance(campaign, ResearchCampaign):
+        raise TypeError("campaign must be a ResearchCampaign instance.")
+
+    target_dir = Path(base_dir) / campaign.campaign_id
+    target_dir.mkdir(parents=True, exist_ok=True)
+
+    file_path = target_dir / CAMPAIGN_FILENAME
+
+    if file_path.exists():
+        existing_campaign = load_research_campaign(file_path)
+        if existing_campaign.reproducibility_fingerprint == campaign.reproducibility_fingerprint:
+            return file_path
+        raise FileExistsError(
+            f"Cannot overwrite existing research campaign artifact at '{file_path}' "
+            f"with conflicting campaign data."
+        )
+
+    content = json.dumps(campaign.as_dict(), indent=2)
+    file_path.write_text(content, encoding="utf-8")
+
+    return file_path
+
+
+def load_research_campaign(
+    campaign_id_or_path: str | Path,
+    base_dir: str | Path = DEFAULT_CAMPAIGN_DIR,
+) -> ResearchCampaign:
+    """Load and reconstruct a ResearchCampaign object from disk."""
+    path = Path(campaign_id_or_path)
+    if not path.is_file():
+        path = Path(base_dir) / str(campaign_id_or_path) / CAMPAIGN_FILENAME
+
+    if not path.exists():
+        raise FileNotFoundError(f"Research campaign file not found at: {path}")
+
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except Exception as exc:
+        raise ValueError(f"Failed to parse research campaign JSON from {path}: {exc}") from exc
+
+    if not isinstance(data, dict):
+        raise TypeError("Campaign data must be a dictionary.")
+
+    ds_data = data.get("dataset_scope", {})
+    dataset_scope = DatasetScope(
+        dataset_id=ds_data.get("dataset_id", ""),
+        symbol=ds_data.get("symbol", ""),
+        timeframe=ds_data.get("timeframe", ""),
+        start_date=ds_data.get("start_date", ""),
+        end_date=ds_data.get("end_date", ""),
+    )
+
+    ea_data = data.get("execution_assumptions", {})
+    execution_assumptions = ExecutionAssumptions(
+        transaction_cost=float(ea_data.get("transaction_cost", 0.0)),
+        slippage=float(ea_data.get("slippage", 0.0)),
+        latency_ms=float(ea_data.get("latency_ms", 0.0)),
+    )
+
+    cp_data = data.get("code_provenance", {})
+    code_provenance = CodeProvenance(
+        commit_sha=cp_data.get("commit_sha", ""),
+        repository_status=cp_data.get("repository_status", "clean"),
+        author=cp_data.get("author", ""),
+    )
+
+    campaign = ResearchCampaign(
+        campaign_id=data.get("campaign_id", ""),
+        search_space_fingerprint=data.get("search_space_fingerprint", ""),
+        search_policy_fingerprint=data.get("search_policy_fingerprint", ""),
+        criteria_fingerprint=data.get("criteria_fingerprint", ""),
+        dataset_scope=dataset_scope,
+        execution_assumptions=execution_assumptions,
+        code_provenance=code_provenance,
+        candidate_ids=tuple(data.get("candidate_ids", [])),
+        evidence_fingerprints=tuple(data.get("evidence_fingerprints", [])),
+        selected_candidate_ids=tuple(data.get("selected_candidate_ids", [])),
+        status=ResearchCampaignStatus(data.get("status", "COMPLETED")),
+        created_at_utc=data.get("created_at_utc", ""),
+    )
+
+    if campaign.reproducibility_fingerprint != data.get("reproducibility_fingerprint"):
+        raise ValueError(
+            f"Loaded campaign reproducibility fingerprint mismatch: expected "
+            f"'{campaign.reproducibility_fingerprint}', got '{data.get('reproducibility_fingerprint')}'."
+        )
+
+    return campaign
 
 
 def save_research_experiment(

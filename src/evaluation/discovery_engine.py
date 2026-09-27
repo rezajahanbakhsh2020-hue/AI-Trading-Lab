@@ -49,7 +49,12 @@ from src.evaluation.research_constitution import (
     ResearchEvidence,
     ResearchExperimentSpec,
     ResearchHypothesis,
+    ResearchCampaign,
+    ResearchCampaignStatus,
     RobustnessCriteria,
+    compute_campaign_fingerprint,
+    compute_criteria_fingerprint,
+    compute_search_policy_fingerprint,
 )
 from src.evaluation.research_runner import run_research_experiment
 from src.evaluation.research_store import save_research_experiment
@@ -111,6 +116,7 @@ class ResearchTrialRecord:
     rejection_reasons: tuple[RejectionReason, ...]
     status: str  # PENDING, RUNNING, COMPLETED, FAILED, QUALIFIED, REJECTED
     error_message: str = ""
+    campaign_id: str = ""
 
     def __post_init__(self) -> None:
         if not self.search_id or not self.search_id.strip():
@@ -158,6 +164,7 @@ class DiscoveryRunResult:
     research_candidates: tuple[ResearchCandidate, ...] = field(
         default_factory=tuple
     )
+    campaign: ResearchCampaign | None = None
 
     @property
     def total_candidates(self) -> int:
@@ -255,6 +262,24 @@ class DiscoveryEngine:
                 eval_candidates = eval_candidates[: search_policy.max_trials]
                 search_truncated = True
 
+        effective_search_policy = search_policy or ResearchSearchPolicy(max_trials=max(len(eval_candidates), 1))
+        search_policy_fp = compute_search_policy_fingerprint(
+            max_trials=effective_search_policy.max_trials,
+            fail_fast=effective_search_policy.fail_fast,
+        )
+        criteria_fp = compute_criteria_fingerprint(self.criteria)
+        cand_ids = tuple(c.candidate_id for c in eval_candidates)
+
+        campaign_id = compute_campaign_fingerprint(
+            search_space_fingerprint=search_space.search_fingerprint,
+            search_policy_fingerprint=search_policy_fp,
+            criteria_fingerprint=criteria_fp,
+            dataset_scope=dataset_scope,
+            execution_assumptions=execution_assumptions,
+            code_provenance=code_provenance,
+            candidate_ids=cand_ids,
+        )
+
         # Chronological partitioning
         n = len(data)
         is_ratio = 1.0 - val_ratio - oos_ratio
@@ -327,6 +352,7 @@ class DiscoveryEngine:
                     rejection_reasons=(RejectionReason.SPECIFICATION_INVALID,),
                     status="FAILED",
                     error_message=str(exc),
+                    campaign_id=campaign_id,
                 )
                 trial_records.append(trial_record)
 
@@ -368,6 +394,7 @@ class DiscoveryEngine:
                 rejection_reasons=qual_res.rejection_reasons,
                 status=trial_status,
                 error_message="",
+                campaign_id=campaign_id,
             )
             trial_records.append(trial_record)
 
@@ -507,6 +534,36 @@ class DiscoveryEngine:
                 if registry_store is not None:
                     registry_store.register(failed_rec)
 
+        # Construct campaign manifest
+        ev_fps = tuple(ev.evidence_id for ev in all_evidence if ev.evidence_id)
+        selected_ids = tuple(
+            tr.candidate_id for tr in trial_records if tr.status == "QUALIFIED"
+        )
+        campaign_status = (
+            ResearchCampaignStatus.TRUNCATED
+            if search_truncated
+            else ResearchCampaignStatus.COMPLETED
+        )
+
+        campaign = ResearchCampaign(
+            campaign_id=campaign_id,
+            search_space_fingerprint=search_space.search_fingerprint,
+            search_policy_fingerprint=search_policy_fp,
+            criteria_fingerprint=criteria_fp,
+            dataset_scope=dataset_scope,
+            execution_assumptions=execution_assumptions,
+            code_provenance=code_provenance,
+            candidate_ids=cand_ids,
+            evidence_fingerprints=ev_fps,
+            selected_candidate_ids=selected_ids,
+            status=campaign_status,
+            created_at_utc=datetime.now(timezone.utc).isoformat(),
+        )
+
+        if persist_evidence:
+            from src.evaluation.research_store import save_research_campaign
+            save_research_campaign(campaign)
+
         return DiscoveryRunResult(
             dataset_scope=dataset_scope,
             execution_assumptions=execution_assumptions,
@@ -522,6 +579,7 @@ class DiscoveryEngine:
             robustness_assessments=tuple(robustness_assessments),
             registry_records=tuple(registry_records),
             research_candidates=tuple(research_candidates),
+            campaign=campaign,
         )
 
     def _validate_dataset_scope(
