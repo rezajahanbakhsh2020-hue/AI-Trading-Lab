@@ -265,8 +265,9 @@ def test_statistical_calc_uses_real_returns(source_candidate, sample_market_data
 
 
 # 16. Duplicate identical evidence is idempotent
-def test_duplicate_identical_evidence_idempotent(source_candidate, sample_market_data, dataset_scope, execution_assumptions, code_provenance):
+def test_duplicate_identical_evidence_idempotent(source_candidate, sample_market_data, dataset_scope, execution_assumptions, code_provenance, monkeypatch):
     with tempfile.TemporaryDirectory() as tmpdir:
+        monkeypatch.setattr("src.evaluation.discovery_engine.save_research_campaign", lambda c, **kw: None)
         engine = DiscoveryEngine()
         result = engine.run_discovery(
             df=sample_market_data,

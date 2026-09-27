@@ -52,12 +52,14 @@ from src.evaluation.research_constitution import (
     ResearchCampaign,
     ResearchCampaignStatus,
     RobustnessCriteria,
+    WalkForwardProtocol,
     compute_campaign_fingerprint,
     compute_criteria_fingerprint,
     compute_search_policy_fingerprint,
+    resolve_walk_forward_protocol,
 )
 from src.evaluation.research_runner import run_research_experiment
-from src.evaluation.research_store import save_research_experiment
+from src.evaluation.research_store import save_research_campaign, save_research_experiment
 from src.features.indicators import add_returns
 from src.strategies.registry import DEFAULT_REGISTRY, StrategyRegistry
 
@@ -280,8 +282,15 @@ class DiscoveryEngine:
             candidate_ids=cand_ids,
         )
 
-        # Chronological partitioning
+        # Resolve effective WalkForwardProtocol from dataset length and optional parameters
         n = len(data)
+        wf_protocol = resolve_walk_forward_protocol(
+            n_observations=n,
+            train_size=wf_train_size,
+            test_size=wf_test_size,
+        )
+
+        # Chronological partitioning
         is_ratio = 1.0 - val_ratio - oos_ratio
         if is_ratio <= 0:
             raise ValueError(
@@ -320,6 +329,7 @@ class DiscoveryEngine:
                 benchmark_reference=self.criteria.benchmark_reference,
                 parameters=dict(cand.parameters),
                 random_seed=cand.random_seed,
+                walk_forward_protocol=wf_protocol,
             )
 
             try:
@@ -332,6 +342,7 @@ class DiscoveryEngine:
                     dataset_scope=dataset_scope,
                     execution_assumptions=execution_assumptions,
                     code_provenance=code_provenance,
+                    wf_protocol=wf_protocol,
                     wf_train_size=wf_train_size,
                     wf_test_size=wf_test_size,
                     seen_fingerprints=seen_candidate_fingerprints,
@@ -561,7 +572,6 @@ class DiscoveryEngine:
         )
 
         if persist_evidence:
-            from src.evaluation.research_store import save_research_campaign
             save_research_campaign(campaign)
 
         return DiscoveryRunResult(
@@ -614,6 +624,7 @@ class DiscoveryEngine:
         dataset_scope: DatasetScope,
         execution_assumptions: ExecutionAssumptions,
         code_provenance: CodeProvenance,
+        wf_protocol: WalkForwardProtocol | None,
         wf_train_size: int | None,
         wf_test_size: int | None,
         seen_fingerprints: set[str],
@@ -636,6 +647,7 @@ class DiscoveryEngine:
             benchmark_reference=self.criteria.benchmark_reference,
             parameters=cand.parameters,
             random_seed=cand.random_seed,
+            walk_forward_protocol=wf_protocol,
         )
 
         evidence = run_research_experiment(
@@ -648,7 +660,7 @@ class DiscoveryEngine:
             persist_evidence=False,
         )
 
-        if spec.fingerprint in seen_fingerprints and RejectionReason.DUPLICATE_CANDIDATE not in evidence.rejection_reasons:
+        if evidence.experiment_fingerprint in seen_fingerprints and RejectionReason.DUPLICATE_CANDIDATE not in evidence.rejection_reasons:
             rejection_reasons = list(evidence.rejection_reasons) + [RejectionReason.DUPLICATE_CANDIDATE]
             evidence = ResearchEvidence(
                 experiment_fingerprint=evidence.experiment_fingerprint,

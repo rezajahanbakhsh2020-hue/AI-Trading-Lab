@@ -207,6 +207,7 @@ def qualify_research_evidence(
                     benchmark_reference=spec.benchmark_reference,
                     parameters=spec.parameters,
                     random_seed=spec.random_seed,
+                    walk_forward_protocol=getattr(spec, "walk_forward_protocol", None),
                 )
                 if recomputed_fp != spec.fingerprint or recomputed_fp != evidence.experiment_fingerprint:
                     rejection_reasons.append(RejectionReason.FAILED_REPRODUCIBILITY)

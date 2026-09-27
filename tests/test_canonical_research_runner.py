@@ -30,6 +30,7 @@ from src.evaluation.research_constitution import (
     RejectionReason,
     ResearchEvidence,
     ResearchExperimentSpec,
+    WalkForwardProtocol,
 )
 from src.evaluation.research_runner import (
     run_research_experiment,
@@ -64,9 +65,12 @@ def make_valid_spec(
     slippage: float = 0.001,
     latency_ms: float = 10.0,
     parameters: dict = None,
+    walk_forward_protocol: WalkForwardProtocol | None = None,
 ) -> ResearchExperimentSpec:
     if parameters is None:
         parameters = {"short_window": 5, "long_window": 20}
+    if walk_forward_protocol is None:
+        walk_forward_protocol = WalkForwardProtocol(train_size=40, test_size=15)
     ds = DatasetScope(
         dataset_id="xauusd_test",
         symbol="XAUUSD",
@@ -95,6 +99,7 @@ def make_valid_spec(
         benchmark_reference="buy_and_hold",
         parameters=parameters,
         random_seed=42,
+        walk_forward_protocol=walk_forward_protocol,
     )
 
 

@@ -37,6 +37,8 @@ from src.evaluation.research_constitution import (
     ResearchExperimentSpec,
     ResearchHypothesis,
     RobustnessCriteria,
+    WalkForwardProtocol,
+    resolve_walk_forward_protocol,
 )
 from src.evaluation.research_store import DEFAULT_RESEARCH_DIR, save_research_experiment
 from src.evaluation.robustness_evaluator import RobustnessEvaluator
@@ -229,6 +231,39 @@ def run_research_experiment(
             created_at_utc=now_utc,
         )
 
+    # Resolve or validate WalkForwardProtocol on spec
+    if spec.walk_forward_protocol is None:
+        wf_protocol = resolve_walk_forward_protocol(
+            n_observations=len(data),
+            train_size=wf_train_size,
+            test_size=wf_test_size,
+        )
+        spec = ResearchExperimentSpec(
+            hypothesis=spec.hypothesis,
+            methodology_version=spec.methodology_version,
+            strategy_name=spec.strategy_name,
+            strategy_version=spec.strategy_version,
+            dataset_scope=spec.dataset_scope,
+            execution_assumptions=spec.execution_assumptions,
+            code_provenance=spec.code_provenance,
+            benchmark_reference=spec.benchmark_reference,
+            parameters=spec.parameters,
+            random_seed=spec.random_seed,
+            walk_forward_protocol=wf_protocol,
+        )
+    else:
+        wf_protocol = spec.walk_forward_protocol
+        if wf_train_size is not None and wf_train_size != wf_protocol.train_size:
+            raise ValueError(
+                f"wf_train_size argument ({wf_train_size}) conflicts with "
+                f"spec.walk_forward_protocol.train_size ({wf_protocol.train_size})."
+            )
+        if wf_test_size is not None and wf_test_size != wf_protocol.test_size:
+            raise ValueError(
+                f"wf_test_size argument ({wf_test_size}) conflicts with "
+                f"spec.walk_forward_protocol.test_size ({wf_protocol.test_size})."
+            )
+
     latency_ms = float(spec.execution_assumptions.latency_ms)
     latency_slippage_factor = (latency_ms / 1000.0) * 0.0001
     effective_slippage = spec.execution_assumptions.slippage + latency_slippage_factor
@@ -326,8 +361,7 @@ def run_research_experiment(
         slippage=effective_slippage,
         latency_ms=latency_ms,
         crit=crit,
-        wf_train_size=wf_train_size,
-        wf_test_size=wf_test_size,
+        wf_protocol=spec.walk_forward_protocol,
     )
     rejection_reasons.extend(wf_rejections)
     if wf_part is not None:
@@ -470,14 +504,17 @@ def _eval_walk_forward(
     slippage: float,
     latency_ms: float,
     crit: DiscoveryCriteria,
-    wf_train_size: int | None,
-    wf_test_size: int | None,
+    wf_protocol: WalkForwardProtocol | None,
 ) -> tuple[EvidencePartition | None, list[RejectionReason]]:
     rejections: list[RejectionReason] = []
     n = len(df_full)
 
-    train_sz = wf_train_size or int(n * 0.4)
-    test_sz = wf_test_size or int(n * 0.15)
+    if wf_protocol is not None:
+        train_sz = wf_protocol.train_size
+        test_sz = wf_protocol.test_size
+    else:
+        train_sz = int(n * 0.4)
+        test_sz = int(n * 0.15)
 
     windows = generate_walk_forward_windows(
         df_full, train_size=train_sz, test_size=test_sz
@@ -543,6 +580,8 @@ def _eval_walk_forward(
             "latency_ms": latency_ms,
             "transaction_cost": transaction_cost,
             "slippage": slippage,
+            "train_size": float(train_sz),
+            "test_size": float(test_sz),
         },
     )
 

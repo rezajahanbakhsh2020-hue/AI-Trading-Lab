@@ -211,11 +211,16 @@ def test_discovery_engine_evidence_persistence(
         import src.evaluation.discovery_engine as de_mod
 
         original_save = de_mod.save_research_experiment
+        original_save_campaign = de_mod.save_research_campaign
 
         def custom_save(ev):
             return original_save(ev, base_dir=tmp_path)
 
+        def custom_save_campaign(camp):
+            return original_save_campaign(camp, base_dir=tmp_path)
+
         de_mod.save_research_experiment = custom_save
+        de_mod.save_research_campaign = custom_save_campaign
 
         try:
             res = engine.run_discovery(
@@ -240,6 +245,7 @@ def test_discovery_engine_evidence_persistence(
             assert loaded_ev.experiment_fingerprint == ev.experiment_fingerprint
         finally:
             de_mod.save_research_experiment = original_save
+            de_mod.save_research_campaign = original_save_campaign
 
 
 def test_discovery_rejection_insufficient_data(
