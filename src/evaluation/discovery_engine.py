@@ -20,7 +20,13 @@ from typing import Any, Mapping, Sequence
 import pandas as pd
 
 from src.evaluation.candidate_generator import CandidateSpec, ResearchSearchSpace
+from src.evaluation.memory_governance import (
+    DiscoveryMemoryGovernanceResult,
+    MemoryGovernanceDecision,
+    evaluate_candidate_memory_governance,
+)
 from src.evaluation.research_registry import (
+    DoNotRepeatConstraint,
     ResearchLearningRecord,
     ResearchRegistryRecord,
     ResearchRegistryStore,
@@ -138,6 +144,7 @@ class ResearchTrialRecord:
             "FAILED",
             "QUALIFIED",
             "REJECTED",
+            "BLOCKED",
         ):
             raise ValueError(f"Invalid trial status '{self.status}'.")
 
@@ -171,11 +178,35 @@ class DiscoveryRunResult:
     research_candidates: tuple[ResearchCandidate, ...] = field(
         default_factory=tuple
     )
+    memory_governance_results: tuple[DiscoveryMemoryGovernanceResult, ...] = field(
+        default_factory=tuple
+    )
     campaign: ResearchCampaign | None = None
 
     @property
     def total_candidates(self) -> int:
         return self.candidates_evaluated
+
+    @property
+    def blocked_trial_count(self) -> int:
+        return sum(
+            1 for t in self.trial_ledger
+            if t.status == "BLOCKED" or RejectionReason.GOVERNANCE_BLOCKED in t.rejection_reasons
+        )
+
+    @property
+    def executed_trial_count(self) -> int:
+        return sum(
+            1 for t in self.trial_ledger
+            if t.status in ("COMPLETED", "QUALIFIED", "REJECTED") and RejectionReason.GOVERNANCE_BLOCKED not in t.rejection_reasons
+        )
+
+    @property
+    def governance_failed_trial_count(self) -> int:
+        return sum(
+            1 for g in self.memory_governance_results
+            if g.decision == MemoryGovernanceDecision.FAIL_CLOSED
+        )
 
     @property
     def trial_count(self) -> int:
@@ -205,9 +236,11 @@ class DiscoveryEngine:
         self,
         criteria: DiscoveryCriteria | None = None,
         registry: StrategyRegistry = DEFAULT_REGISTRY,
+        memory_store: ResearchRegistryStore | None = None,
     ) -> None:
         self.criteria = criteria or DiscoveryCriteria()
         self.registry = registry
+        self.memory_store = memory_store
 
     def run_discovery(
         self,
@@ -224,6 +257,8 @@ class DiscoveryEngine:
         wf_test_size: int | None = None,
         persist_evidence: bool = False,
         persist_registry_dir: str | Path | None = None,
+        memory_store: ResearchRegistryStore | Sequence[DoNotRepeatConstraint] | None = None,
+        enable_memory_governance: bool = True,
     ) -> DiscoveryRunResult:
         """Execute discovery workflow over candidates using dataset partitioning.
 
@@ -314,6 +349,30 @@ class DiscoveryEngine:
         rejected: list[ResearchEvidence] = []
         trial_records: list[ResearchTrialRecord] = []
         research_candidates: list[ResearchCandidate] = []
+        memory_governance_results: list[DiscoveryMemoryGovernanceResult] = []
+        registry_records: list[ResearchRegistryRecord] = []
+        learning_records: list[ResearchLearningRecord] = []
+        registry_store = (
+            ResearchRegistryStore(base_dir=persist_registry_dir)
+            if persist_evidence and persist_registry_dir
+            else (ResearchRegistryStore() if persist_evidence else None)
+        )
+
+        active_constraints: tuple[DoNotRepeatConstraint, ...] = ()
+        if enable_memory_governance:
+            if isinstance(memory_store, (list, tuple)):
+                active_constraints = tuple(c for c in memory_store if isinstance(c, DoNotRepeatConstraint))
+            else:
+                eff_store = memory_store if memory_store is not None else self.memory_store
+                if eff_store is not None:
+                    try:
+                        active_constraints = eff_store.get_active_do_not_repeat_constraints(
+                            symbol=dataset_scope.symbol,
+                            timeframe=dataset_scope.timeframe,
+                        )
+                    except Exception:
+                        active_constraints = ()
+
         seen_candidate_fingerprints: set[str] = set()
 
         for idx, cand in enumerate(eval_candidates):
@@ -336,6 +395,147 @@ class DiscoveryEngine:
                 random_seed=cand.random_seed,
                 walk_forward_protocol=wf_protocol,
             )
+
+            # Stage 0: Memory-Aware Discovery Governance
+            if enable_memory_governance and active_constraints:
+                gov_res = evaluate_candidate_memory_governance(
+                    candidate=cand,
+                    dataset_scope=dataset_scope,
+                    execution_assumptions=execution_assumptions,
+                    code_provenance=code_provenance,
+                    active_constraints=active_constraints,
+                    search_id=search_space.search_id,
+                    search_fingerprint=search_space.search_fingerprint,
+                    methodology_version=self.criteria.methodology_version,
+                )
+                memory_governance_results.append(gov_res)
+
+                if gov_res.decision == MemoryGovernanceDecision.BLOCKED:
+                    trial_record = ResearchTrialRecord(
+                        search_id=search_space.search_id,
+                        trial_id=trial_id,
+                        trial_index=idx,
+                        candidate_id=cand.candidate_id,
+                        candidate_fingerprint=cand.candidate_id,
+                        experiment_fingerprint=gov_res.experiment_fingerprint,
+                        evidence_fingerprint=None,
+                        qualification_status=PromotionStatus.REJECTED,
+                        rejection_reasons=(RejectionReason.GOVERNANCE_BLOCKED,),
+                        status="BLOCKED",
+                        error_message=gov_res.reason,
+                        campaign_id=campaign_id,
+                    )
+                    trial_records.append(trial_record)
+
+                    research_cand = ResearchCandidate(
+                        candidate_id=cand.candidate_id,
+                        hypothesis=hypothesis,
+                        evidence=None,
+                        validation_status=PromotionStatus.REJECTED,
+                        promotion_status=PromotionStatus.REJECTED,
+                        rejection_reasons=(RejectionReason.GOVERNANCE_BLOCKED,),
+                    )
+                    research_candidates.append(research_cand)
+
+                    from src.evaluation.research_registry import (
+                        RegistryStatus,
+                        ResearchEvidenceLineage,
+                        ResearchReproducibilityDescriptor,
+                    )
+                    ds_id = _compute_scope_id(dataset_scope)
+                    ea_id = _compute_ea_id(execution_assumptions)
+                    cp_id = _compute_cp_id(code_provenance)
+
+                    repro = ResearchReproducibilityDescriptor(
+                        experiment_fingerprint=gov_res.experiment_fingerprint,
+                        evidence_fingerprint=None,
+                        dataset_scope_id=ds_id,
+                        execution_assumptions_id=ea_id,
+                        code_provenance_id=cp_id,
+                        methodology_version=self.criteria.methodology_version,
+                        search_space_fingerprint=search_space.search_fingerprint,
+                        trial_id=trial_id,
+                        candidate_id=cand.candidate_id,
+                    )
+                    lin = ResearchEvidenceLineage(
+                        search_id=search_space.search_id,
+                        search_fingerprint=search_space.search_fingerprint,
+                        trial_id=trial_id,
+                        trial_index=idx,
+                        candidate_id=cand.candidate_id,
+                        experiment_fingerprint=gov_res.experiment_fingerprint,
+                        evidence_fingerprint=None,
+                        qualification_status="REJECTED",
+                        selection_assessment_id=None,
+                        robustness_assessment_id=None,
+                        promotion_status=PromotionStatus.REJECTED.value,
+                    )
+                    blocked_key = f"blocked:{trial_id}:{cand.candidate_id}"
+                    blocked_rec_id = hashlib.sha256(blocked_key.encode("utf-8")).hexdigest()[:24]
+                    blocked_rec = ResearchRegistryRecord(
+                        record_id=blocked_rec_id,
+                        experiment_fingerprint=gov_res.experiment_fingerprint,
+                        evidence_fingerprint=None,
+                        candidate_id=cand.candidate_id,
+                        search_fingerprint=search_space.search_fingerprint,
+                        search_id=search_space.search_id,
+                        trial_id=trial_id,
+                        trial_index=idx,
+                        status=RegistryStatus.REJECTED,
+                        qualification_status="REJECTED",
+                        promotion_status=PromotionStatus.REJECTED.value,
+                        rejection_reasons=("GOVERNANCE_BLOCKED",),
+                        dataset_scope_id=ds_id,
+                        execution_assumptions_id=ea_id,
+                        code_provenance_id=cp_id,
+                        methodology_version=self.criteria.methodology_version,
+                        selection_assessment_id=None,
+                        robustness_assessment_id=None,
+                        benchmark_status=None,
+                        regime_status=None,
+                        error_message=gov_res.reason,
+                        reproducibility=repro,
+                        lineage=lin,
+                    )
+                    registry_records.append(blocked_rec)
+                    if registry_store is not None:
+                        registry_store.register(blocked_rec)
+
+                    continue
+
+                elif gov_res.decision == MemoryGovernanceDecision.FAIL_CLOSED:
+                    from src.evaluation.research_registry import RegistryValidationError
+                    if search_policy and search_policy.fail_fast:
+                        raise RegistryValidationError(
+                            f"Memory governance failed closed for candidate '{cand.candidate_id}': {gov_res.reason}"
+                        )
+
+                    trial_record = ResearchTrialRecord(
+                        search_id=search_space.search_id,
+                        trial_id=trial_id,
+                        trial_index=idx,
+                        candidate_id=cand.candidate_id,
+                        candidate_fingerprint=cand.candidate_id,
+                        experiment_fingerprint=gov_res.experiment_fingerprint,
+                        evidence_fingerprint=None,
+                        qualification_status=PromotionStatus.REJECTED,
+                        rejection_reasons=(RejectionReason.SPECIFICATION_INVALID, RejectionReason.GOVERNANCE_BLOCKED),
+                        status="FAILED",
+                        error_message=gov_res.reason,
+                        campaign_id=campaign_id,
+                    )
+                    trial_records.append(trial_record)
+
+                    research_cand = ResearchCandidate(
+                        candidate_id=cand.candidate_id,
+                        hypothesis=hypothesis,
+                        evidence=None,
+                        validation_status=PromotionStatus.REJECTED,
+                        promotion_status=PromotionStatus.REJECTED,
+                        rejection_reasons=(RejectionReason.SPECIFICATION_INVALID, RejectionReason.GOVERNANCE_BLOCKED),
+                    )
+                    research_candidates.append(research_cand)
+                    continue
 
             try:
                 evidence = self._evaluate_candidate(
@@ -443,9 +643,6 @@ class DiscoveryEngine:
         # Generate selection governance and robustness assessments, and record trial results in registry
         selection_assessments: list[ResearchSelectionAssessment] = []
         robustness_assessments: list[ResearchRobustnessAssessment] = []
-        registry_records: list[ResearchRegistryRecord] = []
-        learning_records: list[ResearchLearningRecord] = []
-        registry_store = ResearchRegistryStore(base_dir=persist_registry_dir) if persist_evidence and persist_registry_dir else (ResearchRegistryStore() if persist_evidence else None)
 
         all_evidence = promoted_sorted + rejected_sorted
         for ev in all_evidence:
@@ -603,6 +800,7 @@ class DiscoveryEngine:
             registry_records=tuple(registry_records),
             learning_records=tuple(learning_records),
             research_candidates=tuple(research_candidates),
+            memory_governance_results=tuple(memory_governance_results),
             campaign=campaign,
         )
 
