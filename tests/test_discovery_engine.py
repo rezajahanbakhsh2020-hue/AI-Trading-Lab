@@ -232,6 +232,7 @@ def test_discovery_engine_evidence_persistence(
                 wf_train_size=30,
                 wf_test_size=15,
                 persist_evidence=True,
+                persist_registry_dir=tmp_path,
             )
 
             all_ev = res.promoted_evidence + res.rejected_evidence
@@ -409,7 +410,7 @@ def test_trial_ledger_and_budget_truncation(
     assert res.trial_ledger[0].search_id == "search_budget"
     assert res.trial_ledger[0].trial_index == 0
     assert len(res.selection_assessments) == 2
-    assert res.selection_assessments[0].status == SelectionGovernanceStatus.SELECTION_CONTEXT_RECORDED
+    assert res.selection_assessments[0].status == SelectionGovernanceStatus.SELECTION_ADJUSTMENT_APPLIED
     assert res.selection_assessments[0].trial_count == 2
 
 

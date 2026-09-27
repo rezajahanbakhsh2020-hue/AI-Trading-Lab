@@ -447,6 +447,7 @@ class DiscoveryEngine:
                 evidence=ev,
                 trial_records=trial_records,
                 search_fingerprint=search_space.search_fingerprint,
+                evidence_collection=all_evidence,
             )
             selection_assessments.append(assessment)
 
