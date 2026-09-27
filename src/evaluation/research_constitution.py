@@ -177,6 +177,47 @@ class CodeProvenance:
 
 
 @dataclass(frozen=True)
+class WalkForwardProtocol:
+    """Authoritative representation of the Walk-Forward execution protocol.
+
+    Holds the effective train_size and test_size used for walk-forward evaluation.
+    """
+
+    train_size: int
+    test_size: int
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.train_size, int) or isinstance(self.train_size, bool):
+            raise TypeError("train_size must be an integer.")
+        if not isinstance(self.test_size, int) or isinstance(self.test_size, bool):
+            raise TypeError("test_size must be an integer.")
+        if self.train_size <= 0:
+            raise ValueError(f"train_size must be a positive integer, got {self.train_size}.")
+        if self.test_size <= 0:
+            raise ValueError(f"test_size must be a positive integer, got {self.test_size}.")
+
+
+def resolve_walk_forward_protocol(
+    n_observations: int,
+    train_size: int | None = None,
+    test_size: int | None = None,
+) -> WalkForwardProtocol:
+    """Resolve effective WalkForwardProtocol for a given dataset length and optional overrides.
+
+    Default rules:
+        train_size = int(n_observations * 0.40)
+        test_size  = int(n_observations * 0.15)
+    """
+    if not isinstance(n_observations, int) or isinstance(n_observations, bool) or n_observations <= 0:
+        raise ValueError(f"n_observations must be a positive integer, got {n_observations}.")
+
+    eff_train = train_size if train_size is not None else int(n_observations * 0.40)
+    eff_test = test_size if test_size is not None else int(n_observations * 0.15)
+
+    return WalkForwardProtocol(train_size=eff_train, test_size=eff_test)
+
+
+@dataclass(frozen=True)
 class ResearchExperimentSpec:
     """Authoritative spec defining a research experiment hypothesis and setup.
 
@@ -194,6 +235,7 @@ class ResearchExperimentSpec:
     benchmark_reference: str
     parameters: dict[str, Any] = field(default_factory=dict)
     random_seed: int | None = None
+    walk_forward_protocol: WalkForwardProtocol | None = None
     fingerprint: str = field(init=False)
 
     def __post_init__(self) -> None:
@@ -213,6 +255,10 @@ class ResearchExperimentSpec:
             raise TypeError("code_provenance must be a CodeProvenance instance.")
         if not self.benchmark_reference or not self.benchmark_reference.strip():
             raise ValueError("benchmark_reference must be a non-empty string.")
+        if self.walk_forward_protocol is not None and not isinstance(
+            self.walk_forward_protocol, WalkForwardProtocol
+        ):
+            raise TypeError("walk_forward_protocol must be a WalkForwardProtocol instance or None.")
 
         computed_fingerprint = compute_experiment_fingerprint(
             hypothesis=self.hypothesis,
@@ -225,6 +271,7 @@ class ResearchExperimentSpec:
             benchmark_reference=self.benchmark_reference,
             parameters=self.parameters,
             random_seed=self.random_seed,
+            walk_forward_protocol=self.walk_forward_protocol,
         )
         object.__setattr__(self, "fingerprint", computed_fingerprint)
 
@@ -241,6 +288,7 @@ def compute_experiment_fingerprint(
     benchmark_reference: str,
     parameters: Mapping[str, Any] | None = None,
     random_seed: int | None = None,
+    walk_forward_protocol: WalkForwardProtocol | None = None,
 ) -> str:
     """Compute deterministic SHA-256 fingerprint for a research experiment.
 
@@ -274,6 +322,11 @@ def compute_experiment_fingerprint(
         "benchmark_reference": benchmark_reference.strip(),
         "random_seed": random_seed,
     }
+    if walk_forward_protocol is not None:
+        canonical_payload["walk_forward_protocol"] = {
+            "train_size": int(walk_forward_protocol.train_size),
+            "test_size": int(walk_forward_protocol.test_size),
+        }
 
     serialized = json.dumps(
         canonical_payload,
@@ -383,6 +436,9 @@ class ResearchEvidence:
                 "benchmark_reference": self.spec.benchmark_reference,
                 "parameters": self.spec.parameters,
                 "random_seed": self.spec.random_seed,
+                "walk_forward_protocol": asdict(self.spec.walk_forward_protocol)
+                if self.spec.walk_forward_protocol
+                else None,
                 "fingerprint": self.spec.fingerprint,
             },
             "partitions": [
@@ -428,6 +484,7 @@ class ResearchHypothesis:
     benchmark_reference: str
     parameters: dict[str, Any] = field(default_factory=dict)
     random_seed: int | None = None
+    walk_forward_protocol: WalkForwardProtocol | None = None
     hypothesis_id: str = field(init=False)
     fingerprint: str = field(init=False)
 
@@ -448,6 +505,10 @@ class ResearchHypothesis:
             raise TypeError("code_provenance must be a CodeProvenance instance.")
         if not self.benchmark_reference or not self.benchmark_reference.strip():
             raise ValueError("benchmark_reference must be a non-empty string.")
+        if self.walk_forward_protocol is not None and not isinstance(
+            self.walk_forward_protocol, WalkForwardProtocol
+        ):
+            raise TypeError("walk_forward_protocol must be a WalkForwardProtocol instance or None.")
 
         fp = compute_experiment_fingerprint(
             hypothesis=self.statement,
@@ -460,6 +521,7 @@ class ResearchHypothesis:
             benchmark_reference=self.benchmark_reference,
             parameters=self.parameters,
             random_seed=self.random_seed,
+            walk_forward_protocol=self.walk_forward_protocol,
         )
         object.__setattr__(self, "fingerprint", fp)
         object.__setattr__(self, "hypothesis_id", f"hyp_{fp[:16]}")
@@ -477,6 +539,7 @@ class ResearchHypothesis:
             benchmark_reference=self.benchmark_reference,
             parameters=dict(self.parameters),
             random_seed=self.random_seed,
+            walk_forward_protocol=self.walk_forward_protocol,
         )
 
     @classmethod
@@ -494,6 +557,7 @@ class ResearchHypothesis:
             benchmark_reference=spec.benchmark_reference,
             parameters=dict(spec.parameters),
             random_seed=spec.random_seed,
+            walk_forward_protocol=spec.walk_forward_protocol,
         )
 
     def as_dict(self) -> dict[str, Any]:
@@ -509,6 +573,9 @@ class ResearchHypothesis:
             "benchmark_reference": self.benchmark_reference,
             "parameters": dict(self.parameters),
             "random_seed": self.random_seed,
+            "walk_forward_protocol": asdict(self.walk_forward_protocol)
+            if self.walk_forward_protocol
+            else None,
             "fingerprint": self.fingerprint,
         }
 

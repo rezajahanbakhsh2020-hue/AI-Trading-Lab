@@ -22,6 +22,7 @@ from src.evaluation.research_constitution import (
     ResearchCampaignStatus,
     ResearchEvidence,
     ResearchExperimentSpec,
+    WalkForwardProtocol,
 )
 
 DEFAULT_RESEARCH_DIR = (
@@ -251,6 +252,21 @@ def reconstruct_research_evidence(data: dict[str, Any]) -> ResearchEvidence:
     if not benchmark_ref or not isinstance(benchmark_ref, str):
         raise ValueError("Missing or invalid 'benchmark_reference' in spec.")
 
+    wf_data = spec_data.get("walk_forward_protocol")
+    wf_protocol = None
+    if wf_data is not None:
+        if not isinstance(wf_data, dict):
+            raise ValueError("Missing or invalid 'walk_forward_protocol' dictionary in spec.")
+        if "train_size" not in wf_data or "test_size" not in wf_data:
+            raise ValueError("walk_forward_protocol dictionary missing 'train_size' or 'test_size'.")
+        try:
+            wf_protocol = WalkForwardProtocol(
+                train_size=int(wf_data["train_size"]),
+                test_size=int(wf_data["test_size"]),
+            )
+        except (TypeError, ValueError) as exc:
+            raise ValueError(f"Invalid walk_forward_protocol data in spec: {exc}") from exc
+
     spec = ResearchExperimentSpec(
         hypothesis=spec_data.get("hypothesis", ""),
         methodology_version=spec_data.get("methodology_version", ""),
@@ -262,6 +278,7 @@ def reconstruct_research_evidence(data: dict[str, Any]) -> ResearchEvidence:
         benchmark_reference=benchmark_ref,
         parameters=spec_data.get("parameters", {}),
         random_seed=spec_data.get("random_seed"),
+        walk_forward_protocol=wf_protocol,
     )
 
     partitions_data = data.get("partitions")
