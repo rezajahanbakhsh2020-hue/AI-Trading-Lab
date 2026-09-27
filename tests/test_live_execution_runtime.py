@@ -4,7 +4,15 @@ import pandas as pd
 import pytest
 from unittest.mock import MagicMock, patch
 
+from src.data.provider import (
+    BiQuoteProvider,
+    FunctionMarketDataProvider,
+    UnsupportedInstrumentError,
+    resolve_provider_for_symbol,
+    resolve_requested_symbol,
+)
 from src.evaluation.live_execution_runtime import (
+    LIVE_DATA_PROVIDERS,
     LiveExecutionRuntime,
     ProductionRuntimeConfig,
     load_live_market_data,
@@ -23,10 +31,12 @@ from src.evaluation.research_store import save_research_candidate
 from src.integration.project2_publisher import Project2Publisher
 
 
-def persist_momentum_candidate(base_dir, candidate_id: str = "cand_momentum_live"):
+def persist_momentum_candidate(
+    base_dir, candidate_id: str = "cand_momentum_live", symbol: str = "XAUUSD"
+):
     ds = DatasetScope(
-        dataset_id="ds_xauusd_5m",
-        symbol="XAUUSD",
+        dataset_id=f"ds_{symbol.lower()}_5m",
+        symbol=symbol,
         timeframe="5m",
         start_date="2025-01-01",
         end_date="2025-01-02",
@@ -83,10 +93,12 @@ def persist_momentum_candidate(base_dir, candidate_id: str = "cand_momentum_live
     return candidate_id
 
 
-def production_config_for(tmp_path, candidate_id: str = "cand_momentum_live") -> ProductionRuntimeConfig:
-    persist_momentum_candidate(tmp_path, candidate_id=candidate_id)
+def production_config_for(
+    tmp_path, candidate_id: str = "cand_momentum_live", symbol: str = "XAUUSD"
+) -> ProductionRuntimeConfig:
+    persist_momentum_candidate(tmp_path, candidate_id=candidate_id, symbol=symbol)
     return ProductionRuntimeConfig(
-        symbol="XAUUSD",
+        symbol=symbol,
         timeframe="5m",
         candidate_id=candidate_id,
         strategy_id="momentum",
@@ -108,6 +120,131 @@ def make_dummy_df() -> pd.DataFrame:
     return df
 
 
+def test_requested_symbol_is_not_replaced_by_xauusd() -> None:
+    req = {"symbol": "eurusd"}
+    resolved = resolve_requested_symbol(req)
+    assert resolved == "EURUSD"
+    assert resolved != "XAUUSD"
+
+
+def test_supported_non_xauusd_symbol_reaches_provider_unchanged(monkeypatch) -> None:
+    recorded_symbol = None
+
+    class MockBTCProvider:
+        def supports_symbol(self, symbol: str) -> bool:
+            return symbol == "BTCUSD"
+
+        def get_quote(self, symbol: str) -> dict:
+            nonlocal recorded_symbol
+            recorded_symbol = symbol
+            return {"symbol": symbol, "mid": 95000.0}
+
+        def get_candles(self, symbol: str, timeframe: str = "5m", limit: int = 200) -> pd.DataFrame:
+            nonlocal recorded_symbol
+            recorded_symbol = symbol
+            return make_dummy_df()
+
+    monkeypatch.setitem(LIVE_DATA_PROVIDERS, "BTCUSD", MockBTCProvider())
+
+    df = load_live_market_data("BTCUSD", "5m", 100)
+    assert recorded_symbol == "BTCUSD"
+    assert not df.empty
+
+
+def test_unsupported_symbol_fails_closed(tmp_path) -> None:
+    with pytest.raises(UnsupportedInstrumentError, match="No market-data provider supports EURUSD"):
+        load_live_market_data("EURUSD", "5m", 100)
+
+    runtime = LiveExecutionRuntime(
+        symbol="EURUSD",
+        interval="5m",
+        store_path=tmp_path / "store.json",
+        snapshot_path=tmp_path / "snap.json",
+        research_dir=tmp_path,
+        production_config=production_config_for(tmp_path, symbol="EURUSD"),
+    )
+
+    result = runtime.run_once(publish=False, persist=True)
+    assert result["blocked"] is True
+    assert result["reason"] == "UNSUPPORTED_INSTRUMENT"
+    assert result["symbol"] == "EURUSD"
+    assert result["decision"] == "NO TRADE"
+    assert result["blocked_state"]["code"] == "UNSUPPORTED_INSTRUMENT"
+    assert result["blocked_state"]["error"]["code"] == "UNSUPPORTED_INSTRUMENT"
+
+
+def test_provider_is_selected_by_symbol_capability() -> None:
+    provider1 = BiQuoteProvider(supported_symbols=("XAUUSD",))
+    provider2 = BiQuoteProvider(supported_symbols=("BTCUSD",))
+    providers = [provider1, provider2]
+
+    selected = resolve_provider_for_symbol("BTCUSD", providers)
+    assert selected is provider2
+    assert selected.supports_symbol("BTCUSD")
+    assert not selected.supports_symbol("XAUUSD")
+
+    none_selected = resolve_provider_for_symbol("ETHUSD", providers)
+    assert none_selected is None
+
+
+def test_provider_cannot_silently_substitute_another_symbol() -> None:
+    def bad_quote_fetcher():
+        return {"symbol": "XAUUSD", "mid": 2650.0}
+
+    provider = BiQuoteProvider(
+        supported_symbols=("EURUSD",),
+        quote_fetcher=bad_quote_fetcher,
+    )
+    with pytest.raises(UnsupportedInstrumentError, match="does not match requested symbol"):
+        provider.get_quote("EURUSD")
+
+
+def test_snapshot_preserves_canonical_instrument_identity(tmp_path) -> None:
+    config = production_config_for(tmp_path, symbol="XAUUSD")
+    runtime = LiveExecutionRuntime(
+        symbol="XAUUSD",
+        interval="5m",
+        store_path=tmp_path / "store.json",
+        snapshot_path=tmp_path / "snap.json",
+        research_dir=tmp_path,
+        production_config=config,
+    )
+    with patch("src.evaluation.live_execution_runtime.load_live_market_data") as mock_load:
+        mock_load.return_value = make_dummy_df()
+        res = runtime.run_once(publish=False, persist=True)
+        assert res["symbol"] == "XAUUSD"
+        snapshot_data = json.loads((tmp_path / "snap.json").read_text())
+        assert snapshot_data["symbol"] == "XAUUSD"
+
+
+def test_xauusd_existing_runtime_path_remains_valid(tmp_path) -> None:
+    config = production_config_for(tmp_path, symbol="XAUUSD")
+    runtime = LiveExecutionRuntime(
+        symbol="XAUUSD",
+        interval="5m",
+        store_path=tmp_path / "store.json",
+        snapshot_path=tmp_path / "snap.json",
+        research_dir=tmp_path,
+        production_config=config,
+    )
+    with patch("src.evaluation.live_execution_runtime.load_live_market_data") as mock_load:
+        mock_load.return_value = make_dummy_df()
+        res = runtime.run_once(publish=False, persist=False)
+        assert res["blocked"] is False
+        assert res["symbol"] == "XAUUSD"
+
+
+def test_market_data_integrity_symbol_mismatch_prevented() -> None:
+    """Verify market data for symbol A can never be returned while runtime claims it belongs to symbol B."""
+    result = load_live_market_data("XAUUSD", "5m", 100)
+    assert not result.empty
+
+    with pytest.raises(UnsupportedInstrumentError) as exc_info:
+        load_live_market_data("EURUSD", "5m", 100)
+
+    assert "No market-data provider supports EURUSD" in str(exc_info.value)
+
+
 @patch("src.evaluation.live_execution_runtime.fetch_xauusd_ohlc")
 def test_load_live_market_data(mock_fetch) -> None:
     mock_fetch.return_value = make_dummy_df()
@@ -118,14 +255,12 @@ def test_load_live_market_data(mock_fetch) -> None:
 
 
 def test_load_live_market_data_invalid_symbol() -> None:
-    with pytest.raises(ValueError, match="Unsupported instrument symbol"):
+    with pytest.raises(UnsupportedInstrumentError, match="No market-data provider supports EURUSD"):
         load_live_market_data("EURUSD", "5m", 100)
 
 
 def test_provider_capability_registry_custom_adapter(monkeypatch) -> None:
     """Verify that registering a valid adapter for another symbol (e.g. BTCUSD) flows through cleanly without hardcoded restrictions."""
-    from src.evaluation.live_execution_runtime import LIVE_DATA_PROVIDERS
-
     def mock_btc_adapter(interval="5m", limit=100):
         df = make_dummy_df()
         return df

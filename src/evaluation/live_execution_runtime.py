@@ -17,6 +17,14 @@ from app_live import (
     DEFAULT_LIMIT,
     fetch_xauusd_ohlc,
 )
+from src.data.provider import (
+    BiQuoteProvider,
+    FunctionMarketDataProvider,
+    MarketDataProvider,
+    UnsupportedInstrumentError,
+    resolve_provider_for_symbol,
+    resolve_requested_symbol,
+)
 from src.evaluation.live_decision_record import build_live_decision_record
 from src.evaluation.live_decision_store import append_live_decision_to_store
 from src.evaluation.live_production_decision import (
@@ -121,23 +129,48 @@ class ProductionBlocked:
         }
 
 
-# Provider capability registry mapping canonical instrument symbols to live market data adapters
+# Provider capability registry mapping canonical instrument symbols to live market data adapters/providers
 LIVE_DATA_PROVIDERS: Dict[str, Any] = {
-    "XAUUSD": fetch_xauusd_ohlc,
+    "XAUUSD": BiQuoteProvider(supported_symbols=("XAUUSD",)),
 }
+
+
+def _get_registered_providers() -> list[MarketDataProvider]:
+    """Derive registered MarketDataProvider instances dynamically from LIVE_DATA_PROVIDERS."""
+    providers: list[MarketDataProvider] = []
+    for symbol_key, val in LIVE_DATA_PROVIDERS.items():
+        if isinstance(val, MarketDataProvider):
+            providers.append(val)
+        elif callable(val):
+            providers.append(
+                FunctionMarketDataProvider(symbol=symbol_key, ohlc_fetcher=val)
+            )
+    return providers
+
+
+def resolve_live_provider(symbol: str) -> MarketDataProvider:
+    """Resolve live market data provider based on provider capability truth without fallback substitution."""
+    canonical_symbol = resolve_requested_symbol(symbol)
+    providers = _get_registered_providers()
+    provider = resolve_provider_for_symbol(
+        symbol=canonical_symbol,
+        available_providers=providers,
+    )
+    if provider is None:
+        raise UnsupportedInstrumentError(
+            f"No market-data provider supports {canonical_symbol}"
+        )
+    return provider
 
 
 def get_live_data_adapter(symbol: str) -> Any:
     """Resolve live market data adapter based on provider capabilities."""
-    symbol_clean = str(symbol).strip().upper()
-    adapter = LIVE_DATA_PROVIDERS.get(symbol_clean)
-    if not adapter:
-        supported = ", ".join(sorted(LIVE_DATA_PROVIDERS.keys()))
-        raise ValueError(
-            f"Unsupported instrument symbol '{symbol}'. "
-            f"No live market data adapter is configured for '{symbol_clean}'. "
-            f"Supported instruments: {supported}."
-        )
+    provider = resolve_live_provider(symbol)
+    canonical_symbol = resolve_requested_symbol(symbol)
+
+    def adapter(interval: str = DEFAULT_INTERVAL, limit: int = DEFAULT_LIMIT) -> pd.DataFrame:
+        return provider.get_candles(canonical_symbol, timeframe=interval, limit=limit)
+
     return adapter
 
 
@@ -147,15 +180,27 @@ def load_live_market_data(
     limit: int = DEFAULT_LIMIT,
 ) -> pd.DataFrame:
     """Fetch live market data for a target symbol and interval using registered provider adapters."""
-    symbol_clean = str(symbol).strip().upper()
-    adapter = get_live_data_adapter(symbol_clean)
-    data = adapter(interval=interval, limit=limit)
+    canonical_symbol = resolve_requested_symbol(symbol)
+    provider = resolve_provider_for_symbol(
+        symbol=canonical_symbol,
+        available_providers=_get_registered_providers(),
+    )
+    if provider is None:
+        raise UnsupportedInstrumentError(
+            f"No market-data provider supports {canonical_symbol}"
+        )
+
+    data = provider.get_candles(
+        symbol=canonical_symbol,
+        timeframe=interval,
+        limit=limit,
+    )
 
     required = {"openTime", "open", "high", "low", "close"}
     missing = required.difference(data.columns)
     if missing:
         raise ValueError(
-            f"Missing required live columns for {symbol}: " + ", ".join(sorted(missing))
+            f"Missing required live columns for {canonical_symbol}: " + ", ".join(sorted(missing))
         )
 
     data = data.copy()
@@ -165,7 +210,7 @@ def load_live_market_data(
 
     data = data.dropna(subset=["timestamp", "open", "high", "low", "close"])
     if data.empty:
-        raise ValueError(f"No valid live market data available for {symbol}.")
+        raise ValueError(f"No valid live market data available for {canonical_symbol}.")
 
     return data.reset_index(drop=True)
 
@@ -468,11 +513,34 @@ class LiveExecutionRuntime:
         stability_score = float(raw_score) if raw_score is not None else None
 
         # 1. Fetch market data only after authoritative promotion resolution
-        data = load_live_market_data(
-            symbol=self.symbol,
-            interval=self.interval,
-            limit=self.limit,
-        )
+        try:
+            data = load_live_market_data(
+                symbol=self.symbol,
+                interval=self.interval,
+                limit=self.limit,
+            )
+        except UnsupportedInstrumentError as exc:
+            blocked = ProductionBlocked(
+                reason="UNSUPPORTED_INSTRUMENT",
+                detail=str(exc),
+                candidate_id=candidate.candidate_id,
+                strategy_id=candidate.strategy_name,
+                symbol=self.symbol,
+                timeframe=self.interval,
+            )
+            res = self._blocked_result(
+                blocked,
+                persist=persist,
+                publish=publish,
+                skip_if_no_trade=skip_if_no_trade,
+                reference_now=ref_now,
+            )
+            res["blocked_state"]["code"] = "UNSUPPORTED_INSTRUMENT"
+            res["blocked_state"]["error"] = {
+                "code": "UNSUPPORTED_INSTRUMENT",
+                "message": str(exc),
+            }
+            return res
 
         # 2. Evaluate market data freshness safety boundary
         freshness = validate_market_data_freshness(

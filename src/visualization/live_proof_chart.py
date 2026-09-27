@@ -27,6 +27,10 @@ def build_live_proof_chart(
             f"Missing OHLC columns: {sorted(missing)}"
         )
 
+    symbol = str(
+        snapshot.get("symbol", "XAUUSD")
+    ).upper()
+
     figure = go.Figure()
 
     figure.add_trace(
@@ -36,7 +40,7 @@ def build_live_proof_chart(
             high=data["high"],
             low=data["low"],
             close=data["close"],
-            name="XAUUSD",
+            name=symbol,
         )
     )
 
@@ -129,10 +133,6 @@ def build_live_proof_chart(
                 name="BUY Signal",
             )
         )
-
-    symbol = str(
-        snapshot.get("symbol", "XAUUSD")
-    ).upper()
 
     interval = str(
         snapshot.get("interval", "")
