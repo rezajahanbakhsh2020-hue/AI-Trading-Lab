@@ -21,11 +21,13 @@ import pandas as pd
 
 from src.evaluation.candidate_generator import CandidateSpec, ResearchSearchSpace
 from src.evaluation.research_registry import (
+    ResearchLearningRecord,
     ResearchRegistryRecord,
     ResearchRegistryStore,
     _compute_ea_id,
     _compute_cp_id,
     _compute_scope_id,
+    construct_learning_record_from_registry_record,
     construct_registry_record_from_evidence,
 )
 from src.evaluation.research_robustness import (
@@ -161,6 +163,9 @@ class DiscoveryRunResult:
         default_factory=tuple
     )
     registry_records: tuple[ResearchRegistryRecord, ...] = field(
+        default_factory=tuple
+    )
+    learning_records: tuple[ResearchLearningRecord, ...] = field(
         default_factory=tuple
     )
     research_candidates: tuple[ResearchCandidate, ...] = field(
@@ -439,6 +444,7 @@ class DiscoveryEngine:
         selection_assessments: list[ResearchSelectionAssessment] = []
         robustness_assessments: list[ResearchRobustnessAssessment] = []
         registry_records: list[ResearchRegistryRecord] = []
+        learning_records: list[ResearchLearningRecord] = []
         registry_store = ResearchRegistryStore(base_dir=persist_registry_dir) if persist_evidence and persist_registry_dir else (ResearchRegistryStore() if persist_evidence else None)
 
         all_evidence = promoted_sorted + rejected_sorted
@@ -476,8 +482,11 @@ class DiscoveryEngine:
                 qualification_status=qual_stat,
             )
             registry_records.append(rec)
+            learning_rec = construct_learning_record_from_registry_record(rec)
+            learning_records.append(learning_rec)
             if registry_store is not None:
                 registry_store.register(rec)
+                registry_store.register_learning_record(learning_rec)
 
         # Handle failed trials in registry
         for tr in trial_records:
@@ -543,8 +552,11 @@ class DiscoveryEngine:
                     lineage=lin,
                 )
                 registry_records.append(failed_rec)
+                failed_learning_rec = construct_learning_record_from_registry_record(failed_rec)
+                learning_records.append(failed_learning_rec)
                 if registry_store is not None:
                     registry_store.register(failed_rec)
+                    registry_store.register_learning_record(failed_learning_rec)
 
         # Construct campaign manifest
         ev_fps = tuple(ev.evidence_id for ev in all_evidence if ev.evidence_id)
@@ -589,6 +601,7 @@ class DiscoveryEngine:
             selection_assessments=tuple(selection_assessments),
             robustness_assessments=tuple(robustness_assessments),
             registry_records=tuple(registry_records),
+            learning_records=tuple(learning_records),
             research_candidates=tuple(research_candidates),
             campaign=campaign,
         )
