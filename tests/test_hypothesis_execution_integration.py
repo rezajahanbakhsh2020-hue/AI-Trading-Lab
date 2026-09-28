@@ -3,6 +3,7 @@
 Validates:
 - GENERATED hypothesis cannot execute and fails closed.
 - Explicit governance acceptance transitions status to ACCEPTED_FOR_RESEARCH.
+- Already ACCEPTED_FOR_RESEARCH hypothesis cannot be re-accepted (one-way lifecycle boundary).
 - ACCEPTED_FOR_RESEARCH hypothesis passes to existing run_research_experiment().
 - Identity, fingerprint, provenance, and lineage are preserved end-to-end in ResearchEvidence.
 - Rejected, superseded, or incomplete hypotheses fail closed.
@@ -147,6 +148,24 @@ def test_explicit_governance_acceptance_produces_accepted_for_research():
     assert accepted_hyp.code_provenance == generated_hyp.code_provenance
 
 
+def test_already_accepted_hypothesis_cannot_be_reaccepted():
+    """Regression test: Prove that an already ACCEPTED_FOR_RESEARCH hypothesis cannot be re-accepted."""
+    generator = KnowledgeHypothesisGenerator()
+    ctx = _make_valid_context()
+    pattern = _make_valid_pattern()
+
+    generated_hyp = generator.generate([pattern], context=ctx)[0]
+    accepted_hyp = accept_hypothesis_for_research(generated_hyp)
+    assert accepted_hyp.status == HypothesisStatus.ACCEPTED_FOR_RESEARCH
+
+    # Attempting to re-accept an already accepted hypothesis MUST fail closed
+    with pytest.raises(ValueError) as exc_info:
+        accept_hypothesis_for_research(accepted_hyp)
+
+    assert "current status is 'accepted_for_research'" in str(exc_info.value)
+    assert f"expected '{HypothesisStatus.GENERATED.value}'" in str(exc_info.value)
+
+
 def test_accepted_hypothesis_reaches_existing_research_runner():
     """Prove that an ACCEPTED_FOR_RESEARCH hypothesis successfully executes via run_research_experiment()."""
     generator = KnowledgeHypothesisGenerator()
@@ -181,7 +200,7 @@ def test_rejected_and_superseded_hypotheses_fail_closed():
     rejected_hyp = reject_hypothesis(generated_hyp, reason="Flawed statistical baseline")
     assert rejected_hyp.status == HypothesisStatus.REJECTED
 
-    with pytest.raises(ValueError, match="Cannot accept REJECTED hypothesis"):
+    with pytest.raises(ValueError, match="current status is 'rejected'"):
         accept_hypothesis_for_research(rejected_hyp)
 
     with pytest.raises(UnacceptedHypothesisError):
@@ -191,7 +210,7 @@ def test_rejected_and_superseded_hypotheses_fail_closed():
     superseded_hyp = supersede_hypothesis(generated_hyp, superseding_id="hyp_new_123")
     assert superseded_hyp.status == HypothesisStatus.SUPERSEDED
 
-    with pytest.raises(ValueError, match="Cannot accept SUPERSEDED hypothesis"):
+    with pytest.raises(ValueError, match="current status is 'superseded'"):
         accept_hypothesis_for_research(superseded_hyp)
 
     with pytest.raises(UnacceptedHypothesisError):

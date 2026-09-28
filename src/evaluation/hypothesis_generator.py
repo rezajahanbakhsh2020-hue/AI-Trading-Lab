@@ -230,14 +230,16 @@ def accept_hypothesis_for_research(hypothesis: ResearchHypothesis) -> ResearchHy
 
     Does NOT promote to production or create live signals.
     Fails closed on missing/incomplete provenance or invalid initial status.
+    Requires input hypothesis status to be strictly GENERATED.
     """
     if not isinstance(hypothesis, ResearchHypothesis):
         raise TypeError("hypothesis must be a ResearchHypothesis instance.")
 
-    if hypothesis.status == HypothesisStatus.REJECTED:
-        raise ValueError(f"Cannot accept REJECTED hypothesis '{hypothesis.hypothesis_id}' for research.")
-    if hypothesis.status == HypothesisStatus.SUPERSEDED:
-        raise ValueError(f"Cannot accept SUPERSEDED hypothesis '{hypothesis.hypothesis_id}' for research.")
+    if hypothesis.status != HypothesisStatus.GENERATED:
+        raise ValueError(
+            f"Cannot accept hypothesis '{hypothesis.hypothesis_id}' for research: "
+            f"current status is '{hypothesis.status.value}', expected '{HypothesisStatus.GENERATED.value}'."
+        )
 
     if not hypothesis.statement or not hypothesis.statement.strip():
         raise HypothesisGenerationError("Cannot accept hypothesis with empty statement.")
