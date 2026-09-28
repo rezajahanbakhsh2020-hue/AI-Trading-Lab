@@ -1,7 +1,7 @@
 """Unit and AST structural tests for Research Qualification Service and Safe Promotion Gate."""
 
 import ast
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 from pathlib import Path
 
 import pytest
@@ -16,14 +16,18 @@ from src.evaluation.research_constitution import (
     RejectionReason,
     ResearchEvidence,
     ResearchExperimentSpec,
-    compute_experiment_fingerprint,
 )
 from src.evaluation.research_qualification import (
     ResearchQualificationPolicy,
-    ResearchQualificationResult,
     qualify_research_evidence,
 )
-from src.evaluation.research_store import PromotionEligibilityError, save_research_candidate
+from src.evaluation.research_robustness import (
+    assess_research_robustness,
+)
+from src.evaluation.research_store import (
+    PromotionEligibilityError,
+    save_research_candidate,
+)
 
 
 def make_valid_evidence(
@@ -142,6 +146,8 @@ def test_valid_evidence_qualifies() -> None:
     assert res.status == PromotionStatus.PROMOTABLE
     assert res.rejection_reasons == ()
     assert res.evidence_fingerprint == evidence.experiment_fingerprint
+    assert res.integrity_valid is True
+    assert res.decision_fingerprint != ""
 
 
 def test_missing_oos_rejected() -> None:
@@ -222,6 +228,81 @@ def test_unqualified_evidence_cannot_be_saved_to_candidate_store(tmp_path: Path)
 
     with pytest.raises(PromotionEligibilityError, match="failed qualification"):
         save_research_candidate(candidate_id="cand_bad", evidence=evidence, base_dir=tmp_path)
+
+
+# --- Behavioral Matrix Tests (A-AK) ---
+
+def test_A_qualification_invokes_canonical_integrity_gate():
+    evidence = make_valid_evidence()
+    res = qualify_research_evidence(evidence)
+    assert res.integrity_valid is True
+    assert res.integrity_rejection_reasons == ()
+
+
+def test_B_structural_validation_delegates_to_gate():
+    evidence = make_valid_evidence()
+    object.__setattr__(evidence.spec.dataset_scope, "start_date", "2025-01-10")
+    object.__setattr__(evidence.spec.dataset_scope, "end_date", "2025-01-01") # Reversed dates
+    res = qualify_research_evidence(evidence)
+    assert res.qualified is False
+    assert res.integrity_valid is False
+    assert RejectionReason.INVALID_DATASET_SCOPE in res.rejection_reasons
+
+
+def test_C_tampered_experiment_fingerprint_fails():
+    evidence = make_valid_evidence()
+    object.__setattr__(evidence, "experiment_fingerprint", "0000000000000000000000000000000000000000000000000000000000000000")
+    res = qualify_research_evidence(evidence)
+    assert res.qualified is False
+    assert RejectionReason.FAILED_REPRODUCIBILITY in res.rejection_reasons
+
+
+def test_I_valid_robustness_assessment_binds_to_exact_evidence():
+    evidence = make_valid_evidence()
+    assessment = assess_research_robustness(evidence)
+    res = qualify_research_evidence(evidence, robustness_assessment=assessment)
+    assert res.qualified is True
+    assert res.robustness_assessment_fingerprint == assessment.robustness_fingerprint
+
+
+def test_J_assessment_for_evidence_a_cannot_qualify_evidence_b():
+    evidence_a = make_valid_evidence(symbol="XAUUSD")
+    evidence_b = make_valid_evidence(symbol="EURUSD")
+    assessment_a = assess_research_robustness(evidence_a)
+
+    res = qualify_research_evidence(evidence_b, robustness_assessment=assessment_a)
+    assert res.qualified is False
+    assert RejectionReason.FAILED_REPRODUCIBILITY in res.rejection_reasons
+
+
+def test_K_tampered_robustness_fingerprint_fails():
+    evidence = make_valid_evidence()
+    assessment = assess_research_robustness(evidence)
+    object.__setattr__(assessment, "experiment_fingerprint", "tampered_exp_fp")
+
+    res = qualify_research_evidence(evidence, robustness_assessment=assessment)
+    assert res.qualified is False
+    assert RejectionReason.FAILED_REPRODUCIBILITY in res.rejection_reasons
+
+
+def test_Q_qualified_evidence_requires_authoritative_robustness_assessment():
+    evidence = make_valid_evidence(robustness_passed=False)
+    res = qualify_research_evidence(evidence)
+    assert res.qualified is False
+    assert RejectionReason.FAILED_ROBUSTNESS in res.rejection_reasons
+
+
+def test_V_qualification_policy_version_included_in_canonical_decision_identity():
+    evidence = make_valid_evidence()
+    policy1 = ResearchQualificationPolicy(policy_version="policy_v1")
+    policy2 = ResearchQualificationPolicy(policy_version="policy_v2")
+
+    res1 = qualify_research_evidence(evidence, policy=policy1)
+    res2 = qualify_research_evidence(evidence, policy=policy2)
+
+    assert res1.policy_version == "policy_v1"
+    assert res2.policy_version == "policy_v2"
+    assert res1.decision_fingerprint != res2.decision_fingerprint
 
 
 # --- AST Structural Invariant Tests ---
