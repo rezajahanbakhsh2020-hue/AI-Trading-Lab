@@ -33,6 +33,7 @@ from src.evaluation.research_constitution import (
     WalkForwardProtocol,
 )
 from src.evaluation.research_runner import (
+    resolve_historical_dataset,
     run_research_experiment,
     validate_and_prepare_dataset,
 )
@@ -265,3 +266,120 @@ def test_M_existing_production_invariants_unaffected():
     )
     direction = Direction.NO_TRADE
     assert direction.value == "NO TRADE"
+
+
+def test_N_resolver_exact_dataset_artifact_resolves_successfully(tmp_path, monkeypatch):
+    """Test A: Exact dataset artifact resolves successfully when present."""
+    data_dir = tmp_path / "data" / "raw" / "xauusd"
+    data_dir.mkdir(parents=True, exist_ok=True)
+    target_csv = data_dir / "xauusd_requested_2025.csv"
+    df = make_sample_data(20)
+    df.to_csv(target_csv, index=False)
+
+    # Monkeypatch repo_root in resolve_historical_dataset or test via scope
+    ds = DatasetScope(
+        dataset_id="xauusd_requested_2025",
+        symbol="XAUUSD",
+        timeframe="1D",
+        start_date="2025-01-01",
+        end_date="2025-01-20",
+    )
+
+    with monkeypatch.context() as m:
+        m.setattr("src.evaluation.research_runner.Path.resolve", lambda self: tmp_path / "src" / "evaluation" / "research_runner.py")
+        resolved_df = resolve_historical_dataset(ds)
+        assert not resolved_df.empty
+        assert len(resolved_df) == 20
+
+
+def test_O_resolver_missing_dataset_with_unrelated_same_symbol_fails_closed(tmp_path, monkeypatch):
+    """Test B: Missing requested dataset with an unrelated same-symbol CSV fails closed."""
+    data_dir = tmp_path / "data" / "raw"
+    data_dir.mkdir(parents=True, exist_ok=True)
+    unrelated_csv = data_dir / "xauusd_unrelated.csv"
+    df = make_sample_data(20)
+    df.to_csv(unrelated_csv, index=False)
+
+    ds = DatasetScope(
+        dataset_id="xauusd_requested_2025",
+        symbol="XAUUSD",
+        timeframe="1D",
+        start_date="2025-01-01",
+        end_date="2025-01-20",
+    )
+
+    with monkeypatch.context() as m:
+        m.setattr("src.evaluation.research_runner.Path.resolve", lambda self: tmp_path / "src" / "evaluation" / "research_runner.py")
+        with pytest.raises(FileNotFoundError) as exc_info:
+            resolve_historical_dataset(ds)
+
+        err_msg = str(exc_info.value)
+        assert "xauusd_requested_2025" in err_msg
+        assert "XAUUSD" in err_msg
+        assert "Silent substitution is intentionally forbidden" in err_msg
+
+
+def test_P_resolver_exact_dataset_id_glob_match(tmp_path, monkeypatch):
+    """Test C: File containing exact dataset_id resolves properly."""
+    data_dir = tmp_path / "data" / "custom_dir"
+    data_dir.mkdir(parents=True, exist_ok=True)
+    target_csv = data_dir / "ds_xauusd_requested_2025_full.csv"
+    df = make_sample_data(20)
+    df.to_csv(target_csv, index=False)
+
+    ds = DatasetScope(
+        dataset_id="xauusd_requested_2025",
+        symbol="XAUUSD",
+        timeframe="1D",
+        start_date="2025-01-01",
+        end_date="2025-01-20",
+    )
+
+    with monkeypatch.context() as m:
+        m.setattr("src.evaluation.research_runner.Path.resolve", lambda self: tmp_path / "src" / "evaluation" / "research_runner.py")
+        resolved_df = resolve_historical_dataset(ds)
+        assert len(resolved_df) == 20
+
+
+def test_Q_resolver_ambiguous_matches_fail_closed(tmp_path, monkeypatch):
+    """Test D: Two ambiguous matching artifacts fail closed."""
+    data_dir = tmp_path / "data" / "custom_dir"
+    data_dir.mkdir(parents=True, exist_ok=True)
+    file1 = data_dir / "ds_xauusd_requested_2025_a.csv"
+    file2 = data_dir / "ds_xauusd_requested_2025_b.csv"
+    df = make_sample_data(20)
+    df.to_csv(file1, index=False)
+    df.to_csv(file2, index=False)
+
+    ds = DatasetScope(
+        dataset_id="xauusd_requested_2025",
+        symbol="XAUUSD",
+        timeframe="1D",
+        start_date="2025-01-01",
+        end_date="2025-01-20",
+    )
+
+    with monkeypatch.context() as m:
+        m.setattr("src.evaluation.research_runner.Path.resolve", lambda self: tmp_path / "src" / "evaluation" / "research_runner.py")
+        with pytest.raises(FileNotFoundError) as exc_info:
+            resolve_historical_dataset(ds)
+
+        err_msg = str(exc_info.value)
+        assert "Ambiguous dataset resolution" in err_msg
+        assert "xauusd_requested_2025" in err_msg
+
+
+def test_R_run_research_experiment_dataset_resolution_failure_handling(tmp_path, monkeypatch):
+    """Test E: run_research_experiment(spec, df=None) preserves fail-closed behavior on dataset resolution failure."""
+    spec = make_valid_spec(start_date="2025-01-01", end_date="2025-04-01")
+    # spec has dataset_id="xauusd_test"
+    # Set repo_root to empty dir
+    empty_repo = tmp_path / "empty_repo"
+    (empty_repo / "data").mkdir(parents=True, exist_ok=True)
+
+    with monkeypatch.context() as m:
+        m.setattr("src.evaluation.research_runner.Path.resolve", lambda self: empty_repo / "src" / "evaluation" / "research_runner.py")
+        evidence = run_research_experiment(spec, df=None)
+
+    assert evidence.promotion_status == PromotionStatus.REJECTED
+    assert RejectionReason.INVALID_DATASET_SCOPE in evidence.rejection_reasons
