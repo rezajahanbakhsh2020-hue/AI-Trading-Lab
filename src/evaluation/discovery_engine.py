@@ -24,6 +24,7 @@ from src.evaluation.discovery_feedback import (
     ResearchDiscoveryFeedback,
     evaluate_candidate_discovery_feedback,
 )
+from src.evaluation.hypothesis_generator import accept_hypothesis_for_research
 from src.evaluation.memory_governance import (
     DiscoveryMemoryGovernanceResult,
     MemoryGovernanceDecision,
@@ -56,6 +57,7 @@ from src.evaluation.research_constitution import (
     EvidencePartition,
     EvidencePartitionRole,
     ExecutionAssumptions,
+    HypothesisStatus,
     PromotionStatus,
     RejectionReason,
     ResearchCandidate,
@@ -406,7 +408,7 @@ class DiscoveryEngine:
                 if cand.hypothesis_template
                 else f"Hypothesis for candidate {cand.candidate_id}"
             )
-            hypothesis = ResearchHypothesis(
+            generated_hypothesis = ResearchHypothesis(
                 statement=hypothesis_stmt,
                 methodology_version=self.criteria.methodology_version,
                 strategy_name=cand.strategy_name,
@@ -418,6 +420,7 @@ class DiscoveryEngine:
                 parameters=dict(cand.parameters),
                 random_seed=cand.random_seed,
                 walk_forward_protocol=wf_protocol,
+                status=HypothesisStatus.GENERATED,
             )
 
             # Stage 0a: Controlled Discovery Feedback
@@ -474,7 +477,7 @@ class DiscoveryEngine:
 
                     research_cand = ResearchCandidate(
                         candidate_id=cand.candidate_id,
-                        hypothesis=hypothesis,
+                        hypothesis=generated_hypothesis,
                         evidence=None,
                         validation_status=PromotionStatus.REJECTED,
                         promotion_status=PromotionStatus.REJECTED,
@@ -583,7 +586,7 @@ class DiscoveryEngine:
                     continue
 
             try:
-                evidence = self._evaluate_candidate(
+                evidence, accepted_hypothesis = self._evaluate_candidate(
                     cand=cand,
                     df_full=data,
                     df_is=df_is,
@@ -596,6 +599,7 @@ class DiscoveryEngine:
                     wf_train_size=wf_train_size,
                     wf_test_size=wf_test_size,
                     seen_fingerprints=seen_candidate_fingerprints,
+                    generated_hypothesis=generated_hypothesis,
                 )
             except Exception as exc:
                 if search_policy and search_policy.fail_fast:
@@ -619,7 +623,7 @@ class DiscoveryEngine:
 
                 research_cand = ResearchCandidate(
                     candidate_id=cand.candidate_id,
-                    hypothesis=hypothesis,
+                    hypothesis=generated_hypothesis,
                     evidence=None,
                     validation_status=PromotionStatus.REJECTED,
                     promotion_status=PromotionStatus.REJECTED,
@@ -661,7 +665,7 @@ class DiscoveryEngine:
 
             research_cand = ResearchCandidate(
                 candidate_id=cand.candidate_id,
-                hypothesis=hypothesis,
+                hypothesis=accepted_hypothesis,
                 evidence=evidence,
                 validation_status=qual_res.status,
                 promotion_status=qual_res.status,
@@ -886,30 +890,34 @@ class DiscoveryEngine:
         wf_train_size: int | None,
         wf_test_size: int | None,
         seen_fingerprints: set[str],
-    ) -> ResearchEvidence:
-        """Evaluate a single candidate by constructing a ResearchExperimentSpec and delegating to run_research_experiment."""
-        hypothesis = (
-            cand.hypothesis_template.replace("{candidate_id}", cand.candidate_id)
-            if cand.hypothesis_template
-            else f"Hypothesis for candidate {cand.candidate_id}"
-        )
+        generated_hypothesis: ResearchHypothesis | None = None,
+    ) -> tuple[ResearchEvidence, ResearchHypothesis]:
+        """Evaluate a single candidate by constructing a ResearchHypothesis, accepting it, and delegating to run_research_experiment."""
+        if generated_hypothesis is None:
+            hypothesis_stmt = (
+                cand.hypothesis_template.replace("{candidate_id}", cand.candidate_id)
+                if cand.hypothesis_template
+                else f"Hypothesis for candidate {cand.candidate_id}"
+            )
+            generated_hypothesis = ResearchHypothesis(
+                statement=hypothesis_stmt,
+                methodology_version=self.criteria.methodology_version,
+                strategy_name=cand.strategy_name,
+                strategy_version=self.criteria.strategy_version,
+                dataset_scope=dataset_scope,
+                execution_assumptions=execution_assumptions,
+                code_provenance=code_provenance,
+                benchmark_reference=self.criteria.benchmark_reference,
+                parameters=dict(cand.parameters),
+                random_seed=cand.random_seed,
+                walk_forward_protocol=wf_protocol,
+                status=HypothesisStatus.GENERATED,
+            )
 
-        spec = ResearchExperimentSpec(
-            hypothesis=hypothesis,
-            methodology_version=self.criteria.methodology_version,
-            strategy_name=cand.strategy_name,
-            strategy_version=self.criteria.strategy_version,
-            dataset_scope=dataset_scope,
-            execution_assumptions=execution_assumptions,
-            code_provenance=code_provenance,
-            benchmark_reference=self.criteria.benchmark_reference,
-            parameters=cand.parameters,
-            random_seed=cand.random_seed,
-            walk_forward_protocol=wf_protocol,
-        )
+        accepted_hypothesis = accept_hypothesis_for_research(generated_hypothesis)
 
         evidence = run_research_experiment(
-            spec=spec,
+            spec=accepted_hypothesis,
             df=df_full,
             criteria=self.criteria,
             registry=self.registry,
@@ -932,4 +940,4 @@ class DiscoveryEngine:
                 created_at_utc=evidence.created_at_utc,
             )
 
-        return evidence
+        return evidence, accepted_hypothesis
