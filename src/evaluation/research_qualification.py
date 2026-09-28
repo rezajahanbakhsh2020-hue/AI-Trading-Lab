@@ -20,6 +20,7 @@ from datetime import datetime, timezone
 import math
 from typing import Any, Optional, Sequence
 
+from src.evaluation.evidence_integrity import ResearchEvidenceIntegrityGate
 from src.evaluation.research_constitution import (
     CodeProvenance,
     DatasetScope,
@@ -115,7 +116,19 @@ def qualify_research_evidence(
     rejection_reasons: list[RejectionReason] = []
     notes: list[str] = []
 
-    # 1. Type validation
+    # 1. Authoritative Pre-Qualification Integrity Gate
+    gate_res = ResearchEvidenceIntegrityGate.validate(
+        evidence,
+        require_exact_timestamps=False,
+        require_walk_forward=policy.require_walk_forward,
+        require_oos=policy.require_oos,
+    )
+    if not gate_res.valid:
+        for r in gate_res.rejection_reasons:
+            if r not in rejection_reasons:
+                rejection_reasons.append(r)
+        notes.extend(gate_res.notes)
+
     if not isinstance(evidence, ResearchEvidence):
         return ResearchQualificationResult(
             qualified=False,

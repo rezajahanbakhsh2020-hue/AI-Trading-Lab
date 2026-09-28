@@ -360,6 +360,8 @@ class EvidencePartition:
     profit_factor: float = 0.0
     observations: int = 0
     additional_metrics: dict[str, float] = field(default_factory=dict)
+    start_timestamp_utc: str | None = None
+    end_timestamp_utc: str | None = None
 
     def __post_init__(self) -> None:
         if not isinstance(self.role, EvidencePartitionRole):
@@ -382,6 +384,33 @@ class EvidencePartition:
         ):
             if not isinstance(val, (int, float)) or math.isnan(val) or math.isinf(val):
                 raise ValueError(f"Partition metric '{metric_name}' must be a finite float, got: {val}")
+
+        if (self.start_timestamp_utc is None) != (self.end_timestamp_utc is None):
+            raise ValueError(
+                "Both start_timestamp_utc and end_timestamp_utc must be provided or both must be None."
+            )
+
+        if self.start_timestamp_utc is not None and self.end_timestamp_utc is not None:
+            if not isinstance(self.start_timestamp_utc, str) or not self.start_timestamp_utc.strip():
+                raise ValueError("start_timestamp_utc must be a non-empty string when provided.")
+            if not isinstance(self.end_timestamp_utc, str) or not self.end_timestamp_utc.strip():
+                raise ValueError("end_timestamp_utc must be a non-empty string when provided.")
+
+            import pandas as pd
+            try:
+                start_dt = pd.to_datetime(self.start_timestamp_utc, utc=True)
+                end_dt = pd.to_datetime(self.end_timestamp_utc, utc=True)
+            except Exception as exc:
+                raise ValueError(f"Invalid timestamp format in EvidencePartition: {exc}") from exc
+
+            if pd.isna(start_dt) or pd.isna(end_dt):
+                raise ValueError("Invalid timestamp format in EvidencePartition.")
+
+            if start_dt > end_dt:
+                raise ValueError(
+                    f"start_timestamp_utc '{self.start_timestamp_utc}' cannot be later "
+                    f"than end_timestamp_utc '{self.end_timestamp_utc}'."
+                )
 
 
 @dataclass(frozen=True)
@@ -417,9 +446,18 @@ class ResearchEvidence:
         if self.promotion_status == PromotionStatus.REJECTED and not self.rejection_reasons:
             raise ValueError("REJECTED evidence must specify at least one RejectionReason.")
 
+        partitions_payload = []
+        for p in self.partitions:
+            p_dict = asdict(p)
+            if p.start_timestamp_utc is None and "start_timestamp_utc" in p_dict:
+                p_dict.pop("start_timestamp_utc")
+            if p.end_timestamp_utc is None and "end_timestamp_utc" in p_dict:
+                p_dict.pop("end_timestamp_utc")
+            partitions_payload.append(p_dict)
+
         evidence_payload = {
             "experiment_fingerprint": self.experiment_fingerprint,
-            "partitions": [asdict(p) for p in self.partitions],
+            "partitions": partitions_payload,
             "robustness_verdict": self.robustness_verdict,
             "benchmark_comparison": self.benchmark_comparison,
             "promotion_status": self.promotion_status.value,
@@ -463,6 +501,8 @@ class ResearchEvidence:
                     "profit_factor": p.profit_factor,
                     "observations": p.observations,
                     "additional_metrics": p.additional_metrics,
+                    "start_timestamp_utc": p.start_timestamp_utc,
+                    "end_timestamp_utc": p.end_timestamp_utc,
                 }
                 for p in self.partitions
             ],

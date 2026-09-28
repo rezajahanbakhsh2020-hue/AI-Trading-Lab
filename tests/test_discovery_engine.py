@@ -213,10 +213,10 @@ def test_discovery_engine_evidence_persistence(
         original_save = de_mod.save_research_experiment
         original_save_campaign = de_mod.save_research_campaign
 
-        def custom_save(ev):
+        def custom_save(ev, base_dir=None):
             return original_save(ev, base_dir=tmp_path)
 
-        def custom_save_campaign(camp):
+        def custom_save_campaign(camp, base_dir=None):
             return original_save_campaign(camp, base_dir=tmp_path)
 
         de_mod.save_research_experiment = custom_save
