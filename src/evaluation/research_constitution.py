@@ -37,6 +37,15 @@ class ResearchCampaignStatus(str, Enum):
     FAILED = "FAILED"
 
 
+class HypothesisStatus(str, Enum):
+    """Explicit lifecycle status for a governed Research Hypothesis."""
+
+    GENERATED = "generated"
+    ACCEPTED_FOR_RESEARCH = "accepted_for_research"
+    REJECTED = "rejected"
+    SUPERSEDED = "superseded"
+
+
 class RejectionReason(str, Enum):
     """Explicit failure and critique reasons for research experiments."""
 
@@ -470,9 +479,11 @@ class ResearchEvidence:
 class ResearchHypothesis:
     """Authoritative domain representation of a trading research hypothesis.
 
-    Captures hypothesis statement, dataset scope, execution assumptions,
-    code provenance, benchmark reference, and parameters. Computes a deterministic
-    `hypothesis_id` and fingerprint using SHA-256 without relying on volatile timestamps.
+    Captures hypothesis statement, source knowledge lineage, source evidence lineage,
+    dataset scope, execution assumptions, code provenance, benchmark reference,
+    generator version, constraints, parameters, and lifecycle status.
+    Computes a deterministic `hypothesis_id` and fingerprint using SHA-256 without
+    relying on volatile timestamps.
     """
 
     statement: str
@@ -486,6 +497,14 @@ class ResearchHypothesis:
     parameters: dict[str, Any] = field(default_factory=dict)
     random_seed: int | None = None
     walk_forward_protocol: WalkForwardProtocol | None = None
+    source_knowledge_ids: tuple[str, ...] = field(default_factory=tuple)
+    source_evidence_ids: tuple[str, ...] = field(default_factory=tuple)
+    hypothesis_version: str = "1.0"
+    generation_method: str = "DIRECT_SPEC"
+    generator_version: str = "1.0"
+    constraints: dict[str, Any] = field(default_factory=dict)
+    status: HypothesisStatus = HypothesisStatus.GENERATED
+    created_at_utc: str = ""
     hypothesis_id: str = field(init=False)
     fingerprint: str = field(init=False)
 
@@ -510,6 +529,11 @@ class ResearchHypothesis:
             self.walk_forward_protocol, WalkForwardProtocol
         ):
             raise TypeError("walk_forward_protocol must be a WalkForwardProtocol instance or None.")
+        if not isinstance(self.status, HypothesisStatus):
+            if isinstance(self.status, str) and self.status in HypothesisStatus.__members__:
+                object.__setattr__(self, "status", HypothesisStatus(self.status))
+            else:
+                raise TypeError(f"status must be a HypothesisStatus enum member, got {type(self.status).__name__}.")
 
         fp = compute_experiment_fingerprint(
             hypothesis=self.statement,
@@ -526,6 +550,32 @@ class ResearchHypothesis:
         )
         object.__setattr__(self, "fingerprint", fp)
         object.__setattr__(self, "hypothesis_id", f"hyp_{fp[:16]}")
+
+    @property
+    def canonical_hypothesis_fingerprint(self) -> str:
+        """Compute extended deterministic SHA-256 fingerprint for hypothesis governance.
+
+        Includes statement, source lineage, scope, assumptions, code provenance,
+        parameters, constraints, and generator version.
+        """
+        return compute_hypothesis_fingerprint(
+            statement=self.statement,
+            methodology_version=self.methodology_version,
+            strategy_name=self.strategy_name,
+            strategy_version=self.strategy_version,
+            dataset_scope=self.dataset_scope,
+            execution_assumptions=self.execution_assumptions,
+            code_provenance=self.code_provenance,
+            benchmark_reference=self.benchmark_reference,
+            parameters=self.parameters,
+            random_seed=self.random_seed,
+            walk_forward_protocol=self.walk_forward_protocol,
+            source_knowledge_ids=self.source_knowledge_ids,
+            source_evidence_ids=self.source_evidence_ids,
+            generation_method=self.generation_method,
+            generator_version=self.generator_version,
+            constraints=self.constraints,
+        )
 
     def to_experiment_spec(self) -> ResearchExperimentSpec:
         """Convert hypothesis into a ResearchExperimentSpec."""
@@ -577,8 +627,83 @@ class ResearchHypothesis:
             "walk_forward_protocol": asdict(self.walk_forward_protocol)
             if self.walk_forward_protocol
             else None,
+            "source_knowledge_ids": list(self.source_knowledge_ids),
+            "source_evidence_ids": list(self.source_evidence_ids),
+            "hypothesis_version": self.hypothesis_version,
+            "generation_method": self.generation_method,
+            "generator_version": self.generator_version,
+            "constraints": dict(self.constraints),
+            "status": self.status.value,
+            "created_at_utc": self.created_at_utc,
             "fingerprint": self.fingerprint,
         }
+
+
+def compute_hypothesis_fingerprint(
+    *,
+    statement: str,
+    methodology_version: str,
+    strategy_name: str,
+    strategy_version: str,
+    dataset_scope: DatasetScope,
+    execution_assumptions: ExecutionAssumptions,
+    code_provenance: CodeProvenance,
+    benchmark_reference: str,
+    parameters: Mapping[str, Any] | None = None,
+    random_seed: int | None = None,
+    walk_forward_protocol: WalkForwardProtocol | None = None,
+    source_knowledge_ids: Sequence[str] = (),
+    source_evidence_ids: Sequence[str] = (),
+    generation_method: str = "DIRECT_SPEC",
+    generator_version: str = "1.0",
+    constraints: Mapping[str, Any] | None = None,
+) -> str:
+    """Compute deterministic SHA-256 fingerprint for a ResearchHypothesis.
+
+    Includes statement, source lineage, scope, assumptions, code provenance,
+    parameters, constraints, and generator version. Excludes volatile creation timestamps.
+    """
+    canonical_payload = {
+        "statement": statement.strip(),
+        "methodology_version": methodology_version.strip(),
+        "strategy_name": strategy_name.strip(),
+        "strategy_version": strategy_version.strip(),
+        "dataset_scope": {
+            "dataset_id": dataset_scope.dataset_id.strip(),
+            "symbol": dataset_scope.symbol.strip(),
+            "timeframe": dataset_scope.timeframe.strip(),
+            "start_date": dataset_scope.start_date.strip(),
+            "end_date": dataset_scope.end_date.strip(),
+        },
+        "execution_assumptions": {
+            "transaction_cost": float(execution_assumptions.transaction_cost),
+            "slippage": float(execution_assumptions.slippage),
+            "latency_ms": float(execution_assumptions.latency_ms),
+        },
+        "code_provenance": {
+            "commit_sha": code_provenance.commit_sha.strip(),
+        },
+        "parameters": parameters or {},
+        "benchmark_reference": benchmark_reference.strip(),
+        "random_seed": random_seed,
+        "source_knowledge_ids": sorted(str(k) for k in source_knowledge_ids),
+        "source_evidence_ids": sorted(str(e) for e in source_evidence_ids),
+        "generation_method": generation_method.strip(),
+        "generator_version": generator_version.strip(),
+        "constraints": constraints or {},
+    }
+    if walk_forward_protocol is not None:
+        canonical_payload["walk_forward_protocol"] = {
+            "train_size": int(walk_forward_protocol.train_size),
+            "test_size": int(walk_forward_protocol.test_size),
+        }
+
+    serialized = json.dumps(
+        canonical_payload,
+        sort_keys=True,
+        ensure_ascii=True,
+    )
+    return hashlib.sha256(serialized.encode("utf-8")).hexdigest()
 
 
 @dataclass(frozen=True)

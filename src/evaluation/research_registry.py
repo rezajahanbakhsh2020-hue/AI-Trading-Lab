@@ -47,6 +47,7 @@ from src.evaluation.research_constitution import (
     RejectionReason,
     ResearchEvidence,
     ResearchExperimentSpec,
+    ResearchHypothesis,
 )
 from src.evaluation.research_robustness import (
     ResearchRobustnessAssessment,
@@ -1084,6 +1085,151 @@ class ResearchRegistryStore:
             results.append(fb)
 
         results.sort(key=lambda fb: fb.feedback_id)
+        return tuple(results)
+
+    def _hypothesis_dir(self) -> Path:
+        return self.base_dir / "hypotheses"
+
+    def register_hypothesis(self, hypothesis: ResearchHypothesis) -> ResearchHypothesis:
+        """Register a research hypothesis idempotently and atomically."""
+        if not isinstance(hypothesis, ResearchHypothesis):
+            raise TypeError("hypothesis must be a ResearchHypothesis instance.")
+
+        target_dir = self._hypothesis_dir()
+        target_dir.mkdir(parents=True, exist_ok=True)
+        file_path = target_dir / f"{hypothesis.hypothesis_id}.json"
+
+        if file_path.exists():
+            existing = self._load_hypothesis_file(file_path)
+            if existing.fingerprint == hypothesis.fingerprint and existing.status == hypothesis.status:
+                return existing
+            raise RegistryConflictError(
+                f"Conflicting research hypothesis exists for hypothesis_id '{hypothesis.hypothesis_id}'. "
+                f"Existing fingerprint: {existing.fingerprint}, status: {existing.status.value}. "
+                f"New fingerprint: {hypothesis.fingerprint}, status: {hypothesis.status.value}."
+            )
+
+        serialized_content = json.dumps(hypothesis.as_dict(), indent=2, sort_keys=True)
+        fd, temp_path = tempfile.mkstemp(dir=target_dir, prefix="hyp_tmp_", suffix=".json")
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as f:
+                f.write(serialized_content)
+            os.replace(temp_path, file_path)
+        except Exception:
+            if os.path.exists(temp_path):
+                try:
+                    os.remove(temp_path)
+                except OSError:
+                    pass
+            raise
+
+        return hypothesis
+
+    def _load_hypothesis_file(self, file_path: Path) -> ResearchHypothesis:
+        if not file_path.exists():
+            raise FileNotFoundError(f"Hypothesis file not found: {file_path}")
+        try:
+            raw = json.loads(file_path.read_text(encoding="utf-8"))
+        except Exception as exc:
+            raise RegistryValidationError(f"Failed to parse JSON from {file_path}: {exc}") from exc
+
+        # Reconstruct DatasetScope, ExecutionAssumptions, CodeProvenance
+        ds_raw = raw.get("dataset_scope", {})
+        dataset_scope = DatasetScope(
+            dataset_id=ds_raw.get("dataset_id", ""),
+            symbol=ds_raw.get("symbol", ""),
+            timeframe=ds_raw.get("timeframe", ""),
+            start_date=ds_raw.get("start_date", ""),
+            end_date=ds_raw.get("end_date", ""),
+        )
+
+        ea_raw = raw.get("execution_assumptions", {})
+        execution_assumptions = ExecutionAssumptions(
+            transaction_cost=float(ea_raw.get("transaction_cost", 0.0)),
+            slippage=float(ea_raw.get("slippage", 0.0)),
+            latency_ms=float(ea_raw.get("latency_ms", 0.0)),
+        )
+
+        cp_raw = raw.get("code_provenance", {})
+        code_provenance = CodeProvenance(
+            commit_sha=cp_raw.get("commit_sha", ""),
+            repository_status=cp_raw.get("repository_status", "clean"),
+            author=cp_raw.get("author", ""),
+        )
+
+        from src.evaluation.research_constitution import HypothesisStatus
+        status_val = raw.get("status", HypothesisStatus.GENERATED.value)
+
+        return ResearchHypothesis(
+            statement=raw.get("statement", ""),
+            methodology_version=raw.get("methodology_version", ""),
+            strategy_name=raw.get("strategy_name", ""),
+            strategy_version=raw.get("strategy_version", ""),
+            dataset_scope=dataset_scope,
+            execution_assumptions=execution_assumptions,
+            code_provenance=code_provenance,
+            benchmark_reference=raw.get("benchmark_reference", ""),
+            parameters=dict(raw.get("parameters", {})),
+            random_seed=raw.get("random_seed"),
+            source_knowledge_ids=tuple(raw.get("source_knowledge_ids", [])),
+            source_evidence_ids=tuple(raw.get("source_evidence_ids", [])),
+            hypothesis_version=raw.get("hypothesis_version", "1.0"),
+            generation_method=raw.get("generation_method", "DIRECT_SPEC"),
+            generator_version=raw.get("generator_version", "1.0"),
+            constraints=dict(raw.get("constraints", {})),
+            status=HypothesisStatus(status_val),
+            created_at_utc=raw.get("created_at_utc", ""),
+        )
+
+    def get_hypothesis_by_id(self, hypothesis_id: str) -> ResearchHypothesis | None:
+        """Retrieve hypothesis by hypothesis_id."""
+        file_path = self._hypothesis_dir() / f"{hypothesis_id}.json"
+        if not file_path.exists():
+            return None
+        return self._load_hypothesis_file(file_path)
+
+    def list_hypotheses(self) -> tuple[ResearchHypothesis, ...]:
+        """List all persisted research hypotheses."""
+        h_dir = self._hypothesis_dir()
+        if not h_dir.exists():
+            return ()
+        records: list[ResearchHypothesis] = []
+        for file_path in sorted(h_dir.glob("*.json")):
+            if file_path.name.startswith("hyp_tmp_"):
+                continue
+            records.append(self._load_hypothesis_file(file_path))
+        records.sort(key=lambda h: h.hypothesis_id)
+        return tuple(records)
+
+    def query_hypotheses(
+        self,
+        *,
+        strategy_name: str | None = None,
+        status: Any | str | None = None,
+        source_knowledge_id: str | None = None,
+        source_evidence_id: str | None = None,
+    ) -> tuple[ResearchHypothesis, ...]:
+        """Read-only query capability over persisted research hypotheses."""
+        from src.evaluation.research_constitution import HypothesisStatus
+
+        all_hypotheses = self.list_hypotheses()
+        results: list[ResearchHypothesis] = []
+
+        status_val = status.value if isinstance(status, HypothesisStatus) else status
+
+        for h in all_hypotheses:
+            if strategy_name and h.strategy_name != strategy_name:
+                continue
+            if status_val and h.status.value != status_val:
+                continue
+            if source_knowledge_id and source_knowledge_id not in h.source_knowledge_ids:
+                continue
+            if source_evidence_id and source_evidence_id not in h.source_evidence_ids:
+                continue
+
+            results.append(h)
+
+        results.sort(key=lambda h: h.hypothesis_id)
         return tuple(results)
 
     def record_pattern_supersession(
