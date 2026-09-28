@@ -80,34 +80,43 @@ class DiscoveryCriteria:
 def resolve_historical_dataset(dataset_scope: DatasetScope) -> pd.DataFrame:
     """Resolve historical dataset strictly matching DatasetScope from repository paths.
 
-    Fails closed if dataset file cannot be found or is invalid.
+    Fails closed if dataset file cannot be found, is ambiguous, or is invalid.
+    Silent substitution based on symbol matching or arbitrary file selection is strictly forbidden.
     """
     symbol_lower = dataset_scope.symbol.lower()
+    dataset_id = dataset_scope.dataset_id
 
-    # Search candidates in repo data directory
+    # Search candidates in repo data directory using explicit dataset_id paths
     repo_root = Path(__file__).resolve().parents[2]
     search_paths = [
-        repo_root / "data" / "raw" / f"{symbol_lower}_daily_2025.csv",
-        repo_root / "data" / "raw" / symbol_lower / f"{dataset_scope.dataset_id}.csv",
-        repo_root / "data" / "processed" / f"{symbol_lower}.csv",
-        repo_root / "data" / f"{dataset_scope.dataset_id}.csv",
+        repo_root / "data" / "raw" / symbol_lower / f"{dataset_id}.csv",
+        repo_root / "data" / "raw" / f"{dataset_id}.csv",
+        repo_root / "data" / "processed" / symbol_lower / f"{dataset_id}.csv",
+        repo_root / "data" / "processed" / f"{dataset_id}.csv",
+        repo_root / "data" / f"{dataset_id}.csv",
     ]
 
     for p in search_paths:
         if p.exists() and p.is_file():
             return load_csv(p)
 
-    glob_matches = list((repo_root / "data").glob(f"**/*{dataset_scope.dataset_id}*.csv"))
-    if glob_matches:
-        return load_csv(glob_matches[0])
+    glob_matches = sorted([
+        p for p in (repo_root / "data").glob(f"**/*{dataset_id}*.csv") if p.is_file()
+    ])
 
-    glob_symbol_matches = list((repo_root / "data").glob(f"**/*{symbol_lower}*.csv"))
-    if glob_symbol_matches:
-        return load_csv(glob_symbol_matches[0])
+    if len(glob_matches) == 1:
+        return load_csv(glob_matches[0])
+    elif len(glob_matches) > 1:
+        raise FileNotFoundError(
+            f"Ambiguous dataset resolution for dataset_id '{dataset_id}' and symbol '{dataset_scope.symbol}'. "
+            f"Multiple matching dataset artifacts found: {[str(p) for p in glob_matches]}. "
+            f"Silent substitution or arbitrary selection is intentionally forbidden."
+        )
 
     raise FileNotFoundError(
-        f"Unable to resolve dataset for symbol '{dataset_scope.symbol}' "
-        f"and dataset_id '{dataset_scope.dataset_id}' from repo data directory."
+        f"Unable to resolve exact approved dataset artifact for dataset_id '{dataset_id}' "
+        f"and symbol '{dataset_scope.symbol}' from repo data directory. "
+        f"Silent substitution is intentionally forbidden."
     )
 
 
