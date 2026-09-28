@@ -10,12 +10,10 @@ No market data generation, silent substitution, or OOS leakage permitted.
 
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass, field
-from datetime import datetime, timezone
 import hashlib
-import json
-import math
-from typing import Any, Mapping, Sequence
+from collections.abc import Sequence
+from dataclasses import dataclass, field
+from datetime import datetime, timezone
 
 import pandas as pd
 
@@ -29,14 +27,34 @@ from src.evaluation.memory_governance import (
     MemoryGovernanceDecision,
     evaluate_candidate_memory_governance,
 )
+from src.evaluation.research_constitution import (
+    CodeProvenance,
+    DatasetScope,
+    EvidencePartitionRole,
+    ExecutionAssumptions,
+    PromotionStatus,
+    RejectionReason,
+    ResearchCampaign,
+    ResearchCampaignStatus,
+    ResearchCandidate,
+    ResearchEvidence,
+    ResearchExperimentSpec,
+    ResearchHypothesis,
+    RobustnessCriteria,
+    WalkForwardProtocol,
+    compute_campaign_fingerprint,
+    compute_criteria_fingerprint,
+    compute_search_policy_fingerprint,
+    resolve_walk_forward_protocol,
+)
 from src.evaluation.research_knowledge import ResearchKnowledgePattern
 from src.evaluation.research_registry import (
     DoNotRepeatConstraint,
     ResearchLearningRecord,
     ResearchRegistryRecord,
     ResearchRegistryStore,
-    _compute_ea_id,
     _compute_cp_id,
+    _compute_ea_id,
     _compute_scope_id,
     construct_learning_record_from_registry_record,
     construct_registry_record_from_evidence,
@@ -45,40 +63,20 @@ from src.evaluation.research_robustness import (
     ResearchRobustnessAssessment,
     assess_research_robustness,
 )
-from src.evaluation.selection_governance import (
-    ResearchSelectionAssessment,
-    ResearchSelectionPolicy,
-    assess_research_selection,
+from src.evaluation.research_runner import (
+    run_research_experiment,
+    validate_and_prepare_dataset,
 )
-from src.evaluation.research_constitution import (
-    CodeProvenance,
-    DatasetScope,
-    EvidencePartition,
-    EvidencePartitionRole,
-    ExecutionAssumptions,
-    PromotionStatus,
-    RejectionReason,
-    ResearchCandidate,
-    ResearchEvidence,
-    ResearchExperimentSpec,
-    ResearchHypothesis,
-    ResearchCampaign,
-    ResearchCampaignStatus,
-    RobustnessCriteria,
-    WalkForwardProtocol,
-    compute_campaign_fingerprint,
-    compute_criteria_fingerprint,
-    compute_search_policy_fingerprint,
-    resolve_walk_forward_protocol,
-)
-from src.evaluation.research_runner import run_research_experiment, validate_and_prepare_dataset
 from src.evaluation.research_store import (
     DEFAULT_CAMPAIGN_DIR,
     DEFAULT_RESEARCH_DIR,
     save_research_campaign,
     save_research_experiment,
 )
-from src.features.indicators import add_returns
+from src.evaluation.selection_governance import (
+    ResearchSelectionAssessment,
+    assess_research_selection,
+)
 from src.strategies.registry import DEFAULT_REGISTRY, StrategyRegistry
 
 
@@ -349,6 +347,8 @@ class DiscoveryEngine:
         memory_governance_results: list[DiscoveryMemoryGovernanceResult] = []
         registry_records: list[ResearchRegistryRecord] = []
         learning_records: list[ResearchLearningRecord] = []
+        robustness_assessment_by_evidence_id: dict[str, ResearchRobustnessAssessment] = {}
+
         registry_store = (
             ResearchRegistryStore(base_dir=persist_registry_dir)
             if persist_evidence and persist_registry_dir
@@ -623,8 +623,16 @@ class DiscoveryEngine:
                     base_dir=persist_registry_dir if persist_registry_dir else DEFAULT_RESEARCH_DIR,
                 )
 
+            # Canonical Robustness Assessment BEFORE qualification (Defect F)
+            rob_assessment = assess_research_robustness(
+                evidence=evidence,
+                robustness_criteria=self.criteria.robustness_criteria,
+            )
+            robustness_assessment_by_evidence_id[evidence.experiment_fingerprint] = rob_assessment
+
+            # Qualify evidence consuming the SAME canonical robustness assessment
             from src.evaluation.research_qualification import qualify_research_evidence
-            qual_res = qualify_research_evidence(evidence)
+            qual_res = qualify_research_evidence(evidence, robustness_assessment=rob_assessment)
 
             if qual_res.qualified:
                 promoted.append(evidence)
@@ -689,7 +697,10 @@ class DiscoveryEngine:
             )
             selection_assessments.append(assessment)
 
-            rob_assessment = assess_research_robustness(
+            # Reuse the EXACT SAME robustness assessment constructed prior to qualification
+            rob_assessment = robustness_assessment_by_evidence_id.get(
+                ev.experiment_fingerprint
+            ) or assess_research_robustness(
                 evidence=ev,
                 robustness_criteria=self.criteria.robustness_criteria,
             )

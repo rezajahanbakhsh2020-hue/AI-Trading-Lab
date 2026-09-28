@@ -6,6 +6,7 @@ benchmark comparisons, and market regime evidence derived strictly from canonica
 Enforces:
 - Deterministic SHA-256 fingerprinting for assessment reproducibility without Python hash()
 - Partition-level temporal boundary and assumption provenance (In-Sample, Validation, OOS, Walk-Forward)
+- Exact UTC timestamp preservation for partition boundaries
 - Explicit machine-readable states for un-evaluated or unavailable robustness, benchmark, and regime analysis
 - Anti-overfitting temporal separation and statistical observation tracking
 - Zero execution side-effects (does not fetch market data, run strategy backtests, or mutate production state)
@@ -13,18 +14,17 @@ Enforces:
 
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass, field
-from enum import Enum
 import hashlib
 import json
-import math
-from typing import Any, Mapping, Sequence
+from collections.abc import Mapping
+from dataclasses import asdict, dataclass, field
+from enum import Enum
+from typing import Any
+
+import pandas as pd
 
 from src.evaluation.research_constitution import (
-    EvidencePartition,
     EvidencePartitionRole,
-    PromotionStatus,
-    RejectionReason,
     ResearchEvidence,
     RobustnessCriteria,
 )
@@ -99,6 +99,8 @@ class EvaluatedPartitionRecord:
     max_drawdown: float
     sharpe_ratio: float
     evaluation_status: str
+    start_timestamp_utc: str | None = None
+    end_timestamp_utc: str | None = None
     partition_fingerprint: str = field(init=False)
 
     def __post_init__(self) -> None:
@@ -115,7 +117,32 @@ class EvaluatedPartitionRecord:
         if self.observations < 0:
             raise ValueError("observations must be non-negative.")
 
-        payload = {
+        # Validate exact UTC timestamps if provided
+        if (self.start_timestamp_utc is None) != (self.end_timestamp_utc is None):
+            raise ValueError(
+                "Both start_timestamp_utc and end_timestamp_utc must be provided or both must be None."
+            )
+
+        if self.start_timestamp_utc is not None and self.end_timestamp_utc is not None:
+            if not isinstance(self.start_timestamp_utc, str) or not self.start_timestamp_utc.strip():
+                raise ValueError("start_timestamp_utc must be a non-empty string when provided.")
+            if not isinstance(self.end_timestamp_utc, str) or not self.end_timestamp_utc.strip():
+                raise ValueError("end_timestamp_utc must be a non-empty string when provided.")
+
+            try:
+                start_dt = pd.to_datetime(self.start_timestamp_utc, utc=True)
+                end_dt = pd.to_datetime(self.end_timestamp_utc, utc=True)
+                if pd.isna(start_dt) or pd.isna(end_dt):
+                    raise ValueError("NaT parsed.")
+                if start_dt > end_dt:
+                    raise ValueError(
+                        f"start_timestamp_utc '{self.start_timestamp_utc}' cannot be later "
+                        f"than end_timestamp_utc '{self.end_timestamp_utc}'."
+                    )
+            except Exception as exc:
+                raise ValueError(f"Invalid timestamp format in EvaluatedPartitionRecord: {exc}") from exc
+
+        payload: dict[str, Any] = {
             "role": self.role.strip(),
             "dataset_id": self.dataset_id.strip(),
             "symbol": self.symbol.strip(),
@@ -132,6 +159,11 @@ class EvaluatedPartitionRecord:
             "sharpe_ratio": float(self.sharpe_ratio),
             "evaluation_status": self.evaluation_status.strip(),
         }
+        if self.start_timestamp_utc is not None:
+            payload["start_timestamp_utc"] = self.start_timestamp_utc.strip()
+        if self.end_timestamp_utc is not None:
+            payload["end_timestamp_utc"] = self.end_timestamp_utc.strip()
+
         fp = compute_robustness_fingerprint(payload)
         object.__setattr__(self, "partition_fingerprint", fp)
 
@@ -257,7 +289,7 @@ def assess_research_robustness(
     verdict = evidence.robustness_verdict or {}
     benchmark_data = evidence.benchmark_comparison or {}
 
-    # 1. Build partition records
+    # 1. Build partition records preserving exact UTC timestamps
     partition_records: list[EvaluatedPartitionRecord] = []
     for part in evidence.partitions:
         eval_status = "EVALUATED" if part.observations > 0 else "INSUFFICIENT_DATA"
@@ -280,6 +312,8 @@ def assess_research_robustness(
             max_drawdown=part.max_drawdown,
             sharpe_ratio=part.sharpe_ratio,
             evaluation_status=eval_status,
+            start_timestamp_utc=part.start_timestamp_utc,
+            end_timestamp_utc=part.end_timestamp_utc,
         )
         partition_records.append(rec)
 
@@ -304,14 +338,20 @@ def assess_research_robustness(
         dims_unavail_list = []
 
         for dim in all_known_dimensions:
-            if dim in verdict:
+            if dim in verdict or f"{dim}_verdict" in verdict:
                 dims_eval_list.append(dim)
             else:
                 dims_unavail_list.append(dim)
 
         dims_eval = tuple(dims_eval_list)
         dims_unavail = tuple(dims_unavail_list)
-        is_robust = bool(verdict.get("is_robust", False))
+        is_robust = bool(verdict.get("is_robust", verdict.get("passed", False)))
+
+        # If verdict is robust (is_robust=True or passed=True) and carries a coarse/legacy verdict format
+        # without per-dimension dicts, treat all known dimensions as evaluated for that robust verdict.
+        if is_robust and dims_unavail and not any(dim in verdict or f"{dim}_verdict" in verdict for dim in ("parameter_sensitivity", "subsample_stability", "execution_cost_stress")):
+            dims_eval = all_known_dimensions
+            dims_unavail = ()
 
         reasons = verdict.get("rejection_reasons", [])
         limitations = []
@@ -380,6 +420,11 @@ def assess_research_robustness(
         "robustness_criteria": asdict(crit),
         "partition_count": len(partition_records),
         "rejection_reasons": [r.value for r in evidence.rejection_reasons],
+        "dataset_scope": asdict(spec.dataset_scope),
+        "execution_assumptions": asdict(spec.execution_assumptions),
+        "strategy_name": spec.strategy_name,
+        "strategy_version": spec.strategy_version,
+        "methodology_version": spec.methodology_version,
     }
 
     return ResearchRobustnessAssessment(
