@@ -42,6 +42,10 @@ class HypothesisGenerationError(ValueError):
     """Raised when hypothesis generation encounters missing or invalid inputs."""
 
 
+class UnacceptedHypothesisError(ValueError):
+    """Raised when an unaccepted hypothesis is submitted for research execution."""
+
+
 @dataclass(frozen=True)
 class KnowledgeHypothesisGeneratorPolicy:
     """Policy governing controlled hypothesis generation from research knowledge."""
@@ -225,15 +229,27 @@ def accept_hypothesis_for_research(hypothesis: ResearchHypothesis) -> ResearchHy
     """Transition hypothesis state from GENERATED to ACCEPTED_FOR_RESEARCH.
 
     Does NOT promote to production or create live signals.
+    Fails closed on missing/incomplete provenance or invalid initial status.
     """
     if not isinstance(hypothesis, ResearchHypothesis):
         raise TypeError("hypothesis must be a ResearchHypothesis instance.")
 
     if hypothesis.status == HypothesisStatus.REJECTED:
         raise ValueError(f"Cannot accept REJECTED hypothesis '{hypothesis.hypothesis_id}' for research.")
+    if hypothesis.status == HypothesisStatus.SUPERSEDED:
+        raise ValueError(f"Cannot accept SUPERSEDED hypothesis '{hypothesis.hypothesis_id}' for research.")
 
-    hyp_dict = hypothesis.as_dict()
-    hyp_dict["status"] = HypothesisStatus.ACCEPTED_FOR_RESEARCH.value
+    if not hypothesis.statement or not hypothesis.statement.strip():
+        raise HypothesisGenerationError("Cannot accept hypothesis with empty statement.")
+
+    if not hypothesis.code_provenance or not hypothesis.code_provenance.commit_sha or not hypothesis.code_provenance.commit_sha.strip():
+        raise HypothesisGenerationError("Cannot accept hypothesis with incomplete or missing CodeProvenance.")
+
+    if not hypothesis.dataset_scope or not hypothesis.dataset_scope.dataset_id or not hypothesis.dataset_scope.symbol or not hypothesis.dataset_scope.timeframe:
+        raise HypothesisGenerationError("Cannot accept hypothesis with incomplete DatasetScope.")
+
+    if not hypothesis.execution_assumptions or hypothesis.execution_assumptions.transaction_cost < 0.0 or hypothesis.execution_assumptions.slippage < 0.0 or hypothesis.execution_assumptions.latency_ms < 0.0:
+        raise HypothesisGenerationError("Cannot accept hypothesis with invalid ExecutionAssumptions.")
 
     return ResearchHypothesis(
         statement=hypothesis.statement,

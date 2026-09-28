@@ -24,6 +24,7 @@ import pandas as pd
 
 from src.data.loader import load_csv
 from src.evaluation.candidate_generator import CandidateSpec
+from src.evaluation.hypothesis_generator import UnacceptedHypothesisError
 from src.evaluation.metrics import max_drawdown, profit_factor, sharpe_ratio, total_return, win_rate
 from src.evaluation.research_constitution import (
     CodeProvenance,
@@ -31,6 +32,7 @@ from src.evaluation.research_constitution import (
     EvidencePartition,
     EvidencePartitionRole,
     ExecutionAssumptions,
+    HypothesisStatus,
     PromotionStatus,
     RejectionReason,
     ResearchEvidence,
@@ -189,6 +191,13 @@ def run_research_experiment(
     Does NOT promote candidates or alter production decision bindings.
     """
     if isinstance(spec, ResearchHypothesis):
+        if spec.status != HypothesisStatus.ACCEPTED_FOR_RESEARCH:
+            raise UnacceptedHypothesisError(
+                f"Hypothesis '{spec.hypothesis_id}' with status '{spec.status.value}' "
+                f"is not accepted for research execution. Only ACCEPTED_FOR_RESEARCH hypotheses can enter execution."
+            )
+        if not spec.code_provenance or not spec.code_provenance.commit_sha or not spec.code_provenance.commit_sha.strip():
+            raise ValueError(f"Hypothesis '{spec.hypothesis_id}' lacks required CodeProvenance commit_sha.")
         spec = spec.to_experiment_spec()
     elif not isinstance(spec, ResearchExperimentSpec):
         raise TypeError("spec must be a ResearchExperimentSpec or ResearchHypothesis instance.")
