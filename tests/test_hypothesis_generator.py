@@ -276,8 +276,22 @@ def test_13_rejected_hypotheses_cannot_enter_research_as_valid():
     hyp = generator.generate([p], context=ctx)[0]
     rejected = reject_hypothesis(hyp, reason="Failed initial review")
 
-    with pytest.raises(ValueError, match="Cannot accept REJECTED hypothesis"):
+    with pytest.raises(ValueError, match="current status is 'rejected'"):
         accept_hypothesis_for_research(rejected)
+
+
+# Test 19: Already accepted hypotheses cannot be re-accepted
+def test_19_already_accepted_hypotheses_cannot_be_reaccepted():
+    generator = KnowledgeHypothesisGenerator()
+    ctx = _make_context()
+    p = _make_pattern()
+
+    hyp = generator.generate([p], context=ctx)[0]
+    accepted = accept_hypothesis_for_research(hyp)
+    assert accepted.status == HypothesisStatus.ACCEPTED_FOR_RESEARCH
+
+    with pytest.raises(ValueError, match="current status is 'accepted_for_research'"):
+        accept_hypothesis_for_research(accepted)
 
 
 # Test 14: Generated hypotheses cannot create live signals
