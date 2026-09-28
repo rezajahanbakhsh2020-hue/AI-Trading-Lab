@@ -165,7 +165,11 @@ def test_F_time_order_violation_fails_closed():
     df_reversed = df.iloc[::-1].reset_index(drop=True)
     ds = DatasetScope("test", "XAUUSD", "1D", "2025-01-01", "2025-04-10")
 
-    prepared = validate_and_prepare_dataset(df_reversed, ds)
+    with pytest.raises(ValueError, match="non-monotonic"):
+        validate_and_prepare_dataset(df_reversed, ds)
+
+    # Correctly ordered dataset succeeds
+    prepared = validate_and_prepare_dataset(df, ds)
     assert prepared["timestamp"].is_monotonic_increasing
 
 

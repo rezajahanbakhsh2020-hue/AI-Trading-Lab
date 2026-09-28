@@ -71,8 +71,13 @@ from src.evaluation.research_constitution import (
     compute_search_policy_fingerprint,
     resolve_walk_forward_protocol,
 )
-from src.evaluation.research_runner import run_research_experiment
-from src.evaluation.research_store import save_research_campaign, save_research_experiment
+from src.evaluation.research_runner import run_research_experiment, validate_and_prepare_dataset
+from src.evaluation.research_store import (
+    DEFAULT_CAMPAIGN_DIR,
+    DEFAULT_RESEARCH_DIR,
+    save_research_campaign,
+    save_research_experiment,
+)
 from src.features.indicators import add_returns
 from src.strategies.registry import DEFAULT_REGISTRY, StrategyRegistry
 
@@ -276,25 +281,7 @@ class DiscoveryEngine:
         Registers every trial in an explicit trial ledger and passes results through
         qualify_research_evidence before findings are synthesized.
         """
-        if not isinstance(df, pd.DataFrame):
-            raise TypeError("df must be a pandas DataFrame.")
-        if df.empty:
-            raise ValueError("df must not be empty.")
-        if "timestamp" not in df.columns and not isinstance(df.index, pd.DatetimeIndex):
-            raise ValueError("df must have a 'timestamp' column or DatetimeIndex.")
-
-        data = df.copy()
-        if "timestamp" in data.columns:
-            data["timestamp"] = pd.to_datetime(data["timestamp"])
-            data = data.sort_values("timestamp").reset_index(drop=True)
-        else:
-            data = data.sort_index()
-
-        if "return" not in data.columns:
-            data = add_returns(data)
-
-        # Validate dataset scope vs DataFrame boundaries
-        self._validate_dataset_scope(data, dataset_scope)
+        data = validate_and_prepare_dataset(df, dataset_scope)
 
         # Search space resolution
         if isinstance(candidates, ResearchSearchSpace):
@@ -631,7 +618,10 @@ class DiscoveryEngine:
             seen_candidate_fingerprints.add(evidence.experiment_fingerprint)
 
             if persist_evidence:
-                save_research_experiment(evidence)
+                save_research_experiment(
+                    evidence,
+                    base_dir=persist_registry_dir if persist_registry_dir else DEFAULT_RESEARCH_DIR,
+                )
 
             from src.evaluation.research_qualification import qualify_research_evidence
             qual_res = qualify_research_evidence(evidence)
@@ -827,7 +817,10 @@ class DiscoveryEngine:
         )
 
         if persist_evidence:
-            save_research_campaign(campaign)
+            save_research_campaign(
+                campaign,
+                base_dir=persist_registry_dir if persist_registry_dir else DEFAULT_CAMPAIGN_DIR,
+            )
 
         return DiscoveryRunResult(
             dataset_scope=dataset_scope,

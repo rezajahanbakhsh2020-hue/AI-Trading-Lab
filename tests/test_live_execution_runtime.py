@@ -39,7 +39,7 @@ def persist_momentum_candidate(
         symbol=symbol,
         timeframe="5m",
         start_date="2025-01-01",
-        end_date="2025-01-02",
+        end_date="2025-01-10",
     )
     spec = ResearchExperimentSpec(
         hypothesis="Persisted live-runtime momentum candidate",
@@ -62,24 +62,30 @@ def persist_momentum_candidate(
         max_drawdown=0.05,
         sharpe_ratio=2.0,
         observations=50,
+        start_timestamp_utc="2025-01-01T00:00:00+00:00",
+        end_timestamp_utc="2025-01-02T00:00:00+00:00",
     )
     part_oos = EvidencePartition(
         role=EvidencePartitionRole.OUT_OF_SAMPLE,
-        start_date="2025-01-01",
-        end_date="2025-01-02",
+        start_date="2025-01-03",
+        end_date="2025-01-05",
         total_return=0.15,
         max_drawdown=0.05,
         sharpe_ratio=1.8,
         observations=30,
+        start_timestamp_utc="2025-01-03T00:00:00+00:00",
+        end_timestamp_utc="2025-01-05T00:00:00+00:00",
     )
     part_wf = EvidencePartition(
         role=EvidencePartitionRole.WALK_FORWARD,
         start_date="2025-01-01",
-        end_date="2025-01-02",
+        end_date="2025-01-05",
         total_return=0.10,
         max_drawdown=0.05,
         sharpe_ratio=1.5,
         observations=30,
+        start_timestamp_utc="2025-01-01T00:00:00+00:00",
+        end_timestamp_utc="2025-01-05T00:00:00+00:00",
     )
     evidence = ResearchEvidence(
         experiment_fingerprint=spec.fingerprint,

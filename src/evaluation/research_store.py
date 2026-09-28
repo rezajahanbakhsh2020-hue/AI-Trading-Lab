@@ -301,6 +301,8 @@ def reconstruct_research_evidence(data: dict[str, Any]) -> ResearchEvidence:
                 profit_factor=float(p_data.get("profit_factor", 0.0)),
                 observations=int(p_data.get("observations", 0)),
                 additional_metrics=p_data.get("additional_metrics", {}),
+                start_timestamp_utc=p_data.get("start_timestamp_utc"),
+                end_timestamp_utc=p_data.get("end_timestamp_utc"),
             )
         )
 

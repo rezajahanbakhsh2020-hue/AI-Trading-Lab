@@ -125,7 +125,8 @@ def validate_and_prepare_dataset(
 ) -> pd.DataFrame:
     """Validate DataFrame schema, timestamp ordering, and DatasetScope boundaries.
 
-    Fails closed on missing columns, non-chronological order, or date scope mismatches.
+    Fails closed on missing columns, non-chronological order, duplicate timestamps,
+    invalid timestamps, or date scope mismatches. Inspects source order BEFORE any sorting.
     """
     if not isinstance(df, pd.DataFrame):
         raise TypeError("df must be a pandas DataFrame.")
@@ -135,24 +136,65 @@ def validate_and_prepare_dataset(
     data = df.copy()
 
     if "timestamp" in data.columns:
-        data["timestamp"] = pd.to_datetime(data["timestamp"])
-        data = data.sort_values("timestamp").reset_index(drop=True)
+        try:
+            parsed_ts = pd.to_datetime(data["timestamp"], utc=True)
+        except Exception as exc:
+            raise ValueError(f"Invalid/unparseable timestamp in dataset: {exc}") from exc
+
+        if parsed_ts.isna().any():
+            raise ValueError("Invalid/unparseable timestamp found in dataset.")
+
+        # Inspect ORIGINAL source order BEFORE any sorting or reindexing
+        if not parsed_ts.is_monotonic_increasing:
+            raise ValueError(
+                "Time-order violation: dataset timestamps are non-monotonic in source order."
+            )
+
+        if not parsed_ts.is_unique:
+            raise ValueError(
+                "Time-order violation: duplicate timestamps detected in source dataset."
+            )
+
+        data["timestamp"] = parsed_ts
         ts_series = data["timestamp"]
+
     elif isinstance(data.index, pd.DatetimeIndex):
-        if not data.index.is_monotonic_increasing:
-            data = data.sort_index()
+        try:
+            if data.index.tz is None:
+                parsed_idx = data.index.tz_localize("UTC")
+            else:
+                parsed_idx = data.index.tz_convert("UTC")
+        except Exception as exc:
+            raise ValueError(f"Timezone normalization failure on DatetimeIndex: {exc}") from exc
+
+        if parsed_idx.isna().any():
+            raise ValueError("Invalid/unparseable timestamp found in DatetimeIndex.")
+
+        # Inspect ORIGINAL index order BEFORE any sorting
+        if not parsed_idx.is_monotonic_increasing:
+            raise ValueError(
+                "Time-order violation: DatetimeIndex is non-monotonic in source order."
+            )
+
+        if not parsed_idx.is_unique:
+            raise ValueError(
+                "Time-order violation: duplicate timestamps detected in DatetimeIndex."
+            )
+
+        data.index = parsed_idx
         ts_series = pd.Series(data.index, index=data.index)
+
     else:
         raise ValueError("df must contain a 'timestamp' column or a DatetimeIndex.")
-
-    if not ts_series.is_monotonic_increasing:
-        raise ValueError("Time-order violation: dataset timestamps are not strictly chronological.")
 
     if "return" not in data.columns:
         data = add_returns(data)
 
-    df_start_str = pd.to_datetime(ts_series.min()).strftime("%Y-%m-%d")
-    df_end_str = pd.to_datetime(ts_series.max()).strftime("%Y-%m-%d")
+    df_start_dt = pd.to_datetime(ts_series.min(), utc=True)
+    df_end_dt = pd.to_datetime(ts_series.max(), utc=True)
+
+    df_start_str = df_start_dt.strftime("%Y-%m-%d")
+    df_end_str = df_end_dt.strftime("%Y-%m-%d")
 
     scope_start = dataset_scope.start_date[:10]
     scope_end = dataset_scope.end_date[:10]
@@ -163,13 +205,17 @@ def validate_and_prepare_dataset(
             f"data boundaries [{df_start_str}, {df_end_str}]."
         )
 
+    scope_start_dt = pd.to_datetime(dataset_scope.start_date, utc=True)
+    scope_end_dt = pd.to_datetime(dataset_scope.end_date, utc=True)
+
     if "timestamp" in data.columns:
-        mask = (data["timestamp"] >= pd.to_datetime(dataset_scope.start_date)) & (
-            data["timestamp"] <= pd.to_datetime(dataset_scope.end_date)
+        mask = (data["timestamp"] >= scope_start_dt) & (
+            data["timestamp"] <= scope_end_dt
         )
         filtered = data.loc[mask].reset_index(drop=True)
     else:
-        filtered = data.loc[dataset_scope.start_date : dataset_scope.end_date]
+        mask = (data.index >= scope_start_dt) & (data.index <= scope_end_dt)
+        filtered = data.loc[mask]
 
     if filtered.empty:
         raise ValueError(
@@ -447,8 +493,18 @@ def _eval_partition(
     else:
         ts = df_part.index
 
-    start_str = pd.to_datetime(ts.min()).strftime("%Y-%m-%d") if len(df_part) > 0 else "1970-01-01"
-    end_str = pd.to_datetime(ts.max()).strftime("%Y-%m-%d") if len(df_part) > 0 else "1970-01-01"
+    if len(df_part) > 0:
+        min_ts = pd.to_datetime(ts.min(), utc=True)
+        max_ts = pd.to_datetime(ts.max(), utc=True)
+        start_str = min_ts.strftime("%Y-%m-%d")
+        end_str = max_ts.strftime("%Y-%m-%d")
+        start_ts_utc = min_ts.isoformat()
+        end_ts_utc = max_ts.isoformat()
+    else:
+        start_str = "1970-01-01"
+        end_str = "1970-01-01"
+        start_ts_utc = "1970-01-01T00:00:00+00:00"
+        end_ts_utc = "1970-01-01T00:00:00+00:00"
 
     add_metrics = {
         "latency_ms": latency_ms,
@@ -468,6 +524,8 @@ def _eval_partition(
                 sharpe_ratio=0.0,
                 observations=len(df_part),
                 additional_metrics=add_metrics,
+                start_timestamp_utc=start_ts_utc,
+                end_timestamp_utc=end_ts_utc,
             ),
             rejections,
         )
@@ -493,6 +551,8 @@ def _eval_partition(
             profit_factor=eval_res.profit_factor,
             observations=eval_res.observations,
             additional_metrics=add_metrics,
+            start_timestamp_utc=start_ts_utc,
+            end_timestamp_utc=end_ts_utc,
         )
         return part, rejections
     except Exception:
@@ -507,6 +567,8 @@ def _eval_partition(
                 sharpe_ratio=0.0,
                 observations=len(df_part),
                 additional_metrics=add_metrics,
+                start_timestamp_utc=start_ts_utc,
+                end_timestamp_utc=end_ts_utc,
             ),
             rejections,
         )
@@ -542,6 +604,18 @@ def _eval_walk_forward(
         rejections.append(RejectionReason.INSUFFICIENT_DATA)
         return None, rejections
 
+    # Validate window chronology and boundaries
+    for i, w in enumerate(windows):
+        if w.train_start >= w.train_end or w.test_start >= w.test_end or w.train_end > w.test_start:
+            rejections.append(RejectionReason.FAILED_WALK_FORWARD)
+            return None, rejections
+
+        if i > 0:
+            prev_w = windows[i - 1]
+            if w.test_start < prev_w.test_start:
+                rejections.append(RejectionReason.FAILED_WALK_FORWARD)
+                return None, rejections
+
     wf_returns: list[float] = []
     positive_windows = 0
 
@@ -574,13 +648,25 @@ def _eval_walk_forward(
     if pos_ratio < crit.min_walk_forward_positive_ratio:
         rejections.append(RejectionReason.FAILED_WALK_FORWARD)
 
+    # Actual test-window span boundaries (first test start to last test end)
+    first_test_idx = windows[0].test_start
+    last_test_idx = windows[-1].test_end - 1
+
     if "timestamp" in df_full.columns:
         ts = df_full["timestamp"]
     else:
         ts = df_full.index
 
-    start_str = pd.to_datetime(ts.min()).strftime("%Y-%m-%d")
-    end_str = pd.to_datetime(ts.max()).strftime("%Y-%m-%d")
+    first_ts_val = ts.iloc[first_test_idx] if hasattr(ts, "iloc") else ts[first_test_idx]
+    last_ts_val = ts.iloc[last_test_idx] if hasattr(ts, "iloc") else ts[last_test_idx]
+
+    min_ts = pd.to_datetime(first_ts_val, utc=True)
+    max_ts = pd.to_datetime(last_ts_val, utc=True)
+
+    start_str = min_ts.strftime("%Y-%m-%d")
+    end_str = max_ts.strftime("%Y-%m-%d")
+    start_ts_utc = min_ts.isoformat()
+    end_ts_utc = max_ts.isoformat()
 
     mean_ret = sum(wf_returns) / len(wf_returns)
 
@@ -601,6 +687,8 @@ def _eval_walk_forward(
             "train_size": float(train_sz),
             "test_size": float(test_sz),
         },
+        start_timestamp_utc=start_ts_utc,
+        end_timestamp_utc=end_ts_utc,
     )
 
     return wf_partition, rejections

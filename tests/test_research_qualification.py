@@ -36,7 +36,7 @@ def make_valid_evidence(
     symbol: str = "XAUUSD",
     timeframe: str = "5m",
     start_date: str = "2025-01-01",
-    end_date: str = "2025-01-02",
+    end_date: str = "2025-01-10",
     transaction_cost: float = 0.001,
     slippage: float = 0.001,
     latency_ms: float = 10.0,
@@ -84,36 +84,42 @@ def make_valid_evidence(
         partitions.append(
             EvidencePartition(
                 role=EvidencePartitionRole.IN_SAMPLE,
-                start_date=start_date,
-                end_date=end_date,
+                start_date="2025-01-01",
+                end_date="2025-01-02",
                 total_return=0.20,
                 max_drawdown=0.05,
                 sharpe_ratio=2.0,
                 observations=is_obs,
+                start_timestamp_utc="2025-01-01T00:00:00+00:00",
+                end_timestamp_utc="2025-01-02T00:00:00+00:00",
             )
         )
     if include_oos:
         partitions.append(
             EvidencePartition(
                 role=EvidencePartitionRole.OUT_OF_SAMPLE,
-                start_date=start_date,
-                end_date=end_date,
+                start_date="2025-01-03",
+                end_date="2025-01-05",
                 total_return=0.15,
                 max_drawdown=0.05,
                 sharpe_ratio=1.8,
                 observations=oos_obs,
+                start_timestamp_utc="2025-01-03T00:00:00+00:00",
+                end_timestamp_utc="2025-01-05T00:00:00+00:00",
             )
         )
     if include_wf:
         partitions.append(
             EvidencePartition(
                 role=EvidencePartitionRole.WALK_FORWARD,
-                start_date=start_date,
-                end_date=end_date,
+                start_date="2025-01-01",
+                end_date="2025-01-05",
                 total_return=0.10,
                 max_drawdown=0.05,
                 sharpe_ratio=1.5,
                 observations=wf_obs,
+                start_timestamp_utc="2025-01-01T00:00:00+00:00",
+                end_timestamp_utc="2025-01-05T00:00:00+00:00",
             )
         )
 
