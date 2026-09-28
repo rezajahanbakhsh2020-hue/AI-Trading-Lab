@@ -31,10 +31,13 @@ from src.evaluation.research_constitution import (
     DatasetScope,
     EvidencePartitionRole,
     ExecutionAssumptions,
+    HypothesisStatus,
     PromotionStatus,
     RejectionReason,
     ResearchEvidence,
+    ResearchHypothesis,
 )
+from src.evaluation.hypothesis_generator import HypothesisGenerationError
 from src.evaluation.research_store import load_research_experiment
 
 
@@ -506,3 +509,187 @@ def test_reproducibility_repeated_runs(
     assert res1.search_space_fingerprint == res2.search_space_fingerprint
     assert [t.candidate_id for t in res1.trial_ledger] == [t.candidate_id for t in res2.trial_ledger]
     assert [ev.evidence_id for ev in res1.promoted_evidence] == [ev.evidence_id for ev in res2.promoted_evidence]
+
+
+def test_governed_hypothesis_lifecycle_normal_execution(
+    sample_market_data, dataset_scope, execution_assumptions, code_provenance, monkeypatch
+):
+    """Test A: Prove CandidateSpec discovery traverses GENERATED -> accept_hypothesis_for_research -> ACCEPTED_FOR_RESEARCH -> run_research_experiment."""
+    import src.evaluation.discovery_engine as de_mod
+
+    accept_calls = []
+    run_calls = []
+
+    orig_accept = de_mod.accept_hypothesis_for_research
+    orig_run = de_mod.run_research_experiment
+
+    def spy_accept(hypothesis):
+        assert hypothesis.status == HypothesisStatus.GENERATED
+        accept_calls.append(hypothesis)
+        return orig_accept(hypothesis)
+
+    def spy_run(spec, **kwargs):
+        run_calls.append(spec)
+        return orig_run(spec, **kwargs)
+
+    monkeypatch.setattr(de_mod, "accept_hypothesis_for_research", spy_accept)
+    monkeypatch.setattr(de_mod, "run_research_experiment", spy_run)
+
+    cand = CandidateSpec("grid", "1.0", "baseline", {"fast_window": 3, "slow_window": 8})
+    engine = DiscoveryEngine(
+        criteria=DiscoveryCriteria(
+            min_observations_is=10,
+            min_observations_oos=5,
+            min_is_sharpe=-10.0,
+            min_validation_sharpe=-10.0,
+            min_oos_sharpe=-10.0,
+            max_oos_sharpe_degradation=100.0,
+            min_walk_forward_positive_ratio=0.0,
+        )
+    )
+
+    result = engine.run_discovery(
+        df=sample_market_data,
+        candidates=(cand,),
+        dataset_scope=dataset_scope,
+        execution_assumptions=execution_assumptions,
+        code_provenance=code_provenance,
+        wf_train_size=30,
+        wf_test_size=15,
+    )
+
+    assert len(accept_calls) == 1
+    assert len(run_calls) == 1
+    assert run_calls[0].status == HypothesisStatus.ACCEPTED_FOR_RESEARCH
+    assert len(result.research_candidates) == 1
+    assert result.research_candidates[0].hypothesis.status == HypothesisStatus.ACCEPTED_FOR_RESEARCH
+
+
+def test_governed_hypothesis_lifecycle_rejection_blocks_execution(
+    sample_market_data, dataset_scope, execution_assumptions, code_provenance, monkeypatch
+):
+    """Test B: Governance rejection during accept_hypothesis_for_research blocks experiment execution."""
+    import src.evaluation.discovery_engine as de_mod
+
+    run_calls = []
+
+    def mock_accept_rejection(hypothesis):
+        raise HypothesisGenerationError("Governance rejection: simulated acceptance failure")
+
+    def spy_run(spec, **kwargs):
+        run_calls.append(spec)
+        return de_mod.run_research_experiment(spec, **kwargs)
+
+    monkeypatch.setattr(de_mod, "accept_hypothesis_for_research", mock_accept_rejection)
+    monkeypatch.setattr(de_mod, "run_research_experiment", spy_run)
+
+    cand = CandidateSpec("grid", "1.0", "baseline", {"fast_window": 3, "slow_window": 8})
+    engine = DiscoveryEngine()
+
+    result = engine.run_discovery(
+        df=sample_market_data,
+        candidates=(cand,),
+        dataset_scope=dataset_scope,
+        execution_assumptions=execution_assumptions,
+        code_provenance=code_provenance,
+    )
+
+    assert run_calls == []
+    assert len(result.promoted_evidence) == 0
+    assert len(result.rejected_evidence) == 0
+    assert len(result.trial_ledger) == 1
+    failed_trial = result.trial_ledger[0]
+    assert failed_trial.status == "FAILED"
+    assert "Governance rejection" in failed_trial.error_message
+    assert len(result.research_candidates) == 1
+    failed_cand = result.research_candidates[0]
+    assert failed_cand.evidence is None
+    assert failed_cand.promotion_status == PromotionStatus.REJECTED
+
+
+def test_governed_hypothesis_lifecycle_survives_full_vertical_slice(
+    sample_market_data, dataset_scope, execution_assumptions, code_provenance
+):
+    """Test C: Accepted hypothesis state survives full vertical slice and remains ACCEPTED_FOR_RESEARCH."""
+    cand_spec = CandidateGeneratorSpec(
+        generator_name="grid_search",
+        generator_version="1.0",
+        strategy_name="baseline",
+        parameter_grid={"fast_window": [3, 5], "slow_window": [8, 12]},
+    )
+    candidates = CandidateGenerator(cand_spec).generate_candidates()
+
+    engine = DiscoveryEngine(
+        criteria=DiscoveryCriteria(
+            min_observations_is=10,
+            min_observations_oos=5,
+            min_is_sharpe=-10.0,
+            min_validation_sharpe=-10.0,
+            min_oos_sharpe=-10.0,
+            max_oos_sharpe_degradation=100.0,
+            min_walk_forward_positive_ratio=0.0,
+        )
+    )
+
+    result = engine.run_discovery(
+        df=sample_market_data,
+        candidates=candidates,
+        dataset_scope=dataset_scope,
+        execution_assumptions=execution_assumptions,
+        code_provenance=code_provenance,
+        wf_train_size=30,
+        wf_test_size=15,
+    )
+
+    assert len(result.research_candidates) == 4
+    for candidate in result.research_candidates:
+        assert candidate.hypothesis.status == HypothesisStatus.ACCEPTED_FOR_RESEARCH
+        assert candidate.hypothesis.hypothesis_id.startswith("hyp_")
+        if candidate.evidence is not None:
+            assert candidate.evidence.experiment_fingerprint == candidate.hypothesis.fingerprint
+
+
+def test_no_direct_discovery_engine_spec_bypass(
+    sample_market_data, dataset_scope, execution_assumptions, code_provenance, monkeypatch
+):
+    """Test D: CandidateSpec-driven discovery passes ResearchHypothesis directly to run_research_experiment, not ResearchExperimentSpec."""
+    import src.evaluation.discovery_engine as de_mod
+
+    passed_specs = []
+
+    orig_run = de_mod.run_research_experiment
+
+    def spy_run(spec, **kwargs):
+        passed_specs.append(spec)
+        return orig_run(spec, **kwargs)
+
+    monkeypatch.setattr(de_mod, "run_research_experiment", spy_run)
+
+    cand = CandidateSpec("grid", "1.0", "baseline", {"fast_window": 3, "slow_window": 8})
+    engine = DiscoveryEngine(
+        criteria=DiscoveryCriteria(
+            min_observations_is=10,
+            min_observations_oos=5,
+            min_is_sharpe=-10.0,
+            min_validation_sharpe=-10.0,
+            min_oos_sharpe=-10.0,
+            max_oos_sharpe_degradation=100.0,
+            min_walk_forward_positive_ratio=0.0,
+        )
+    )
+
+    engine.run_discovery(
+        df=sample_market_data,
+        candidates=(cand,),
+        dataset_scope=dataset_scope,
+        execution_assumptions=execution_assumptions,
+        code_provenance=code_provenance,
+        wf_train_size=30,
+        wf_test_size=15,
+    )
+
+    assert len(passed_specs) == 1
+    spec = passed_specs[0]
+    assert isinstance(spec, ResearchHypothesis)
+    assert not type(spec).__name__ == "ResearchExperimentSpec"
+    assert spec.status == HypothesisStatus.ACCEPTED_FOR_RESEARCH
