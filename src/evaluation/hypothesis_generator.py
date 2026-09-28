@@ -197,11 +197,11 @@ class KnowledgeHypothesisGenerator:
             )
             generated_hypotheses.append(hyp)
 
-        # Deduplicate hypotheses deterministically by fingerprint
+        # Deduplicate hypotheses deterministically by canonical_hypothesis_fingerprint
         unique_hypotheses: dict[str, ResearchHypothesis] = {}
         for h in generated_hypotheses:
-            if h.fingerprint not in unique_hypotheses:
-                unique_hypotheses[h.fingerprint] = h
+            if h.canonical_hypothesis_fingerprint not in unique_hypotheses:
+                unique_hypotheses[h.canonical_hypothesis_fingerprint] = h
 
         return tuple(sorted(unique_hypotheses.values(), key=lambda h: h.hypothesis_id))
 

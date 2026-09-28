@@ -535,7 +535,30 @@ class ResearchHypothesis:
             else:
                 raise TypeError(f"status must be a HypothesisStatus enum member, got {type(self.status).__name__}.")
 
-        fp = compute_hypothesis_fingerprint(
+        fp = compute_experiment_fingerprint(
+            hypothesis=self.statement,
+            methodology_version=self.methodology_version,
+            strategy_name=self.strategy_name,
+            strategy_version=self.strategy_version,
+            dataset_scope=self.dataset_scope,
+            execution_assumptions=self.execution_assumptions,
+            code_provenance=self.code_provenance,
+            benchmark_reference=self.benchmark_reference,
+            parameters=self.parameters,
+            random_seed=self.random_seed,
+            walk_forward_protocol=self.walk_forward_protocol,
+        )
+        object.__setattr__(self, "fingerprint", fp)
+        object.__setattr__(self, "hypothesis_id", f"hyp_{fp[:16]}")
+
+    @property
+    def canonical_hypothesis_fingerprint(self) -> str:
+        """Compute extended deterministic SHA-256 fingerprint for hypothesis governance.
+
+        Includes statement, source lineage, scope, assumptions, code provenance,
+        parameters, constraints, and generator version.
+        """
+        return compute_hypothesis_fingerprint(
             statement=self.statement,
             methodology_version=self.methodology_version,
             strategy_name=self.strategy_name,
@@ -553,8 +576,6 @@ class ResearchHypothesis:
             generator_version=self.generator_version,
             constraints=self.constraints,
         )
-        object.__setattr__(self, "fingerprint", fp)
-        object.__setattr__(self, "hypothesis_id", f"hyp_{fp[:16]}")
 
     def to_experiment_spec(self) -> ResearchExperimentSpec:
         """Convert hypothesis into a ResearchExperimentSpec."""

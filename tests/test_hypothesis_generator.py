@@ -366,5 +366,4 @@ def test_18_existing_research_evidence_behavior_remains_compatible():
 
     assert spec.hypothesis == hyp.statement
     assert spec.strategy_name == hyp.strategy_name
-    assert len(spec.fingerprint) == 64
-    assert len(hyp.fingerprint) == 64
+    assert spec.fingerprint == hyp.fingerprint
