@@ -35,11 +35,14 @@ from src.evaluation.research_constitution import (
     PromotionStatus,
     RejectionReason,
     ResearchCampaign,
+    ResearchCampaignDefinition,
     ResearchCampaignStatus,
     ResearchCandidate,
     ResearchEvidence,
     ResearchExperimentSpec,
     ResearchHypothesis,
+    ResearchPlannedTrial,
+    ResearchTrialPlan,
     RobustnessCriteria,
     WalkForwardProtocol,
     compute_campaign_fingerprint,
@@ -70,6 +73,7 @@ from src.evaluation.research_runner import (
 from src.evaluation.research_store import (
     DEFAULT_CAMPAIGN_DIR,
     DEFAULT_RESEARCH_DIR,
+    ResearchCampaignStore,
     save_research_campaign,
     save_research_experiment,
 )
@@ -316,6 +320,63 @@ class DiscoveryEngine:
             code_provenance=code_provenance,
             candidate_ids=cand_ids,
         )
+
+        campaign_store = (
+            ResearchCampaignStore(base_dir=persist_registry_dir)
+            if persist_evidence and persist_registry_dir
+            else ResearchCampaignStore()
+        )
+
+        definition = ResearchCampaignDefinition(
+            search_space_fingerprint=search_space.search_fingerprint,
+            search_policy_fingerprint=search_policy_fp,
+            criteria_fingerprint=criteria_fp,
+            dataset_scope=dataset_scope,
+            execution_assumptions=execution_assumptions,
+            code_provenance=code_provenance,
+            methodology_version=self.criteria.methodology_version,
+            candidate_ids=cand_ids,
+            trial_count=len(cand_ids),
+        )
+
+        planned_trials = [
+            ResearchPlannedTrial(
+                campaign_id=campaign_id,
+                trial_id=f"{search_space.search_id}_trial_{idx}",
+                trial_index=idx,
+                candidate_id=cand.candidate_id,
+                candidate_fingerprint=cand.candidate_id,
+                hypothesis_fingerprint=cand.candidate_id,
+                strategy_name=cand.strategy_name,
+                strategy_version=self.criteria.strategy_version,
+                dataset_id=dataset_scope.dataset_id,
+                execution_assumptions_id=f"ea_{hashlib.sha256(str(execution_assumptions).encode('utf-8')).hexdigest()[:8]}",
+            )
+            for idx, cand in enumerate(eval_candidates)
+        ]
+
+        plan = ResearchTrialPlan(
+            campaign_id=campaign_id,
+            definition_fingerprint=definition.definition_fingerprint,
+            trials=tuple(planned_trials),
+        )
+
+        if persist_evidence:
+            campaign_store.save_definition(definition)
+            campaign_store.save_trial_plan(plan)
+            try:
+                curr_state = campaign_store.load_lifecycle_state(campaign_id)
+                current_status = ResearchCampaignStatus(curr_state["status"])
+            except Exception:
+                current_status = None
+
+            if current_status not in (
+                ResearchCampaignStatus.COMPLETED,
+                ResearchCampaignStatus.TRUNCATED,
+                ResearchCampaignStatus.FAILED,
+                ResearchCampaignStatus.CANCELLED,
+            ):
+                campaign_store.save_lifecycle_state(campaign_id, ResearchCampaignStatus.RUNNING)
 
         # Resolve effective WalkForwardProtocol from dataset length and optional parameters
         n = len(data)
@@ -829,9 +890,23 @@ class DiscoveryEngine:
             selected_candidate_ids=selected_ids,
             status=campaign_status,
             created_at_utc=datetime.now(timezone.utc).isoformat(),
+            definition_fingerprint=definition.definition_fingerprint,
+            trial_plan_fingerprint=plan.plan_fingerprint,
+            executed_trial_count=sum(1 for t in trial_records if t.status in ("COMPLETED", "QUALIFIED", "REJECTED")),
+            failed_trial_count=sum(1 for t in trial_records if t.status == "FAILED"),
+            blocked_trial_count=sum(1 for t in trial_records if t.status == "BLOCKED"),
         )
 
         if persist_evidence:
+            try:
+                curr_state = campaign_store.load_lifecycle_state(campaign_id)
+                curr_status = ResearchCampaignStatus(curr_state["status"])
+            except Exception:
+                curr_status = None
+
+            if curr_status != campaign_status:
+                campaign_store.save_lifecycle_state(campaign_id, campaign_status)
+
             save_research_campaign(
                 campaign,
                 base_dir=persist_registry_dir if persist_registry_dir else DEFAULT_CAMPAIGN_DIR,
