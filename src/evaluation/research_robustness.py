@@ -347,12 +347,6 @@ def assess_research_robustness(
         dims_unavail = tuple(dims_unavail_list)
         is_robust = bool(verdict.get("is_robust", verdict.get("passed", False)))
 
-        # If verdict is robust (is_robust=True or passed=True) and carries a coarse/legacy verdict format
-        # without per-dimension dicts, treat all known dimensions as evaluated for that robust verdict.
-        if is_robust and dims_unavail and not any(dim in verdict or f"{dim}_verdict" in verdict for dim in ("parameter_sensitivity", "subsample_stability", "execution_cost_stress")):
-            dims_eval = all_known_dimensions
-            dims_unavail = ()
-
         reasons = verdict.get("rejection_reasons", [])
         limitations = []
         if "INSUFFICIENT_STATISTICAL_SAMPLE" in reasons or "INSUFFICIENT_DATA" in reasons:

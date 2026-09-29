@@ -63,6 +63,8 @@ class PromotedCandidateArtifact:
     timeframe: str
     parameters: dict[str, Any] = field(default_factory=dict)
     policy: ProductionPromotionPolicy = field(default_factory=ProductionPromotionPolicy)
+    governance_decision: Any | None = None
+    governance_decision_fingerprint: str | None = None
     artifact_fingerprint: str = field(init=False)
 
     def __post_init__(self) -> None:
@@ -84,7 +86,9 @@ class PromotedCandidateArtifact:
             merged_params.update(self.parameters)
         object.__setattr__(self, "parameters", merged_params)
 
-        validate_promotion_eligibility(self.evidence, policy=self.policy)
+        if self.governance_decision_fingerprint is None and self.governance_decision is not None:
+            object.__setattr__(self, "governance_decision_fingerprint", getattr(self.governance_decision, "decision_fingerprint", None))
+        validate_promotion_eligibility(self.evidence, policy=self.policy, governance_decision=self.governance_decision, governance_decision_fingerprint=self.governance_decision_fingerprint)
 
         if self.evidence.experiment_fingerprint != self.evidence.spec.fingerprint:
             raise ValueError(
@@ -124,6 +128,7 @@ class PromotedCandidateArtifact:
             "timeframe": self.timeframe,
             "parameters": self.parameters,
             "policy_version": self.policy.policy_version,
+            "governance_decision_fingerprint": self.governance_decision_fingerprint,
         }
         serialized = json.dumps(payload, sort_keys=True, ensure_ascii=True)
         object.__setattr__(
@@ -142,6 +147,8 @@ class PromotedCandidateArtifact:
         timeframe: str,
         parameters: Optional[dict[str, Any]] = None,
         policy: Optional[ProductionPromotionPolicy] = None,
+        governance_decision: Any | None = None,
+        governance_decision_fingerprint: str | None = None,
     ) -> "PromotedCandidateArtifact":
         """Reconstitute a candidate solely from persisted research evidence.
 
@@ -159,6 +166,8 @@ class PromotedCandidateArtifact:
             timeframe=timeframe,
             parameters=dict(parameters) if parameters is not None else dict(evidence.spec.parameters),
             policy=policy if policy is not None else ProductionPromotionPolicy(),
+            governance_decision=governance_decision,
+            governance_decision_fingerprint=governance_decision_fingerprint,
         )
 
 
@@ -218,50 +227,67 @@ def validate_production_scope(
 def validate_promotion_eligibility(
     evidence: ResearchEvidence,
     policy: Optional[ProductionPromotionPolicy] = None,
+    governance_decision: Any | None = None,
+    governance_decision_fingerprint: str | None = None,
     now: Optional[datetime] = None,
 ) -> bool:
     """Validate that research evidence satisfies production promotion criteria.
 
-    Delegates strictly through canonical research evidence qualification.
-    Fails closed if evidence is missing, unpromoted, rejected, or invalid.
+    Consumes canonical governance decision. Fails closed if evidence is missing,
+    unpromoted, rejected, or invalid. Does NOT recompute qualification.
     """
-    from src.evaluation.research_qualification import (
-        ResearchQualificationPolicy,
-        qualify_research_evidence,
-    )
-
     if policy is None:
         policy = ProductionPromotionPolicy()
 
     if not isinstance(evidence, ResearchEvidence):
         raise TypeError("evidence must be a ResearchEvidence instance.")
 
-    qual_policy = ResearchQualificationPolicy(
-        allowed_statuses=policy.allowed_statuses,
-        max_evidence_age_days=policy.max_evidence_age_days,
-        require_robustness=policy.require_robustness_pass,
-    )
+    if governance_decision is not None:
+        if not getattr(governance_decision, "qualified", False):
+            raise ValueError(
+                f"Evidence '{evidence.evidence_id}' supplied governance decision is rejected."
+            )
+        if getattr(governance_decision, "experiment_fingerprint", "") != evidence.experiment_fingerprint:
+            raise ValueError(
+                f"Governance decision experiment fingerprint '{getattr(governance_decision, 'experiment_fingerprint', '')}' "
+                f"does not match evidence fingerprint '{evidence.experiment_fingerprint}'."
+            )
+        if governance_decision_fingerprint is not None:
+            dec_fp = getattr(governance_decision, "decision_fingerprint", None)
+            if dec_fp != governance_decision_fingerprint:
+                raise ValueError(
+                    f"Governance decision fingerprint '{dec_fp}' does not match "
+                    f"expected fingerprint '{governance_decision_fingerprint}'."
+                )
 
-    qual_result = qualify_research_evidence(evidence, policy=qual_policy, now=now)
-    if not qual_result.qualified:
-        reasons = [r.value for r in qual_result.rejection_reasons]
-        if RejectionReason.STALE_INVALID_DATA in qual_result.rejection_reasons or "stale" in qual_result.qualification_notes:
-            raise ValueError(
-                f"Evidence '{evidence.evidence_id}' is stale or invalid ({qual_result.qualification_notes})."
-            )
-        if RejectionReason.CRITIQUE_REJECTED in qual_result.rejection_reasons or evidence.promotion_status not in policy.allowed_statuses:
-            raise ValueError(
-                f"Evidence '{evidence.evidence_id}' has status '{evidence.promotion_status.value}' "
-                f"which is not allowed for production (allowed: {[s.value for s in policy.allowed_statuses]})."
-            )
-        if evidence.rejection_reasons:
-            orig_reasons = [r.value for r in evidence.rejection_reasons]
-            raise ValueError(
-                f"Evidence '{evidence.evidence_id}' contains rejection reasons: {orig_reasons}"
-            )
+    if evidence.promotion_status not in policy.allowed_statuses:
         raise ValueError(
-            f"Evidence '{evidence.evidence_id}' failed promotion qualification: {qual_result.qualification_notes} (reasons: {reasons})"
+            f"Evidence '{evidence.evidence_id}' has status '{evidence.promotion_status.value}' "
+            f"which is not allowed for production (allowed: {[s.value for s in policy.allowed_statuses]})."
         )
+
+    if evidence.rejection_reasons:
+        orig_reasons = [r.value for r in evidence.rejection_reasons]
+        raise ValueError(
+            f"Evidence '{evidence.evidence_id}' contains rejection reasons: {orig_reasons}"
+        )
+
+    if policy.max_evidence_age_days is not None and evidence.created_at_utc:
+        try:
+            created = datetime.fromisoformat(str(evidence.created_at_utc).replace("Z", "+00:00"))
+            ref_now = now or datetime.now(timezone.utc)
+            if ref_now.tzinfo is None:
+                ref_now = ref_now.replace(tzinfo=timezone.utc)
+            age_days = (ref_now - created).total_seconds() / 86400.0
+            if age_days > policy.max_evidence_age_days:
+                raise ValueError(
+                    f"Evidence '{evidence.evidence_id}' is stale: age ({age_days:.1f} days) "
+                    f"exceeds max allowed age ({policy.max_evidence_age_days} days)."
+                )
+        except (ValueError, TypeError) as exc:
+            if "exceeds max allowed age" in str(exc):
+                raise
+            pass
 
     return True
 

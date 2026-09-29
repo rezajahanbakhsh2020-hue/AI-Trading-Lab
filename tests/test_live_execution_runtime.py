@@ -91,7 +91,14 @@ def persist_momentum_candidate(
         experiment_fingerprint=spec.fingerprint,
         spec=spec,
         partitions=(part_is, part_oos, part_wf),
-        robustness_verdict={"passed": True},
+        robustness_verdict={
+            "passed": True,
+            "parameter_sensitivity": {"passed": True},
+            "subsample_stability": {"passed": True},
+            "execution_cost_stress": {"passed": True},
+            "statistical_validation": {"passed": True},
+            "anti_overfitting": {"passed": True},
+        },
         promotion_status=PromotionStatus.PROMOTABLE,
         rejection_reasons=(),
     )

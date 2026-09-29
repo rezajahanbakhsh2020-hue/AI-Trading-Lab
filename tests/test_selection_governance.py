@@ -110,13 +110,19 @@ def make_test_evidence(
     )
 
     robustness = {"is_robust": True}
+    for dim in ["parameter_sensitivity", "subsample_stability", "execution_cost_stress", "anti_overfitting"]:
+        robustness[dim] = {"passed": True, "score": 0.9, "is_valid": True}
     if p_value is not None:
         robustness["statistical_validation"] = {
             "p_value": float(p_value),
             "t_statistic": 2.5,
             "observation_count": 50,
             "is_valid": True,
+            "passed": True,
         }
+    else:
+        # Intentionally omit statistical_validation if p_value is None
+        pass
 
     return ResearchEvidence(
         experiment_fingerprint=spec.fingerprint,
@@ -424,7 +430,9 @@ def test_promotion_and_qualification_gates_unaffected():
     """Verify promotion safety gate remains authoritative and independent of selection correction."""
     ev = make_test_evidence(p_value=0.01)
     from src.evaluation.research_qualification import qualify_research_evidence
-    qual_res = qualify_research_evidence(ev)
+    from src.evaluation.research_robustness import assess_research_robustness
+    rob = assess_research_robustness(ev)
+    qual_res = qualify_research_evidence(ev, robustness_assessment=rob)
 
     assert qual_res.qualified is True
     # Selection correction metadata does not alter qualification outcome

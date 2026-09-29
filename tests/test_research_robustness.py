@@ -406,7 +406,8 @@ def test_R_selection_governance_remains_canonical() -> None:
 
 def test_S_qualification_remains_canonical() -> None:
     ev = make_sample_evidence()
-    qual_res = qualify_research_evidence(ev)
+    rob = assess_research_robustness(ev)
+    qual_res = qualify_research_evidence(ev, robustness_assessment=rob)
     assert qual_res.qualified is True
     assert qual_res.evidence_fingerprint == ev.experiment_fingerprint
 

@@ -348,6 +348,7 @@ class DiscoveryEngine:
         registry_records: list[ResearchRegistryRecord] = []
         learning_records: list[ResearchLearningRecord] = []
         robustness_assessment_by_evidence_id: dict[str, ResearchRobustnessAssessment] = {}
+        governance_decision_by_evidence_id: dict[str, Any] = {}
 
         registry_store = (
             ResearchRegistryStore(base_dir=persist_registry_dir)
@@ -633,6 +634,7 @@ class DiscoveryEngine:
             # Qualify evidence consuming the SAME canonical robustness assessment
             from src.evaluation.research_qualification import qualify_research_evidence
             qual_res = qualify_research_evidence(evidence, robustness_assessment=rob_assessment)
+            governance_decision_by_evidence_id[evidence.experiment_fingerprint] = qual_res
 
             if qual_res.qualified:
                 promoted.append(evidence)
@@ -700,10 +702,12 @@ class DiscoveryEngine:
             # Reuse the EXACT SAME robustness assessment constructed prior to qualification
             rob_assessment = robustness_assessment_by_evidence_id.get(
                 ev.experiment_fingerprint
-            ) or assess_research_robustness(
-                evidence=ev,
-                robustness_criteria=self.criteria.robustness_criteria,
             )
+            if rob_assessment is None:
+                raise RuntimeError(
+                    f"Canonical robustness assessment missing for evidence '{ev.experiment_fingerprint}'. "
+                    f"Discovery engine must execute robustness exactly once."
+                )
             robustness_assessments.append(rob_assessment)
 
             # Match evidence to its trial record

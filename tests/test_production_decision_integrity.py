@@ -129,7 +129,14 @@ def make_promoted_evidence(
         experiment_fingerprint=spec.fingerprint,
         spec=spec,
         partitions=(part_is, part_oos, part_wf),
-        robustness_verdict={"passed": robustness_passed},
+        robustness_verdict={
+            "passed": robustness_passed,
+            "parameter_sensitivity": {"passed": True},
+            "subsample_stability": {"passed": True},
+            "execution_cost_stress": {"passed": True},
+            "statistical_validation": {"passed": True},
+            "anti_overfitting": {"passed": True},
+        } if robustness_passed else {"passed": False, "is_robust": False},
         promotion_status=status,
         rejection_reasons=rejection_reasons,
     )
