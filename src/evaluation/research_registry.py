@@ -589,12 +589,15 @@ class ResearchRegistryStore:
         self, evidence_fingerprint: str
     ) -> ResearchRegistryRecord | None:
         """Retrieve record matching evidence_fingerprint."""
-        for file_path in self.base_dir.glob("*/*.json"):
-            if file_path.name.startswith("rec_tmp_"):
+        for exp_dir in self.base_dir.iterdir():
+            if not exp_dir.is_dir() or exp_dir.name in ("learning", "knowledge", "feedback", "hypotheses"):
                 continue
-            rec = self._load_record_file(file_path)
-            if rec.evidence_fingerprint == evidence_fingerprint:
-                return rec
+            for file_path in exp_dir.glob("*.json"):
+                if file_path.name.startswith("rec_tmp_"):
+                    continue
+                rec = self._load_record_file(file_path)
+                if rec.evidence_fingerprint == evidence_fingerprint:
+                    return rec
         return None
 
     def get_by_experiment_fingerprint(

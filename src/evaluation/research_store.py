@@ -1110,3 +1110,33 @@ class ResearchCampaignStore:
             )
 
         return decision
+
+    def save_campaign_learning(self, artifact: Any) -> Path:
+        """Persist a GovernedCampaignLearningArtifact object to disk as JSON."""
+        cdir = self._campaign_dir(artifact.campaign_id)
+        cdir.mkdir(parents=True, exist_ok=True)
+        path = cdir / "campaign_learning.json"
+        if path.exists():
+            existing = self.load_campaign_learning(artifact.campaign_id)
+            if existing.artifact_fingerprint != artifact.artifact_fingerprint:
+                raise FileExistsError(
+                    f"Cannot overwrite campaign learning artifact at '{path}' with conflicting artifact fingerprint."
+                )
+            return path
+        content = json.dumps(artifact.as_dict(), indent=2)
+        path.write_text(content, encoding="utf-8")
+        return path
+
+    def load_campaign_learning(self, campaign_id: str) -> Any:
+        """Load and reconstruct a GovernedCampaignLearningArtifact object from disk."""
+        from src.evaluation.campaign_learning import GovernedCampaignLearningArtifact
+
+        path = self._campaign_dir(campaign_id) / "campaign_learning.json"
+        if not path.exists():
+            raise FileNotFoundError(f"Campaign learning artifact not found at: {path}")
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except Exception as exc:
+            raise ValueError(f"Failed to parse campaign learning JSON at {path}: {exc}") from exc
+
+        return GovernedCampaignLearningArtifact.from_dict(data)
