@@ -78,124 +78,18 @@ def _selection_stability_score(
     return None
 
 
-def _fallback_selection(
-    results_dir: str | Path,
-) -> dict[str, Any]:
-    """
-    Provide a minimal selection fallback for a directly supplied
-    stability report.
-
-    This keeps the readiness layer compatible with both the
-    production-selection contract and a simple stability report.
-    """
-    path = Path(results_dir) / "stability_report.csv"
-
-    if not path.exists():
-        return {
-            "strategy": None,
-            "stability_score": None,
-            "candidates": [],
-        }
-
-    try:
-        import pandas as pd
-
-        frame = pd.read_csv(path)
-    except Exception:
-        return {
-            "strategy": None,
-            "stability_score": None,
-            "candidates": [],
-        }
-
-    if frame.empty or "strategy" not in frame.columns:
-        return {
-            "strategy": None,
-            "stability_score": None,
-            "candidates": [],
-        }
-
-    score_column = None
-
-    for column in (
-        "stability_score",
-        "stability",
-        "score",
-    ):
-        if column in frame.columns:
-            score_column = column
-            break
-
-    if score_column is None:
-        return {
-            "strategy": None,
-            "stability_score": None,
-            "candidates": [],
-        }
-
-    candidates = []
-
-    for _, row in frame.iterrows():
-        try:
-            score = float(row[score_column])
-        except (TypeError, ValueError):
-            continue
-
-        candidates.append(
-            {
-                "strategy": str(row["strategy"]),
-                "stability_score": score,
-            }
-        )
-
-    candidates.sort(
-        key=lambda item: item["stability_score"],
-        reverse=True,
-    )
-
-    if not candidates:
-        return {
-            "strategy": None,
-            "stability_score": None,
-            "candidates": [],
-        }
-
-    best = candidates[0]
-
-    return {
-        "strategy": best["strategy"],
-        "stability_score": best["stability_score"],
-        "candidates": candidates,
-    }
-
-
 def _select_strategy(
     results_dir: str | Path,
 ) -> dict[str, Any]:
     """
-    Use the existing production selector first.
-
-    If the selector cannot resolve a strategy from a directly
-    supplied stability report, fall back to that report without
-    changing the existing selector.
+    Consume authoritative production strategy selection.
     """
     selection = select_production_strategy(
         results_dir=results_dir,
     )
 
     if not isinstance(selection, dict):
-        selection = {}
-
-    if (
-        _selection_strategy(selection) is not None
-        and _selection_stability_score(selection) is not None
-    ):
-        return selection
-
-    fallback = _fallback_selection(results_dir)
-
-    if fallback["strategy"] is not None:
-        return fallback
+        return {}
 
     return selection
 
