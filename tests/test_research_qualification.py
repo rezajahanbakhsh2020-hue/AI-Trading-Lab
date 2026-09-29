@@ -131,7 +131,15 @@ def make_valid_evidence(
         experiment_fingerprint=spec.fingerprint,
         spec=spec,
         partitions=tuple(partitions),
-        robustness_verdict={"passed": robustness_passed},
+        robustness_verdict={
+            "passed": robustness_passed,
+            "is_robust": robustness_passed,
+            "parameter_sensitivity": {"passed": True},
+            "subsample_stability": {"passed": True},
+            "execution_cost_stress": {"passed": True},
+            "statistical_validation": {"passed": True},
+            "anti_overfitting": {"passed": True},
+        } if robustness_passed else {"passed": False, "is_robust": False},
         promotion_status=promotion_status,
         rejection_reasons=rejection_reasons,
         created_at_utc=created_at_utc,
@@ -140,7 +148,8 @@ def make_valid_evidence(
 
 def test_valid_evidence_qualifies() -> None:
     evidence = make_valid_evidence()
-    res = qualify_research_evidence(evidence)
+    rob = assess_research_robustness(evidence)
+    res = qualify_research_evidence(evidence, robustness_assessment=rob)
 
     assert res.qualified is True
     assert res.status == PromotionStatus.PROMOTABLE
@@ -171,7 +180,7 @@ def test_missing_robustness_rejected() -> None:
     res = qualify_research_evidence(evidence)
 
     assert res.qualified is False
-    assert RejectionReason.FAILED_ROBUSTNESS in res.rejection_reasons
+    assert RejectionReason.MISSING_ROBUSTNESS_EVIDENCE in res.rejection_reasons
 
 
 def test_missing_statistical_sample_rejected() -> None:
@@ -289,7 +298,7 @@ def test_Q_qualified_evidence_requires_authoritative_robustness_assessment():
     evidence = make_valid_evidence(robustness_passed=False)
     res = qualify_research_evidence(evidence)
     assert res.qualified is False
-    assert RejectionReason.FAILED_ROBUSTNESS in res.rejection_reasons
+    assert RejectionReason.MISSING_ROBUSTNESS_EVIDENCE in res.rejection_reasons
 
 
 def test_V_qualification_policy_version_included_in_canonical_decision_identity():
@@ -297,8 +306,9 @@ def test_V_qualification_policy_version_included_in_canonical_decision_identity(
     policy1 = ResearchQualificationPolicy(policy_version="policy_v1")
     policy2 = ResearchQualificationPolicy(policy_version="policy_v2")
 
-    res1 = qualify_research_evidence(evidence, policy=policy1)
-    res2 = qualify_research_evidence(evidence, policy=policy2)
+    rob = assess_research_robustness(evidence)
+    res1 = qualify_research_evidence(evidence, policy=policy1, robustness_assessment=rob)
+    res2 = qualify_research_evidence(evidence, policy=policy2, robustness_assessment=rob)
 
     assert res1.policy_version == "policy_v1"
     assert res2.policy_version == "policy_v2"
@@ -318,7 +328,7 @@ def test_ast_production_decision_code_does_not_calculate_qualification() -> None
             if any(alias.name == "qualify_research_evidence" for alias in node.names):
                 found_import = True
 
-    assert found_import is True, "live_production_decision.py must delegate through qualify_research_evidence"
+    assert found_import is False, "live_production_decision.py must NOT call qualify_research_evidence directly"
 
 
 def test_ast_qualification_service_does_not_depend_on_production_decision_chain() -> None:

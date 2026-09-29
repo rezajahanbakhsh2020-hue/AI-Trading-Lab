@@ -181,7 +181,8 @@ class ResearchEvidenceLineage:
     qualification_status: str
     selection_assessment_id: str | None
     robustness_assessment_id: str | None
-    promotion_status: str
+    governance_decision_fingerprint: str | None = None
+    promotion_status: str = ""
     schema_version: str = SCHEMA_VERSION_1_0
 
     def as_dict(self) -> dict[str, Any]:
@@ -196,6 +197,7 @@ class ResearchEvidenceLineage:
             "qualification_status": self.qualification_status,
             "selection_assessment_id": self.selection_assessment_id,
             "robustness_assessment_id": self.robustness_assessment_id,
+            "governance_decision_fingerprint": self.governance_decision_fingerprint,
             "promotion_status": self.promotion_status,
             "schema_version": self.schema_version,
         }
@@ -218,6 +220,7 @@ class ResearchEvidenceLineage:
             qualification_status=data.get("qualification_status", ""),
             selection_assessment_id=data.get("selection_assessment_id"),
             robustness_assessment_id=data.get("robustness_assessment_id"),
+            governance_decision_fingerprint=data.get("governance_decision_fingerprint"),
             promotion_status=data.get("promotion_status", ""),
             schema_version=ver,
         )
@@ -271,6 +274,10 @@ class ResearchRegistryRecord:
                 object.__setattr__(self, "status", RegistryStatus(self.status))
             else:
                 raise RegistryValidationError(f"Invalid RegistryStatus: '{self.status}'.")
+
+    @property
+    def governance_decision_fingerprint(self) -> str | None:
+        return self.lineage.governance_decision_fingerprint if self.lineage else None
 
     @property
     def semantic_content(self) -> dict[str, Any]:
@@ -403,6 +410,7 @@ def construct_registry_record_from_evidence(
     trial_index: int | None = None,
     selection_assessment: ResearchSelectionAssessment | None = None,
     robustness_assessment: ResearchRobustnessAssessment | None = None,
+    governance_decision: Any | None = None,
     qualification_status: str | None = None,
     error_message: str = "",
 ) -> ResearchRegistryRecord:
@@ -452,6 +460,7 @@ def construct_registry_record_from_evidence(
         candidate_id=candidate_id,
     )
 
+    gov_fp = getattr(governance_decision, "decision_fingerprint", None) if governance_decision else None
     lineage = ResearchEvidenceLineage(
         search_id=search_id,
         search_fingerprint=search_fingerprint,
@@ -463,6 +472,7 @@ def construct_registry_record_from_evidence(
         qualification_status=qual_status,
         selection_assessment_id=sel_id,
         robustness_assessment_id=rob_id,
+        governance_decision_fingerprint=gov_fp,
         promotion_status=evidence.promotion_status.value,
     )
 
@@ -1371,6 +1381,10 @@ class ResearchLesson:
             raise SchemaVersionError(f"Unsupported lesson schema version: '{self.schema_version}'. Expected '{SCHEMA_VERSION_1_0}'.")
 
     @property
+    def governance_decision_fingerprint(self) -> str | None:
+        return self.lineage.governance_decision_fingerprint if self.lineage else None
+
+    @property
     def semantic_content(self) -> dict[str, Any]:
         return {
             "category": self.category.value,
@@ -1452,6 +1466,10 @@ class DoNotRepeatConstraint:
             raise RegistryValidationError("confidence_score must be between 0.0 and 1.0.")
         if self.schema_version != SCHEMA_VERSION_1_0:
             raise SchemaVersionError(f"Unsupported constraint schema version: '{self.schema_version}'. Expected '{SCHEMA_VERSION_1_0}'.")
+
+    @property
+    def governance_decision_fingerprint(self) -> str | None:
+        return self.lineage.governance_decision_fingerprint if self.lineage else None
 
     @property
     def semantic_content(self) -> dict[str, Any]:
@@ -1547,6 +1565,10 @@ class ResearchLearningRecord:
                 object.__setattr__(self, "classification", ResearchOutcomeClassification(self.classification))
             else:
                 raise RegistryValidationError(f"Invalid ResearchOutcomeClassification: '{self.classification}'.")
+
+    @property
+    def governance_decision_fingerprint(self) -> str | None:
+        return self.lineage.governance_decision_fingerprint if self.lineage else None
 
     @property
     def semantic_content(self) -> dict[str, Any]:

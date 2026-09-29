@@ -31,7 +31,6 @@ from src.evaluation.research_constitution import (
 from src.evaluation.research_robustness import (
     ResearchRobustnessAssessment,
     RobustnessStatus,
-    assess_research_robustness,
 )
 
 
@@ -226,38 +225,9 @@ def qualify_research_evidence(
                         f"{', '.join(robustness_assessment.dimensions_unavailable)}."
                     )
     else:
-        # Derivation boundary for backwards compatibility / missing explicit assessment argument
         if policy.require_robustness:
-            try:
-                derived_assessment = assess_research_robustness(evidence)
-                rob_fp = derived_assessment.robustness_fingerprint
-                if not derived_assessment.is_robust:
-                    rejection_reasons.append(RejectionReason.FAILED_ROBUSTNESS)
-                    notes.append(f"Derived robustness assessment failed (is_robust=False, status={derived_assessment.status.value}).")
-
-                if derived_assessment.status == RobustnessStatus.NOT_EVALUATED:
-                    rejection_reasons.append(RejectionReason.MISSING_ROBUSTNESS_EVIDENCE)
-                    notes.append("Derived robustness assessment status is NOT_EVALUATED.")
-                elif derived_assessment.status == RobustnessStatus.INSUFFICIENT_DATA:
-                    rejection_reasons.append(RejectionReason.INSUFFICIENT_STATISTICAL_SAMPLE)
-                    notes.append("Derived robustness assessment status is INSUFFICIENT_DATA.")
-
-                if derived_assessment.dimensions_unavailable:
-                    rejection_reasons.append(RejectionReason.FAILED_ROBUSTNESS)
-                    notes.append(
-                        f"Derived robustness assessment has unevaluated dimensions: "
-                        f"{', '.join(derived_assessment.dimensions_unavailable)}."
-                    )
-            except Exception as exc:
-                rejection_reasons.append(RejectionReason.FAILED_ROBUSTNESS)
-                notes.append(f"Failed to derive canonical robustness assessment from evidence: {exc}")
-        elif evidence.robustness_verdict:
-            try:
-                derived_assessment = assess_research_robustness(evidence)
-                rob_fp = derived_assessment.robustness_fingerprint
-            except Exception:
-                pass
-
+            rejection_reasons.append(RejectionReason.MISSING_ROBUSTNESS_EVIDENCE)
+            notes.append("Policy requires robustness assessment, but no authoritative ResearchRobustnessAssessment was supplied.")
     # 3. Partition observation count validation for statistical sufficiency
     if policy.require_statistical_evidence:
         partitions = getattr(evidence, "partitions", ()) or ()

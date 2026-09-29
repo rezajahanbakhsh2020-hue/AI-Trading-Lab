@@ -199,7 +199,8 @@ def test_legacy_artifacts_without_exact_timestamps_remain_loadable(tmp_path: Pat
         assert p.end_timestamp_utc is None
 
     # Qualification succeeds for legacy artifacts if other policies pass
-    qual_res = qualify_research_evidence(loaded_legacy)
+    from src.evaluation.research_robustness import assess_research_robustness
+    qual_res = qualify_research_evidence(loaded_legacy, robustness_assessment=assess_research_robustness(loaded_legacy))
     assert qual_res.qualified is True
 
 

@@ -113,11 +113,19 @@ def test_end_to_end_pipeline(mock_urlopen, mock_load_data, mock_load_selection, 
         start_timestamp_utc="2025-01-01T00:00:00+00:00",
         end_timestamp_utc="2025-01-05T00:00:00+00:00",
     )
+    r_verdict = {
+        "passed": True,
+        "parameter_sensitivity": {"passed": True},
+        "subsample_stability": {"passed": True},
+        "execution_cost_stress": {"passed": True},
+        "statistical_validation": {"passed": True},
+        "anti_overfitting": {"passed": True},
+    }
     evidence = ResearchEvidence(
         experiment_fingerprint=spec.fingerprint,
         spec=spec,
         partitions=(part_is, part_oos, part_wf),
-        robustness_verdict={"passed": True},
+        robustness_verdict=r_verdict,
         promotion_status=PromotionStatus.PROMOTABLE,
         rejection_reasons=(),
     )

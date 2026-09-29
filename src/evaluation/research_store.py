@@ -359,6 +359,8 @@ def persist_promoted_candidate_binding(
     evidence: ResearchEvidence,
     base_dir: str | Path = DEFAULT_RESEARCH_DIR,
     policy: Any | None = None,
+    robustness_assessment: Any | None = None,
+    governance_decision: Any | None = None,
 ) -> Path:
     """Persist an identity binding from a research candidate to already-saved evidence.
 
@@ -373,17 +375,34 @@ def persist_promoted_candidate_binding(
     if not isinstance(evidence, ResearchEvidence):
         raise TypeError("evidence must be a ResearchEvidence instance.")
 
-    qualification = qualify_research_evidence(
-        evidence,
-        policy=policy if isinstance(policy, ResearchQualificationPolicy) else None,
-    )
+    if governance_decision is not None:
+        if not getattr(governance_decision, "qualified", False):
+            reasons = [r.value for r in getattr(governance_decision, "rejection_reasons", ())]
+            raise PromotionEligibilityError(
+                f"Cannot bind candidate '{candidate_id}': governance decision failed qualification "
+                f"({getattr(governance_decision, 'qualification_notes', '')}). Rejection reasons: {reasons}"
+            )
+        gov_fp = getattr(governance_decision, "decision_fingerprint", None)
+    else:
+        if robustness_assessment is None:
+            try:
+                from src.evaluation.research_robustness import assess_research_robustness
+                robustness_assessment = assess_research_robustness(evidence)
+            except Exception:
+                robustness_assessment = None
 
-    if not qualification.qualified:
-        reasons = [r.value for r in qualification.rejection_reasons]
-        raise PromotionEligibilityError(
-            f"Cannot bind candidate '{candidate_id}': evidence '{evidence.evidence_id}' "
-            f"failed qualification ({qualification.qualification_notes}). Rejection reasons: {reasons}"
+        qualification = qualify_research_evidence(
+            evidence,
+            policy=policy if isinstance(policy, ResearchQualificationPolicy) else None,
+            robustness_assessment=robustness_assessment,
         )
+        if not qualification.qualified:
+            reasons = [r.value for r in qualification.rejection_reasons]
+            raise PromotionEligibilityError(
+                f"Cannot bind candidate '{candidate_id}': evidence '{evidence.evidence_id}' "
+                f"failed qualification ({qualification.qualification_notes}). Rejection reasons: {reasons}"
+            )
+        gov_fp = qualification.decision_fingerprint
 
     candidate_id = _require_non_empty_str(candidate_id, "candidate_id")
     spec = evidence.spec
@@ -514,8 +533,9 @@ def _reconstitute_promoted_candidate_from_binding(
         )
 
     reconstitution_policy = policy if policy is not None else ProductionPromotionPolicy()
+    gov_fp = binding.get("governance_decision_fingerprint")
     try:
-        validate_promotion_eligibility(evidence, policy=reconstitution_policy)
+        validate_promotion_eligibility(evidence, policy=reconstitution_policy, governance_decision_fingerprint=gov_fp)
         return PromotedCandidateArtifact.from_persisted_research(
             candidate_id=candidate_id,
             evidence=evidence,
@@ -523,12 +543,13 @@ def _reconstitute_promoted_candidate_from_binding(
             timeframe=timeframe,
             parameters=dict(parameters),
             policy=reconstitution_policy,
+            governance_decision_fingerprint=gov_fp,
         )
     except PromotionEligibilityError:
         raise
     except ValueError as exc:
         message = str(exc)
-        if "not allowed for production" in message or "rejection reasons" in message or "stale" in message:
+        if "not allowed for production" in message or "rejection reasons" in message or "stale" in message or "exceeds max allowed age" in message:
             raise PromotionEligibilityError(message) from exc
         raise PromotionIntegrityError(message) from exc
 
