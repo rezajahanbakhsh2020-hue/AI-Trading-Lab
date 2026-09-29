@@ -83,11 +83,17 @@ def compute_sha256_fingerprint(data: Any) -> str:
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
 
-def _canonical_tuple(items: Sequence[str] | None) -> tuple[str, ...]:
-    """Returns a deterministic, sorted, deduplicated tuple of strings."""
+def _canonical_tuple(items: Sequence[str] | None, field_name: str = "field") -> tuple[str, ...]:
+    """Returns a deterministic, sorted, deduplicated tuple of strings.
+
+    Raises CampaignLearningIntegrityError if raw input contains duplicate identifiers.
+    """
     if items is None:
         return ()
-    return tuple(sorted(set(str(x) for x in items if x is not None and str(x).strip())))
+    cleaned = [str(x).strip() for x in items if x is not None and str(x).strip()]
+    if len(cleaned) != len(set(cleaned)):
+        raise CampaignLearningIntegrityError(f"{field_name} contains invalid duplicate identifiers.")
+    return tuple(sorted(set(cleaned)))
 
 
 class CampaignLearningIntegrityError(ValueError):
@@ -125,12 +131,12 @@ class GovernedCampaignLearningArtifact:
         if not self.synthesis_fingerprint:
             raise CampaignLearningIntegrityError("synthesis_fingerprint is required.")
 
-        object.__setattr__(self, "selected_candidate_ids", _canonical_tuple(self.selected_candidate_ids))
-        object.__setattr__(self, "supporting_evidence_fingerprints", _canonical_tuple(self.supporting_evidence_fingerprints))
-        object.__setattr__(self, "robustness_fingerprints", _canonical_tuple(self.robustness_fingerprints))
-        object.__setattr__(self, "qualification_fingerprints", _canonical_tuple(self.qualification_fingerprints))
-        object.__setattr__(self, "learning_record_ids", _canonical_tuple(self.learning_record_ids))
-        object.__setattr__(self, "knowledge_pattern_ids", _canonical_tuple(self.knowledge_pattern_ids))
+        object.__setattr__(self, "selected_candidate_ids", _canonical_tuple(self.selected_candidate_ids, "selected_candidate_ids"))
+        object.__setattr__(self, "supporting_evidence_fingerprints", _canonical_tuple(self.supporting_evidence_fingerprints, "supporting_evidence_fingerprints"))
+        object.__setattr__(self, "robustness_fingerprints", _canonical_tuple(self.robustness_fingerprints, "robustness_fingerprints"))
+        object.__setattr__(self, "qualification_fingerprints", _canonical_tuple(self.qualification_fingerprints, "qualification_fingerprints"))
+        object.__setattr__(self, "learning_record_ids", _canonical_tuple(self.learning_record_ids, "learning_record_ids"))
+        object.__setattr__(self, "knowledge_pattern_ids", _canonical_tuple(self.knowledge_pattern_ids, "knowledge_pattern_ids"))
 
         payload = {
             "campaign_id": self.campaign_id,
