@@ -182,6 +182,7 @@ class ResearchEvidenceLineage:
     selection_assessment_id: str | None
     robustness_assessment_id: str | None
     governance_decision_fingerprint: str | None = None
+    campaign_selection_decision_fingerprint: str | None = None
     promotion_status: str = ""
     schema_version: str = SCHEMA_VERSION_1_0
 
@@ -198,6 +199,7 @@ class ResearchEvidenceLineage:
             "selection_assessment_id": self.selection_assessment_id,
             "robustness_assessment_id": self.robustness_assessment_id,
             "governance_decision_fingerprint": self.governance_decision_fingerprint,
+            "campaign_selection_decision_fingerprint": self.campaign_selection_decision_fingerprint,
             "promotion_status": self.promotion_status,
             "schema_version": self.schema_version,
         }
@@ -221,6 +223,7 @@ class ResearchEvidenceLineage:
             selection_assessment_id=data.get("selection_assessment_id"),
             robustness_assessment_id=data.get("robustness_assessment_id"),
             governance_decision_fingerprint=data.get("governance_decision_fingerprint"),
+            campaign_selection_decision_fingerprint=data.get("campaign_selection_decision_fingerprint"),
             promotion_status=data.get("promotion_status", ""),
             schema_version=ver,
         )

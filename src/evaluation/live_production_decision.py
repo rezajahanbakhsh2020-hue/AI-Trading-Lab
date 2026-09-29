@@ -65,6 +65,7 @@ class PromotedCandidateArtifact:
     policy: ProductionPromotionPolicy = field(default_factory=ProductionPromotionPolicy)
     governance_decision: Any | None = None
     governance_decision_fingerprint: str | None = None
+    campaign_selection_decision_fingerprint: str | None = None
     artifact_fingerprint: str = field(init=False)
 
     def __post_init__(self) -> None:
@@ -129,6 +130,7 @@ class PromotedCandidateArtifact:
             "parameters": self.parameters,
             "policy_version": self.policy.policy_version,
             "governance_decision_fingerprint": self.governance_decision_fingerprint,
+            "campaign_selection_decision_fingerprint": self.campaign_selection_decision_fingerprint,
         }
         serialized = json.dumps(payload, sort_keys=True, ensure_ascii=True)
         object.__setattr__(
@@ -149,6 +151,7 @@ class PromotedCandidateArtifact:
         policy: Optional[ProductionPromotionPolicy] = None,
         governance_decision: Any | None = None,
         governance_decision_fingerprint: str | None = None,
+        campaign_selection_decision_fingerprint: str | None = None,
     ) -> "PromotedCandidateArtifact":
         """Reconstitute a candidate solely from persisted research evidence.
 
@@ -168,6 +171,7 @@ class PromotedCandidateArtifact:
             policy=policy if policy is not None else ProductionPromotionPolicy(),
             governance_decision=governance_decision,
             governance_decision_fingerprint=governance_decision_fingerprint,
+            campaign_selection_decision_fingerprint=campaign_selection_decision_fingerprint,
         )
 
 
@@ -932,6 +936,7 @@ class ProductionIntelligencePublication:
             "artifact_fingerprint": candidate.artifact_fingerprint,
             "policy_version": candidate.policy.policy_version,
             "strategy_version": candidate.strategy_version,
+            "campaign_selection_decision_fingerprint": candidate.campaign_selection_decision_fingerprint,
         }
 
         conf = confidence if confidence is not None else decision.confidence

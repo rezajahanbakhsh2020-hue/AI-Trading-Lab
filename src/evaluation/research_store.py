@@ -969,3 +969,144 @@ class ResearchCampaignStore:
             cp for cp in self.list_trial_checkpoints(campaign_id)
             if cp.status in ("PENDING", "RUNNING")
         ]
+
+    def save_evidence_synthesis(self, synthesis: Any) -> Path:
+        """Persist a ResearchCampaignEvidenceSynthesis object to disk as JSON."""
+        cdir = self._campaign_dir(synthesis.campaign_id)
+        cdir.mkdir(parents=True, exist_ok=True)
+        path = cdir / "evidence_synthesis.json"
+        if path.exists():
+            existing = self.load_evidence_synthesis(synthesis.campaign_id)
+            if existing.synthesis_fingerprint != synthesis.synthesis_fingerprint:
+                raise FileExistsError(
+                    f"Cannot overwrite evidence synthesis at '{path}' with conflicting synthesis fingerprint."
+                )
+            return path
+        content = json.dumps(synthesis.as_dict(), indent=2)
+        path.write_text(content, encoding="utf-8")
+        return path
+
+    def load_evidence_synthesis(self, campaign_id: str) -> Any:
+        """Load and reconstruct a ResearchCampaignEvidenceSynthesis object from disk."""
+        from src.evaluation.campaign_synthesis import (
+            ResearchCampaignEvidenceSynthesis,
+            ResearchCandidateComparison,
+        )
+
+        path = self._campaign_dir(campaign_id) / "evidence_synthesis.json"
+        if not path.exists():
+            raise FileNotFoundError(f"Evidence synthesis not found at: {path}")
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except Exception as exc:
+            raise ValueError(f"Failed to parse evidence synthesis JSON at {path}: {exc}") from exc
+
+        candidate_comparisons = []
+        for c_data in data.get("candidate_comparisons", []):
+            comp = ResearchCandidateComparison(
+                candidate_id=c_data.get("candidate_id", ""),
+                candidate_fingerprint=c_data.get("candidate_fingerprint", ""),
+                experiment_fingerprint=c_data.get("experiment_fingerprint", ""),
+                evidence_fingerprint=c_data.get("evidence_fingerprint", ""),
+                qualification_status=c_data.get("qualification_status", ""),
+                qualification_fingerprint=c_data.get("qualification_fingerprint", ""),
+                robustness_fingerprint=c_data.get("robustness_fingerprint", ""),
+                robustness_status=c_data.get("robustness_status", ""),
+                benchmark_evidence=c_data.get("benchmark_evidence", {}),
+                regime_evidence=c_data.get("regime_evidence", {}),
+                statistical_evidence=c_data.get("statistical_evidence", {}),
+                oos_evidence=c_data.get("oos_evidence", {}),
+                walk_forward_evidence=c_data.get("walk_forward_evidence", {}),
+                execution_assumptions=c_data.get("execution_assumptions", {}),
+                rejection_reasons=tuple(c_data.get("rejection_reasons", [])),
+                selection_governance_result=c_data.get("selection_governance_result", {}),
+                comparison_metrics=c_data.get("comparison_metrics", {}),
+            )
+            candidate_comparisons.append(comp)
+
+        synthesis = ResearchCampaignEvidenceSynthesis(
+            campaign_id=data.get("campaign_id", ""),
+            campaign_definition_fingerprint=data.get("campaign_definition_fingerprint", ""),
+            trial_plan_fingerprint=data.get("trial_plan_fingerprint", ""),
+            search_space_fingerprint=data.get("search_space_fingerprint", ""),
+            search_policy_fingerprint=data.get("search_policy_fingerprint", ""),
+            criteria_fingerprint=data.get("criteria_fingerprint", ""),
+            dataset_identity=data.get("dataset_identity", {}),
+            execution_assumptions=data.get("execution_assumptions", {}),
+            code_provenance=data.get("code_provenance", {}),
+            methodology_version=data.get("methodology_version", ""),
+            ordered_trial_identities=tuple(data.get("ordered_trial_identities", [])),
+            ordered_evidence_fingerprints=tuple(data.get("ordered_evidence_fingerprints", [])),
+            completed_trial_count=int(data.get("completed_trial_count", 0)),
+            failed_trial_count=int(data.get("failed_trial_count", 0)),
+            blocked_trial_count=int(data.get("blocked_trial_count", 0)),
+            qualified_candidate_count=int(data.get("qualified_candidate_count", 0)),
+            rejected_candidate_count=int(data.get("rejected_candidate_count", 0)),
+            selection_governance_status=data.get("selection_governance_status", ""),
+            selection_policy_fingerprint=data.get("selection_policy_fingerprint", ""),
+            candidate_comparisons=tuple(candidate_comparisons),
+            synthesis_methodology_version=data.get("synthesis_methodology_version", "1.0"),
+        )
+
+        if synthesis.synthesis_fingerprint != data.get("synthesis_fingerprint"):
+            raise ValueError(
+                f"Loaded synthesis fingerprint mismatch for campaign '{campaign_id}': "
+                f"expected '{synthesis.synthesis_fingerprint}', got '{data.get('synthesis_fingerprint')}'."
+            )
+
+        return synthesis
+
+    def save_selection_decision(self, decision: Any) -> Path:
+        """Persist a ResearchCampaignSelectionDecision object to disk as JSON."""
+        cdir = self._campaign_dir(decision.campaign_id)
+        cdir.mkdir(parents=True, exist_ok=True)
+        path = cdir / "selection_decision.json"
+        if path.exists():
+            existing = self.load_selection_decision(decision.campaign_id)
+            if existing.decision_fingerprint != decision.decision_fingerprint:
+                raise FileExistsError(
+                    f"Cannot overwrite selection decision at '{path}' with conflicting decision fingerprint."
+                )
+            return path
+        content = json.dumps(decision.as_dict(), indent=2)
+        path.write_text(content, encoding="utf-8")
+        return path
+
+    def load_selection_decision(self, campaign_id: str) -> Any:
+        """Load and reconstruct a ResearchCampaignSelectionDecision object from disk."""
+        from src.evaluation.campaign_synthesis import ResearchCampaignSelectionDecision
+
+        path = self._campaign_dir(campaign_id) / "selection_decision.json"
+        if not path.exists():
+            raise FileNotFoundError(f"Selection decision not found at: {path}")
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except Exception as exc:
+            raise ValueError(f"Failed to parse selection decision JSON at {path}: {exc}") from exc
+
+        decision = ResearchCampaignSelectionDecision(
+            campaign_id=data.get("campaign_id", ""),
+            synthesis_fingerprint=data.get("synthesis_fingerprint", ""),
+            selection_policy_fingerprint=data.get("selection_policy_fingerprint", ""),
+            selected_candidate_ids=tuple(data.get("selected_candidate_ids", [])),
+            eligible_candidate_ids=tuple(data.get("eligible_candidate_ids", [])),
+            rejected_candidate_ids=tuple(data.get("rejected_candidate_ids", [])),
+            blocked_candidate_ids=tuple(data.get("blocked_candidate_ids", [])),
+            candidate_comparison_fingerprints=tuple(data.get("candidate_comparison_fingerprints", [])),
+            selection_governance_fingerprints=tuple(data.get("selection_governance_fingerprints", [])),
+            qualification_fingerprints=tuple(data.get("qualification_fingerprints", [])),
+            robustness_fingerprints=tuple(data.get("robustness_fingerprints", [])),
+            evidence_fingerprints=tuple(data.get("evidence_fingerprints", [])),
+            decision_status=data.get("decision_status", ""),
+            decision_reason=data.get("decision_reason", ""),
+            deterministic_ordering=tuple(data.get("deterministic_ordering", [])),
+            decision_methodology_version=data.get("decision_methodology_version", "1.0"),
+        )
+
+        if decision.decision_fingerprint != data.get("decision_fingerprint"):
+            raise ValueError(
+                f"Loaded selection decision fingerprint mismatch for campaign '{campaign_id}': "
+                f"expected '{decision.decision_fingerprint}', got '{data.get('decision_fingerprint')}'."
+            )
+
+        return decision
