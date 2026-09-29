@@ -291,6 +291,17 @@ class ResearchCampaignSelectionDecision:
     decision_fingerprint: str = field(default="", init=False)
 
     def __post_init__(self) -> None:
+        def _check_duplicates(items: Sequence[str] | None, field_name: str) -> None:
+            if items is not None:
+                cleaned = [str(x).strip() for x in items if x is not None and str(x).strip()]
+                if len(cleaned) != len(set(cleaned)):
+                    raise CampaignSelectionIntegrityError(f"{field_name} contains invalid duplicate identifiers.")
+
+        _check_duplicates(self.selected_candidate_ids, "selected_candidate_ids")
+        _check_duplicates(self.qualification_fingerprints, "qualification_fingerprints")
+        _check_duplicates(self.robustness_fingerprints, "robustness_fingerprints")
+        _check_duplicates(self.evidence_fingerprints, "evidence_fingerprints")
+
         if not self.decision_fingerprint:
             payload = {
                 "campaign_id": self.campaign_id,

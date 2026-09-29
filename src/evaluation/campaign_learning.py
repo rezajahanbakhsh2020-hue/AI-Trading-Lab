@@ -383,6 +383,40 @@ class CampaignLearningIntegrityValidator:
 # Authoritative Feedback-Loop API Functions
 # =============================================================================
 
+def _resolve_materialization_learning_records(
+    learning_records: Sequence[ResearchLearningRecord],
+    selected_candidate_ids: Sequence[str],
+) -> tuple[ResearchLearningRecord, ...]:
+    """Validates and filters explicitly presented learning records for materialization.
+
+    Fail-closed contract:
+    - Every resolved learning record MUST have a non-empty candidate_id.
+    - Every resolved learning record MUST belong to a candidate in selected_candidate_ids.
+    - If any presented record has a missing/ambiguous candidate_id or belongs to a non-selected candidate,
+      raises CampaignLearningIntegrityError.
+    """
+    selected_set = set(selected_candidate_ids)
+    validated: list[ResearchLearningRecord] = []
+
+    for lr in learning_records:
+        cid = getattr(lr, "candidate_id", None)
+        if not cid or not str(cid).strip():
+            raise CampaignLearningIntegrityError(
+                f"Learning record '{lr.learning_id}' has missing or ambiguous candidate_id."
+            )
+
+        cid_str = str(cid).strip()
+        if cid_str not in selected_set:
+            raise CampaignLearningIntegrityError(
+                f"Learning record '{lr.learning_id}' belongs to candidate '{cid_str}', "
+                f"which is not present in authoritative selected candidate IDs {selected_set}."
+            )
+
+        validated.append(lr)
+
+    return tuple(validated)
+
+
 def derive_governed_campaign_learning(
     campaign_id: str,
     store: Optional[ResearchCampaignStore] = None,
@@ -444,7 +478,7 @@ def derive_governed_campaign_learning(
                 f"Trial checkpoint '{cp.trial_id}' in campaign '{campaign_id}' has missing or ambiguous candidate_id."
             )
 
-        # Skip checkpoints belonging to non-selected candidates
+        # Ordinary non-selected checkpoints may exist in the campaign and are cleanly skipped
         if cp.candidate_id not in selected_cands_set:
             continue
 
@@ -473,13 +507,6 @@ def derive_governed_campaign_learning(
                         ) from exc
 
             if reg_rec is not None:
-                # Verify registry record candidate lineage matches selected candidates
-                if reg_rec.candidate_id and reg_rec.candidate_id not in selected_cands_set:
-                    raise CampaignLearningIntegrityError(
-                        f"Registry record '{reg_rec.record_id}' candidate_id '{reg_rec.candidate_id}' "
-                        f"does not belong to selected candidates {selected_cands_set} for campaign '{campaign_id}'."
-                    )
-
                 try:
                     learnings = registry_store.query_learning(
                         experiment_fingerprint=reg_rec.experiment_fingerprint,
@@ -494,13 +521,6 @@ def derive_governed_campaign_learning(
                         except RegistryConflictError:
                             pass
 
-                    # Re-verify learning record candidate lineage
-                    if lr.candidate_id and lr.candidate_id not in selected_cands_set:
-                        raise CampaignLearningIntegrityError(
-                            f"Learning record '{lr.learning_id}' candidate_id '{lr.candidate_id}' "
-                            f"does not belong to selected candidates {selected_cands_set} for campaign '{campaign_id}'."
-                        )
-
                     learning_records.append(lr)
                 except Exception as exc:
                     if isinstance(exc, CampaignLearningIntegrityError):
@@ -510,9 +530,15 @@ def derive_governed_campaign_learning(
                         f"learning records for campaign '{campaign_id}': {exc}"
                     ) from exc
 
-    # 3. Derive research knowledge patterns from learning records
+    # Validate resolved learning records against authoritative selected candidate IDs
+    validated_learning_records = _resolve_materialization_learning_records(
+        learning_records=learning_records,
+        selected_candidate_ids=decision.selected_candidate_ids,
+    )
+
+    # 3. Derive research knowledge patterns from validated learning records
     knowledge_patterns = derive_research_knowledge_patterns(
-        learning_records,
+        validated_learning_records,
         registry_store=registry_store,
         policy=ResearchKnowledgeDerivationPolicy(allow_single_observation_patterns=True),
     )
@@ -538,7 +564,7 @@ def derive_governed_campaign_learning(
     sup_ev_fps = _canonical_tuple(decision.evidence_fingerprints)
     rob_fps = _canonical_tuple(decision.robustness_fingerprints)
     qual_fps = _canonical_tuple(decision.qualification_fingerprints)
-    lr_ids = _canonical_tuple(lr.learning_id for lr in learning_records)
+    lr_ids = _canonical_tuple(lr.learning_id for lr in validated_learning_records)
     kp_ids = _canonical_tuple(p.pattern_id for p in registered_patterns)
 
     artifact = GovernedCampaignLearningArtifact(

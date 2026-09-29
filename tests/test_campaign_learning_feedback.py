@@ -1269,14 +1269,19 @@ def test_ambiguous_missing_candidate_lineage_rejected(tmp_stores):
         derive_governed_campaign_learning(cid, store=c_store, registry_store=r_store)
 
 
-def test_duplicate_identity_rejected(tmp_stores):
+def test_duplicate_identity_rejected_in_artifact_and_decision(tmp_stores):
     c_store, r_store, _ = tmp_stores
     cid = "camp_dup_identity_001"
 
     defn, plan = _save_mock_definition_and_plan(c_store, cid)
     c_store.save_lifecycle_state(cid, ResearchCampaignStatus.COMPLETED)
 
-    from src.evaluation.campaign_synthesis import ResearchCampaignEvidenceSynthesis
+    from src.evaluation.campaign_synthesis import (
+        CampaignSelectionIntegrityError,
+        ResearchCampaignEvidenceSynthesis,
+        ResearchCampaignSelectionDecision,
+    )
+
     syn = ResearchCampaignEvidenceSynthesis(
         campaign_id=cid,
         campaign_definition_fingerprint=defn.definition_fingerprint,
@@ -1301,13 +1306,13 @@ def test_duplicate_identity_rejected(tmp_stores):
     )
     c_store.save_evidence_synthesis(syn)
 
-    # Test raw duplicate selected_candidate_ids during GovernedCampaignLearningArtifact construction
+    # 1. Test GovernedCampaignLearningArtifact construction duplicate checks
     with pytest.raises(CampaignLearningIntegrityError, match="selected_candidate_ids contains invalid duplicate identifiers"):
         GovernedCampaignLearningArtifact(
             campaign_id=cid,
             campaign_selection_decision_fingerprint="dec_fp_001",
             synthesis_fingerprint=syn.synthesis_fingerprint,
-            selected_candidate_ids=("cand_1", "cand_1"),  # Duplicate candidate ID
+            selected_candidate_ids=("cand_1", "cand_1"),
             supporting_evidence_fingerprints=("ev_1",),
             robustness_fingerprints=("rob_1",),
             qualification_fingerprints=("qual_1",),
@@ -1315,21 +1320,19 @@ def test_duplicate_identity_rejected(tmp_stores):
             knowledge_pattern_ids=(),
         )
 
-    # Test raw duplicate supporting_evidence_fingerprints
     with pytest.raises(CampaignLearningIntegrityError, match="supporting_evidence_fingerprints contains invalid duplicate identifiers"):
         GovernedCampaignLearningArtifact(
             campaign_id=cid,
             campaign_selection_decision_fingerprint="dec_fp_001",
             synthesis_fingerprint=syn.synthesis_fingerprint,
             selected_candidate_ids=("cand_1",),
-            supporting_evidence_fingerprints=("ev_1", "ev_1"),  # Duplicate evidence FP
+            supporting_evidence_fingerprints=("ev_1", "ev_1"),
             robustness_fingerprints=("rob_1",),
             qualification_fingerprints=("qual_1",),
             learning_record_ids=(),
             knowledge_pattern_ids=(),
         )
 
-    # Test raw duplicate robustness_fingerprints
     with pytest.raises(CampaignLearningIntegrityError, match="robustness_fingerprints contains invalid duplicate identifiers"):
         GovernedCampaignLearningArtifact(
             campaign_id=cid,
@@ -1337,13 +1340,12 @@ def test_duplicate_identity_rejected(tmp_stores):
             synthesis_fingerprint=syn.synthesis_fingerprint,
             selected_candidate_ids=("cand_1",),
             supporting_evidence_fingerprints=("ev_1",),
-            robustness_fingerprints=("rob_1", "rob_1"),  # Duplicate robustness FP
+            robustness_fingerprints=("rob_1", "rob_1"),
             qualification_fingerprints=("qual_1",),
             learning_record_ids=(),
             knowledge_pattern_ids=(),
         )
 
-    # Test raw duplicate qualification_fingerprints
     with pytest.raises(CampaignLearningIntegrityError, match="qualification_fingerprints contains invalid duplicate identifiers"):
         GovernedCampaignLearningArtifact(
             campaign_id=cid,
@@ -1352,15 +1354,92 @@ def test_duplicate_identity_rejected(tmp_stores):
             selected_candidate_ids=("cand_1",),
             supporting_evidence_fingerprints=("ev_1",),
             robustness_fingerprints=("rob_1",),
-            qualification_fingerprints=("qual_1", "qual_1"),  # Duplicate qual FP
+            qualification_fingerprints=("qual_1", "qual_1"),
             learning_record_ids=(),
             knowledge_pattern_ids=(),
         )
 
+    # 2. Test ResearchCampaignSelectionDecision construction duplicate checks
+    with pytest.raises(CampaignSelectionIntegrityError, match="selected_candidate_ids contains invalid duplicate identifiers"):
+        ResearchCampaignSelectionDecision(
+            campaign_id=cid,
+            synthesis_fingerprint=syn.synthesis_fingerprint,
+            selection_policy_fingerprint="pol_fp_001",
+            selected_candidate_ids=("cand_1", "cand_1"),
+            eligible_candidate_ids=("cand_1",),
+            rejected_candidate_ids=(),
+            blocked_candidate_ids=(),
+            candidate_comparison_fingerprints=("comp_1",),
+            selection_governance_fingerprints=(),
+            qualification_fingerprints=("qual_1",),
+            robustness_fingerprints=("rob_1",),
+            evidence_fingerprints=("ev_1",),
+            decision_status="SELECTED",
+            decision_reason="Top candidate",
+            deterministic_ordering=("cand_1",),
+        )
 
-def test_deliberate_non_selected_candidate_learning_injection_rejected(tmp_stores):
+    with pytest.raises(CampaignSelectionIntegrityError, match="evidence_fingerprints contains invalid duplicate identifiers"):
+        ResearchCampaignSelectionDecision(
+            campaign_id=cid,
+            synthesis_fingerprint=syn.synthesis_fingerprint,
+            selection_policy_fingerprint="pol_fp_001",
+            selected_candidate_ids=("cand_1",),
+            eligible_candidate_ids=("cand_1",),
+            rejected_candidate_ids=(),
+            blocked_candidate_ids=(),
+            candidate_comparison_fingerprints=("comp_1",),
+            selection_governance_fingerprints=(),
+            qualification_fingerprints=("qual_1",),
+            robustness_fingerprints=("rob_1",),
+            evidence_fingerprints=("ev_1", "ev_1"),
+            decision_status="SELECTED",
+            decision_reason="Top candidate",
+            deterministic_ordering=("cand_1",),
+        )
+
+    with pytest.raises(CampaignSelectionIntegrityError, match="robustness_fingerprints contains invalid duplicate identifiers"):
+        ResearchCampaignSelectionDecision(
+            campaign_id=cid,
+            synthesis_fingerprint=syn.synthesis_fingerprint,
+            selection_policy_fingerprint="pol_fp_001",
+            selected_candidate_ids=("cand_1",),
+            eligible_candidate_ids=("cand_1",),
+            rejected_candidate_ids=(),
+            blocked_candidate_ids=(),
+            candidate_comparison_fingerprints=("comp_1",),
+            selection_governance_fingerprints=(),
+            qualification_fingerprints=("qual_1",),
+            robustness_fingerprints=("rob_1", "rob_1"),
+            evidence_fingerprints=("ev_1",),
+            decision_status="SELECTED",
+            decision_reason="Top candidate",
+            deterministic_ordering=("cand_1",),
+        )
+
+    with pytest.raises(CampaignSelectionIntegrityError, match="qualification_fingerprints contains invalid duplicate identifiers"):
+        ResearchCampaignSelectionDecision(
+            campaign_id=cid,
+            synthesis_fingerprint=syn.synthesis_fingerprint,
+            selection_policy_fingerprint="pol_fp_001",
+            selected_candidate_ids=("cand_1",),
+            eligible_candidate_ids=("cand_1",),
+            rejected_candidate_ids=(),
+            blocked_candidate_ids=(),
+            candidate_comparison_fingerprints=("comp_1",),
+            selection_governance_fingerprints=(),
+            qualification_fingerprints=("qual_1", "qual_1"),
+            robustness_fingerprints=("rob_1",),
+            evidence_fingerprints=("ev_1",),
+            decision_status="SELECTED",
+            decision_reason="Top candidate",
+            deterministic_ordering=("cand_1",),
+        )
+
+
+def test_ordinary_non_selected_checkpoints_ignored_and_explicit_contamination_rejected(tmp_stores):
     c_store, r_store, _ = tmp_stores
-    cid = "camp_injected_contamination_001"
+    cid = "camp_contamination_test_001"
 
     defn, plan = _save_mock_definition_and_plan(c_store, cid)
     c_store.save_lifecycle_state(cid, ResearchCampaignStatus.COMPLETED)
@@ -1403,7 +1482,7 @@ def test_deliberate_non_selected_candidate_learning_injection_rejected(tmp_store
     )
     c_store.save_selection_decision(dec)
 
-    # Create trial checkpoint for cand_2 (non-selected) that also has evidence
+    # 1. Save ordinary trial checkpoint for cand_2 (non-selected candidate)
     from src.evaluation.research_constitution import ResearchTrialCheckpoint
     cp1 = ResearchTrialCheckpoint(
         trial_id="trial_1", campaign_id=cid, candidate_id="cand_1", trial_index=0,
@@ -1416,28 +1495,20 @@ def test_deliberate_non_selected_candidate_learning_injection_rejected(tmp_store
     c_store.save_trial_checkpoint(cp1)
     c_store.save_trial_checkpoint(cp2)
 
-    # Register a learning record for candidate 2 (non-selected) into registry store
+    # Ordinary materialization must succeed and ignore candidate 2's checkpoint cleanly
+    art = derive_governed_campaign_learning(cid, store=c_store, registry_store=r_store)
+    assert art.selected_candidate_ids == ("cand_1",)
+    assert "cand_2" not in art.selected_candidate_ids
+
+    # 2. Test explicit injection of candidate 2's learning record into materialization resolution boundary
     from src.evaluation.research_registry import (
-        ResearchRegistryRecord,
-        ResearchReproducibilityDescriptor,
-        ResearchEvidenceLineage,
         ResearchLearningRecord,
         StructuredObservedConditions,
         ResearchOutcomeClassification,
     )
-    reg_rec2 = ResearchRegistryRecord(
-        record_id="rec_2", experiment_fingerprint="exp_2", evidence_fingerprint="ev_2",
-        candidate_id="cand_2", search_fingerprint=None, search_id=None, trial_id="trial_2",
-        trial_index=1, status="QUALIFIED", qualification_status="QUALIFIED", promotion_status="PROMOTABLE",
-        rejection_reasons=(), dataset_scope_id="ds_1", execution_assumptions_id="ea_1",
-        code_provenance_id="cp_1", methodology_version="1.0", selection_assessment_id=None,
-        robustness_assessment_id=None, benchmark_status=None, regime_status=None, error_message="",
-        reproducibility=ResearchReproducibilityDescriptor("exp_2", "ev_2", "ds_1", "ea_1", "cp_1", "1.0", None, "trial_2", "cand_2"),
-        lineage=ResearchEvidenceLineage(None, None, "trial_2", 1, "cand_2", "exp_2", "ev_2", "QUALIFIED", None, None),
-    )
-    r_store.register(reg_rec2)
+    from src.evaluation.campaign_learning import _resolve_materialization_learning_records
 
-    lr2 = ResearchLearningRecord(
+    lr_cand_2 = ResearchLearningRecord(
         learning_id="lr_cand_2", source_record_id="rec_2", experiment_fingerprint="exp_2",
         evidence_fingerprint="ev_2", candidate_id="cand_2", search_fingerprint=None, trial_id="trial_2",
         dataset_scope_id="ds_1", execution_assumptions_id="ea_1", code_provenance_id="cp_1", methodology_version="1.0",
@@ -1445,11 +1516,9 @@ def test_deliberate_non_selected_candidate_learning_injection_rejected(tmp_store
         observed_conditions=StructuredObservedConditions(None, None, "baseline", "1.0", "ds_1", "ea_1", "cp_1", "1.0", False, False, None, None, None, None, (), {}),
         lessons=(), constraints=(), confidence_score=0.9, rejection_reasons=(),
     )
-    r_store.register_learning_record(lr2)
 
-    # Attempt materialization: derive_governed_campaign_learning must cleanly ignore non-selected candidate 2 checkpoint
-    art = derive_governed_campaign_learning(cid, store=c_store, registry_store=r_store)
-
-    assert "cand_2" not in art.selected_candidate_ids
-    assert "ev_2" not in art.supporting_evidence_fingerprints
-    assert "lr_cand_2" not in art.learning_record_ids
+    with pytest.raises(CampaignLearningIntegrityError, match="belongs to candidate 'cand_2', which is not present in authoritative selected candidate IDs"):
+        _resolve_materialization_learning_records(
+            learning_records=[lr_cand_2],
+            selected_candidate_ids=dec.selected_candidate_ids,
+        )
