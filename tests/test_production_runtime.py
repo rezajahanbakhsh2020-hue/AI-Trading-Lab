@@ -13,27 +13,53 @@ from src.evaluation.production_runtime import (
 def _write_stability_report(
     results_dir: Path,
 ) -> None:
-    results_dir.mkdir(
+    exp_dir = results_dir / "exp_001"
+    exp_dir.mkdir(
         parents=True,
         exist_ok=True,
     )
 
-    frame = pd.DataFrame(
+    pd.DataFrame(
         [
             {
                 "strategy": "momentum",
-                "stability_score": 0.90,
+                "rank": 1,
+                "total_return": 0.20,
+                "max_drawdown": -0.05,
+                "sharpe_ratio": 1.5,
+                "sortino_ratio": 2.0,
+                "calmar_ratio": 4.0,
+                "positive_window_rate": 0.8,
             },
             {
                 "strategy": "mean_reversion",
-                "stability_score": 0.60,
+                "rank": 2,
+                "total_return": 0.10,
+                "max_drawdown": -0.10,
+                "sharpe_ratio": 0.8,
+                "sortino_ratio": 1.0,
+                "calmar_ratio": 1.0,
+                "positive_window_rate": 0.5,
             },
         ]
+    ).to_csv(
+        exp_dir / "final_report.csv",
+        index=False,
     )
 
-    frame.to_csv(
-        results_dir / "stability_report.csv",
+    pd.DataFrame(
+        [
+            {"strategy": "momentum"},
+            {"strategy": "mean_reversion"},
+        ]
+    ).to_csv(
+        exp_dir / "eligible_strategies.csv",
         index=False,
+    )
+
+    (exp_dir / "metadata.json").write_text(
+        '{"created_at_utc": "2025-01-01T00:00:00Z", "best_strategy": "momentum"}',
+        encoding="utf-8",
     )
 
 
