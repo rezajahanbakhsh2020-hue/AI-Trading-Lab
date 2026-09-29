@@ -83,6 +83,19 @@ def compute_sha256_fingerprint(data: Any) -> str:
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
 
+def _canonical_tuple(items: Sequence[str] | None, field_name: str = "field") -> tuple[str, ...]:
+    """Returns a deterministic, sorted, deduplicated tuple of strings.
+
+    Raises CampaignLearningIntegrityError if raw input contains duplicate identifiers.
+    """
+    if items is None:
+        return ()
+    cleaned = [str(x).strip() for x in items if x is not None and str(x).strip()]
+    if len(cleaned) != len(set(cleaned)):
+        raise CampaignLearningIntegrityError(f"{field_name} contains invalid duplicate identifiers.")
+    return tuple(sorted(set(cleaned)))
+
+
 class CampaignLearningIntegrityError(ValueError):
     """Raised when campaign learning artifact or feedback-loop lineage fails integrity validation."""
     pass
@@ -118,16 +131,23 @@ class GovernedCampaignLearningArtifact:
         if not self.synthesis_fingerprint:
             raise CampaignLearningIntegrityError("synthesis_fingerprint is required.")
 
+        object.__setattr__(self, "selected_candidate_ids", _canonical_tuple(self.selected_candidate_ids, "selected_candidate_ids"))
+        object.__setattr__(self, "supporting_evidence_fingerprints", _canonical_tuple(self.supporting_evidence_fingerprints, "supporting_evidence_fingerprints"))
+        object.__setattr__(self, "robustness_fingerprints", _canonical_tuple(self.robustness_fingerprints, "robustness_fingerprints"))
+        object.__setattr__(self, "qualification_fingerprints", _canonical_tuple(self.qualification_fingerprints, "qualification_fingerprints"))
+        object.__setattr__(self, "learning_record_ids", _canonical_tuple(self.learning_record_ids, "learning_record_ids"))
+        object.__setattr__(self, "knowledge_pattern_ids", _canonical_tuple(self.knowledge_pattern_ids, "knowledge_pattern_ids"))
+
         payload = {
             "campaign_id": self.campaign_id,
             "campaign_selection_decision_fingerprint": self.campaign_selection_decision_fingerprint,
             "synthesis_fingerprint": self.synthesis_fingerprint,
-            "selected_candidate_ids": sorted(self.selected_candidate_ids),
-            "supporting_evidence_fingerprints": sorted(self.supporting_evidence_fingerprints),
-            "robustness_fingerprints": sorted(self.robustness_fingerprints),
-            "qualification_fingerprints": sorted(self.qualification_fingerprints),
-            "learning_record_ids": sorted(self.learning_record_ids),
-            "knowledge_pattern_ids": sorted(self.knowledge_pattern_ids),
+            "selected_candidate_ids": list(self.selected_candidate_ids),
+            "supporting_evidence_fingerprints": list(self.supporting_evidence_fingerprints),
+            "robustness_fingerprints": list(self.robustness_fingerprints),
+            "qualification_fingerprints": list(self.qualification_fingerprints),
+            "learning_record_ids": list(self.learning_record_ids),
+            "knowledge_pattern_ids": list(self.knowledge_pattern_ids),
             "methodology_version": self.methodology_version,
         }
         fp = compute_sha256_fingerprint(payload)
@@ -200,12 +220,12 @@ class CampaignLearningIntegrityValidator:
             "campaign_id": artifact.campaign_id,
             "campaign_selection_decision_fingerprint": artifact.campaign_selection_decision_fingerprint,
             "synthesis_fingerprint": artifact.synthesis_fingerprint,
-            "selected_candidate_ids": sorted(artifact.selected_candidate_ids),
-            "supporting_evidence_fingerprints": sorted(artifact.supporting_evidence_fingerprints),
-            "robustness_fingerprints": sorted(artifact.robustness_fingerprints),
-            "qualification_fingerprints": sorted(artifact.qualification_fingerprints),
-            "learning_record_ids": sorted(artifact.learning_record_ids),
-            "knowledge_pattern_ids": sorted(artifact.knowledge_pattern_ids),
+            "selected_candidate_ids": list(artifact.selected_candidate_ids),
+            "supporting_evidence_fingerprints": list(artifact.supporting_evidence_fingerprints),
+            "robustness_fingerprints": list(artifact.robustness_fingerprints),
+            "qualification_fingerprints": list(artifact.qualification_fingerprints),
+            "learning_record_ids": list(artifact.learning_record_ids),
+            "knowledge_pattern_ids": list(artifact.knowledge_pattern_ids),
             "methodology_version": artifact.methodology_version,
         }
         recomputed_fp = compute_sha256_fingerprint(payload)
@@ -234,7 +254,7 @@ class CampaignLearningIntegrityValidator:
                 f"Failed to load campaign state for '{artifact.campaign_id}': {exc}"
             ) from exc
 
-        # 3. Load and validate evidence synthesis and selection decision
+        # 3. Load and validate evidence synthesis
         try:
             synthesis = store.load_evidence_synthesis(artifact.campaign_id)
             CampaignSelectionIntegrityValidator.validate_synthesis_integrity(synthesis, store=store)
@@ -249,6 +269,7 @@ class CampaignLearningIntegrityValidator:
                 f"artifact has '{artifact.synthesis_fingerprint}', store synthesis has '{synthesis.synthesis_fingerprint}'."
             )
 
+        # 4. Load and validate selection decision
         try:
             decision = store.load_selection_decision(artifact.campaign_id)
             CampaignSelectionIntegrityValidator.validate_selection_decision_integrity(
@@ -272,7 +293,51 @@ class CampaignLearningIntegrityValidator:
                 f"artifact campaign_id '{artifact.campaign_id}'."
             )
 
-        # 4. Fail closed if selection decision status is blocked, insufficient, or unresolved tie
+        # 5. Validate duplicate identities in artifact and selection decision
+        for field_name, items in [
+            ("selected_candidate_ids", artifact.selected_candidate_ids),
+            ("supporting_evidence_fingerprints", artifact.supporting_evidence_fingerprints),
+            ("robustness_fingerprints", artifact.robustness_fingerprints),
+            ("qualification_fingerprints", artifact.qualification_fingerprints),
+        ]:
+            if len(items) != len(set(items)):
+                raise CampaignLearningIntegrityError(f"Artifact {field_name} contains invalid duplicate identifiers.")
+
+        for field_name, items in [
+            ("selected_candidate_ids", decision.selected_candidate_ids),
+            ("evidence_fingerprints", decision.evidence_fingerprints),
+            ("robustness_fingerprints", decision.robustness_fingerprints),
+            ("qualification_fingerprints", decision.qualification_fingerprints),
+        ]:
+            if len(items) != len(set(items)):
+                raise CampaignLearningIntegrityError(f"Selection decision {field_name} contains invalid duplicate identifiers.")
+
+        # 6. Assert exact lineage equality between learning artifact and authoritative selection decision
+        if _canonical_tuple(artifact.selected_candidate_ids) != _canonical_tuple(decision.selected_candidate_ids):
+            raise CampaignLearningIntegrityError(
+                f"Artifact selected_candidate_ids {_canonical_tuple(artifact.selected_candidate_ids)} "
+                f"does not match decision selected_candidate_ids {_canonical_tuple(decision.selected_candidate_ids)}."
+            )
+
+        if _canonical_tuple(artifact.supporting_evidence_fingerprints) != _canonical_tuple(decision.evidence_fingerprints):
+            raise CampaignLearningIntegrityError(
+                f"Artifact supporting_evidence_fingerprints {_canonical_tuple(artifact.supporting_evidence_fingerprints)} "
+                f"does not match decision evidence_fingerprints {_canonical_tuple(decision.evidence_fingerprints)}."
+            )
+
+        if _canonical_tuple(artifact.robustness_fingerprints) != _canonical_tuple(decision.robustness_fingerprints):
+            raise CampaignLearningIntegrityError(
+                f"Artifact robustness_fingerprints {_canonical_tuple(artifact.robustness_fingerprints)} "
+                f"does not match decision robustness_fingerprints {_canonical_tuple(decision.robustness_fingerprints)}."
+            )
+
+        if _canonical_tuple(artifact.qualification_fingerprints) != _canonical_tuple(decision.qualification_fingerprints):
+            raise CampaignLearningIntegrityError(
+                f"Artifact qualification_fingerprints {_canonical_tuple(artifact.qualification_fingerprints)} "
+                f"does not match decision qualification_fingerprints {_canonical_tuple(decision.qualification_fingerprints)}."
+            )
+
+        # 6. Fail closed if selection decision status is blocked, insufficient, or unresolved tie
         if decision.decision_status != CampaignSelectionStatus.SELECTED.value:
             raise CampaignLearningIntegrityError(
                 f"Cannot derive learning artifact from non-SELECTED campaign decision status: '{decision.decision_status}'."
@@ -291,38 +356,66 @@ class CampaignLearningIntegrityValidator:
                     f"Selected candidate ID '{sel_id}' not found in campaign '{artifact.campaign_id}' candidate comparisons."
                 )
 
-        # 5. Verify referenced evidence, robustness, and qualification fingerprints resolve
-        synthesis_ev_fps = set(synthesis.ordered_evidence_fingerprints)
-        for ev_fp in artifact.supporting_evidence_fingerprints:
-            if ev_fp not in synthesis_ev_fps and ev_fp not in decision.evidence_fingerprints:
+        if registry_store is None:
+            registry_store = ResearchRegistryStore()
+
+        # Check learning records existence and campaign lineage
+        for lid in artifact.learning_record_ids:
+            found = False
+            for lr in registry_store.list_learning_records():
+                if lr.learning_id == lid:
+                    found = True
+                    break
+            if not found:
                 raise CampaignLearningIntegrityError(
-                    f"Supporting evidence fingerprint '{ev_fp}' not found in synthesis or decision for campaign '{artifact.campaign_id}'."
+                    f"Referenced learning record ID '{lid}' not found in registry store."
                 )
 
-        if registry_store is not None:
-            # Check learning records existence and campaign lineage
-            for lid in artifact.learning_record_ids:
-                found = False
-                for lr in registry_store.list_learning_records():
-                    if lr.learning_id == lid:
-                        found = True
-                        break
-                if not found:
-                    raise CampaignLearningIntegrityError(
-                        f"Referenced learning record ID '{lid}' not found in registry store."
-                    )
-
-            # Check knowledge patterns existence
-            for pid in artifact.knowledge_pattern_ids:
-                if registry_store.get_pattern_by_id(pid) is None:
-                    raise CampaignLearningIntegrityError(
-                        f"Referenced knowledge pattern ID '{pid}' not found in registry store."
-                    )
+        # Check knowledge patterns existence
+        for pid in artifact.knowledge_pattern_ids:
+            if registry_store.get_pattern_by_id(pid) is None:
+                raise CampaignLearningIntegrityError(
+                    f"Referenced knowledge pattern ID '{pid}' not found in registry store."
+                )
 
 
 # =============================================================================
 # Authoritative Feedback-Loop API Functions
 # =============================================================================
+
+def _resolve_materialization_learning_records(
+    learning_records: Sequence[ResearchLearningRecord],
+    selected_candidate_ids: Sequence[str],
+) -> tuple[ResearchLearningRecord, ...]:
+    """Validates and filters explicitly presented learning records for materialization.
+
+    Fail-closed contract:
+    - Every resolved learning record MUST have a non-empty candidate_id.
+    - Every resolved learning record MUST belong to a candidate in selected_candidate_ids.
+    - If any presented record has a missing/ambiguous candidate_id or belongs to a non-selected candidate,
+      raises CampaignLearningIntegrityError.
+    """
+    selected_set = set(selected_candidate_ids)
+    validated: list[ResearchLearningRecord] = []
+
+    for lr in learning_records:
+        cid = getattr(lr, "candidate_id", None)
+        if not cid or not str(cid).strip():
+            raise CampaignLearningIntegrityError(
+                f"Learning record '{lr.learning_id}' has missing or ambiguous candidate_id."
+            )
+
+        cid_str = str(cid).strip()
+        if cid_str not in selected_set:
+            raise CampaignLearningIntegrityError(
+                f"Learning record '{lr.learning_id}' belongs to candidate '{cid_str}', "
+                f"which is not present in authoritative selected candidate IDs {selected_set}."
+            )
+
+        validated.append(lr)
+
+    return tuple(validated)
+
 
 def derive_governed_campaign_learning(
     campaign_id: str,
@@ -368,11 +461,27 @@ def derive_governed_campaign_learning(
             f"Cannot derive learning artifact: Campaign selection decision for '{campaign_id}' has no selected candidates."
         )
 
-    # 2. Gather registry records for trials in this campaign
-    checkpoints = store.list_trial_checkpoints(campaign_id)
+    # 2. Gather registry records strictly for selected candidates in this campaign
+    try:
+        checkpoints = store.list_trial_checkpoints(campaign_id)
+    except Exception as exc:
+        raise CampaignLearningIntegrityError(
+            f"Cannot derive learning artifact: Failed to list trial checkpoints for campaign '{campaign_id}': {exc}"
+        ) from exc
+
     learning_records: list[ResearchLearningRecord] = []
+    selected_cands_set = set(decision.selected_candidate_ids)
 
     for cp in checkpoints:
+        if not cp.candidate_id or not cp.candidate_id.strip():
+            raise CampaignLearningIntegrityError(
+                f"Trial checkpoint '{cp.trial_id}' in campaign '{campaign_id}' has missing or ambiguous candidate_id."
+            )
+
+        # Ordinary non-selected checkpoints may exist in the campaign and are cleanly skipped
+        if cp.candidate_id not in selected_cands_set:
+            continue
+
         if cp.status in ("COMPLETED", "QUALIFIED", "REJECTED") and cp.evidence_fingerprint:
             reg_rec = registry_store.get_by_evidence_fingerprint(cp.evidence_fingerprint)
             if reg_rec is None and cp.experiment_fingerprint:
@@ -389,27 +498,47 @@ def derive_governed_campaign_learning(
                             evidence=ev, candidate_id=cp.candidate_id, trial_id=cp.trial_id, qualification_status=cp.qualification_status or "QUALIFIED"
                         )
                         registry_store.register(reg_rec)
-                    except Exception:
-                        pass
+                    except RegistryConflictError:
+                        reg_rec = registry_store.get_by_evidence_fingerprint(cp.evidence_fingerprint)
+                    except Exception as exc:
+                        raise CampaignLearningIntegrityError(
+                            "Campaign learning materialization failed while resolving "
+                            f"evidence/registry lineage for campaign '{campaign_id}': {exc}"
+                        ) from exc
 
             if reg_rec is not None:
-                learnings = registry_store.query_learning(
-                    experiment_fingerprint=reg_rec.experiment_fingerprint,
-                    evidence_fingerprint=reg_rec.evidence_fingerprint,
-                )
-                if learnings:
-                    lr = learnings[0]
-                else:
-                    lr = construct_learning_record_from_registry_record(reg_rec)
-                    try:
-                        registry_store.register_learning_record(lr)
-                    except RegistryConflictError:
-                        pass
-                learning_records.append(lr)
+                try:
+                    learnings = registry_store.query_learning(
+                        experiment_fingerprint=reg_rec.experiment_fingerprint,
+                        evidence_fingerprint=reg_rec.evidence_fingerprint,
+                    )
+                    if learnings:
+                        lr = learnings[0]
+                    else:
+                        lr = construct_learning_record_from_registry_record(reg_rec)
+                        try:
+                            registry_store.register_learning_record(lr)
+                        except RegistryConflictError:
+                            pass
 
-    # 3. Derive research knowledge patterns from learning records
+                    learning_records.append(lr)
+                except Exception as exc:
+                    if isinstance(exc, CampaignLearningIntegrityError):
+                        raise
+                    raise CampaignLearningIntegrityError(
+                        "Campaign learning materialization failed while resolving "
+                        f"learning records for campaign '{campaign_id}': {exc}"
+                    ) from exc
+
+    # Validate resolved learning records against authoritative selected candidate IDs
+    validated_learning_records = _resolve_materialization_learning_records(
+        learning_records=learning_records,
+        selected_candidate_ids=decision.selected_candidate_ids,
+    )
+
+    # 3. Derive research knowledge patterns from validated learning records
     knowledge_patterns = derive_research_knowledge_patterns(
-        learning_records,
+        validated_learning_records,
         registry_store=registry_store,
         policy=ResearchKnowledgeDerivationPolicy(allow_single_observation_patterns=True),
     )
@@ -423,18 +552,26 @@ def derive_governed_campaign_learning(
             p_existing = registry_store.get_pattern_by_id(pat.pattern_id)
             if p_existing:
                 registered_patterns.append(p_existing)
+            else:
+                raise CampaignLearningIntegrityError(
+                    f"Conflicting pattern '{pat.pattern_id}' could not be resolved from registry store."
+                )
+        except Exception as exc:
+            raise CampaignLearningIntegrityError(
+                f"Failed to register derived knowledge pattern '{pat.pattern_id}' for campaign '{campaign_id}': {exc}"
+            ) from exc
 
-    sup_ev_fps = tuple(sorted(set(decision.evidence_fingerprints)))
-    rob_fps = tuple(sorted(set(decision.robustness_fingerprints)))
-    qual_fps = tuple(sorted(set(decision.qualification_fingerprints)))
-    lr_ids = tuple(sorted(set(lr.learning_id for lr in learning_records)))
-    kp_ids = tuple(sorted(set(p.pattern_id for p in registered_patterns)))
+    sup_ev_fps = _canonical_tuple(decision.evidence_fingerprints)
+    rob_fps = _canonical_tuple(decision.robustness_fingerprints)
+    qual_fps = _canonical_tuple(decision.qualification_fingerprints)
+    lr_ids = _canonical_tuple(lr.learning_id for lr in validated_learning_records)
+    kp_ids = _canonical_tuple(p.pattern_id for p in registered_patterns)
 
     artifact = GovernedCampaignLearningArtifact(
         campaign_id=campaign_id,
         campaign_selection_decision_fingerprint=decision.decision_fingerprint,
         synthesis_fingerprint=synthesis.synthesis_fingerprint,
-        selected_candidate_ids=tuple(decision.selected_candidate_ids),
+        selected_candidate_ids=_canonical_tuple(decision.selected_candidate_ids),
         supporting_evidence_fingerprints=sup_ev_fps,
         robustness_fingerprints=rob_fps,
         qualification_fingerprints=qual_fps,
@@ -463,7 +600,48 @@ def register_governed_campaign_learning(
         artifact, store=store, registry_store=registry_store
     )
 
-    store.save_campaign_learning(artifact)
+    try:
+        store.save_campaign_learning(artifact)
+    except FileExistsError as exc:
+        raise CampaignLearningIntegrityError(
+            f"Conflicting campaign learning artifact already exists for campaign '{artifact.campaign_id}': {exc}"
+        ) from exc
+    return artifact
+
+
+def materialize_governed_campaign_feedback(
+    campaign_id: str,
+    *,
+    store: Optional[ResearchCampaignStore] = None,
+    registry_store: Optional[ResearchRegistryStore] = None,
+    methodology_version: str = "1.0",
+) -> GovernedCampaignLearningArtifact:
+    """Orchestrates authoritative, idempotent materialization of campaign feedback into research memory.
+
+    Responsibilities:
+    load campaign -> validate synthesis -> validate selection decision -> resolve authoritative learning records
+    -> derive/register knowledge -> construct canonical learning artifact -> validate complete artifact -> persist idempotently -> return artifact.
+
+    Does NOT execute experiments, accept hypotheses, promote candidates, or modify production state.
+    """
+    if store is None:
+        store = ResearchCampaignStore()
+    if registry_store is None:
+        registry_store = ResearchRegistryStore()
+
+    artifact = derive_governed_campaign_learning(
+        campaign_id=campaign_id,
+        store=store,
+        registry_store=registry_store,
+        methodology_version=methodology_version,
+    )
+
+    register_governed_campaign_learning(
+        artifact,
+        store=store,
+        registry_store=registry_store,
+    )
+
     return artifact
 
 
@@ -610,26 +788,47 @@ def validate_feedback_loop_lineage(
     if not h_syn_fp:
         raise CampaignLearningIntegrityError("Hypothesis missing required synthesis_fingerprint constraint.")
 
-    # 2. Validate durable campaign selection decision and synthesis
+    h_art_fp = hypothesis.constraints.get("campaign_learning_artifact_fingerprint")
+    if not h_art_fp:
+        raise CampaignLearningIntegrityError("Hypothesis missing required campaign_learning_artifact_fingerprint constraint.")
+
+    # 2. Validate durable campaign learning artifact, decision, and synthesis
+    learning_artifact = store.load_campaign_learning(campaign_id)
+    if learning_artifact.artifact_fingerprint != h_art_fp:
+        raise CampaignLearningIntegrityError(
+            f"Campaign learning artifact fingerprint mismatch: hypothesis has '{h_art_fp}', store artifact has '{learning_artifact.artifact_fingerprint}'."
+        )
+
+    CampaignLearningIntegrityValidator.validate_campaign_learning_integrity(
+        learning_artifact, store=store, registry_store=registry_store
+    )
+
+    if learning_artifact.campaign_selection_decision_fingerprint != h_dec_fp:
+        raise CampaignLearningIntegrityError(
+            f"Selection decision fingerprint mismatch between hypothesis '{h_dec_fp}' and learning artifact '{learning_artifact.campaign_selection_decision_fingerprint}'."
+        )
+
+    if learning_artifact.synthesis_fingerprint != h_syn_fp:
+        raise CampaignLearningIntegrityError(
+            f"Synthesis fingerprint mismatch between hypothesis '{h_syn_fp}' and learning artifact '{learning_artifact.synthesis_fingerprint}'."
+        )
+
     synthesis = store.load_evidence_synthesis(campaign_id)
     CampaignSelectionIntegrityValidator.validate_synthesis_integrity(synthesis, store=store)
-    if synthesis.synthesis_fingerprint != h_syn_fp:
-        raise CampaignLearningIntegrityError(
-            f"Synthesis fingerprint mismatch: hypothesis has '{h_syn_fp}', store synthesis has '{synthesis.synthesis_fingerprint}'."
-        )
 
     decision = store.load_selection_decision(campaign_id)
     CampaignSelectionIntegrityValidator.validate_selection_decision_integrity(decision, synthesis=synthesis)
-    if decision.decision_fingerprint != h_dec_fp:
-        raise CampaignLearningIntegrityError(
-            f"Selection decision fingerprint mismatch: hypothesis has '{h_dec_fp}', store decision has '{decision.decision_fingerprint}'."
-        )
 
-    # 3. Check source knowledge lineage
+    # 3. Check source knowledge lineage and cross-campaign contamination
     if not hypothesis.source_knowledge_ids:
         raise CampaignLearningIntegrityError("Hypothesis missing source_knowledge_ids.")
 
+    art_pattern_ids = set(learning_artifact.knowledge_pattern_ids)
     for k_id in hypothesis.source_knowledge_ids:
+        if k_id not in art_pattern_ids:
+            raise CampaignLearningIntegrityError(
+                f"Referenced knowledge pattern '{k_id}' in hypothesis lineage does not belong to campaign '{campaign_id}' learning artifact."
+            )
         pat = registry_store.get_pattern_by_id(k_id)
         if pat is None:
             raise CampaignLearningIntegrityError(
