@@ -7,6 +7,7 @@ Fail-closed on corrupted, missing, or conflicting research evidence objects.
 from __future__ import annotations
 
 import json
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -19,10 +20,15 @@ from src.evaluation.research_constitution import (
     PromotionStatus,
     RejectionReason,
     ResearchCampaign,
+    ResearchCampaignDefinition,
     ResearchCampaignStatus,
     ResearchEvidence,
     ResearchExperimentSpec,
+    ResearchPlannedTrial,
+    ResearchTrialCheckpoint,
+    ResearchTrialPlan,
     WalkForwardProtocol,
+    validate_campaign_state_transition,
 )
 
 DEFAULT_RESEARCH_DIR = (
@@ -131,6 +137,11 @@ def load_research_campaign(
         selected_candidate_ids=tuple(data.get("selected_candidate_ids", [])),
         status=ResearchCampaignStatus(data.get("status", "COMPLETED")),
         created_at_utc=data.get("created_at_utc", ""),
+        definition_fingerprint=data.get("definition_fingerprint", ""),
+        trial_plan_fingerprint=data.get("trial_plan_fingerprint", ""),
+        executed_trial_count=data.get("executed_trial_count", 0),
+        failed_trial_count=data.get("failed_trial_count", 0),
+        blocked_trial_count=data.get("blocked_trial_count", 0),
     )
 
     if campaign.reproducibility_fingerprint != data.get("reproducibility_fingerprint"):
@@ -386,7 +397,9 @@ def persist_promoted_candidate_binding(
     else:
         if robustness_assessment is None:
             try:
-                from src.evaluation.research_robustness import assess_research_robustness
+                from src.evaluation.research_robustness import (
+                    assess_research_robustness,
+                )
                 robustness_assessment = assess_research_robustness(evidence)
             except Exception:
                 robustness_assessment = None
@@ -684,3 +697,275 @@ def resolve_promoted_candidate(
             "Specify candidate_id to select an already-promoted artifact."
         )
     return matches[0]
+
+
+class ResearchCampaignStore:
+    """Canonical persistence store for durable Research Campaign lifecycle and checkpoints.
+
+    Supports:
+    - Campaign Definition persistence and loading
+    - Trial Plan persistence and loading
+    - Lifecycle state persistence and loading
+    - Trial Checkpoint persistence, updating, loading, and listing
+    - Identification of completed, pending, failed, and blocked trials
+    - Integrity validation on load (failing closed on corrupt or mismatched fingerprint state)
+    """
+
+    def __init__(self, base_dir: str | Path = DEFAULT_CAMPAIGN_DIR) -> None:
+        self.base_dir = Path(base_dir)
+
+    def _campaign_dir(self, campaign_id: str) -> Path:
+        return self.base_dir / campaign_id.strip()
+
+    def _checkpoints_dir(self, campaign_id: str) -> Path:
+        return self._campaign_dir(campaign_id) / "checkpoints"
+
+    def save_definition(self, definition: ResearchCampaignDefinition) -> Path:
+        if not isinstance(definition, ResearchCampaignDefinition):
+            raise TypeError("definition must be a ResearchCampaignDefinition instance.")
+        cdir = self._campaign_dir(definition.campaign_id)
+        cdir.mkdir(parents=True, exist_ok=True)
+        path = cdir / "definition.json"
+        if path.exists():
+            existing = self.load_definition(definition.campaign_id)
+            if existing.definition_fingerprint != definition.definition_fingerprint:
+                raise FileExistsError(
+                    f"Cannot overwrite campaign definition at '{path}' with conflicting definition fingerprint."
+                )
+            return path
+        content = json.dumps(definition.as_dict(), indent=2)
+        path.write_text(content, encoding="utf-8")
+        return path
+
+    def load_definition(self, campaign_id: str) -> ResearchCampaignDefinition:
+        path = self._campaign_dir(campaign_id) / "definition.json"
+        if not path.exists():
+            raise FileNotFoundError(f"Campaign definition not found at: {path}")
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except Exception as exc:
+            raise ValueError(f"Failed to parse campaign definition JSON at {path}: {exc}") from exc
+
+        ds_data = data.get("dataset_scope", {})
+        ds = DatasetScope(
+            dataset_id=ds_data.get("dataset_id", ""),
+            symbol=ds_data.get("symbol", ""),
+            timeframe=ds_data.get("timeframe", ""),
+            start_date=ds_data.get("start_date", ""),
+            end_date=ds_data.get("end_date", ""),
+        )
+        ea_data = data.get("execution_assumptions", {})
+        ea = ExecutionAssumptions(
+            transaction_cost=float(ea_data.get("transaction_cost", 0.0)),
+            slippage=float(ea_data.get("slippage", 0.0)),
+            latency_ms=float(ea_data.get("latency_ms", 0.0)),
+        )
+        cp_data = data.get("code_provenance", {})
+        cp = CodeProvenance(
+            commit_sha=cp_data.get("commit_sha", ""),
+            repository_status=cp_data.get("repository_status", "clean"),
+            author=cp_data.get("author", ""),
+        )
+        wf_data = data.get("walk_forward_protocol")
+        wf = None
+        if wf_data is not None:
+            wf = WalkForwardProtocol(
+                train_size=int(wf_data["train_size"]),
+                test_size=int(wf_data["test_size"]),
+            )
+
+        defn = ResearchCampaignDefinition(
+            search_space_fingerprint=data.get("search_space_fingerprint", ""),
+            search_policy_fingerprint=data.get("search_policy_fingerprint", ""),
+            criteria_fingerprint=data.get("criteria_fingerprint", ""),
+            dataset_scope=ds,
+            execution_assumptions=ea,
+            code_provenance=cp,
+            methodology_version=data.get("methodology_version", ""),
+            candidate_ids=tuple(data.get("candidate_ids", [])),
+            trial_count=int(data.get("trial_count", 0)),
+            walk_forward_protocol=wf,
+            governance_constraints=data.get("governance_constraints", {}),
+            memory_policy_id=data.get("memory_policy_id", "default_memory_policy_v1"),
+        )
+        if defn.definition_fingerprint != data.get("definition_fingerprint"):
+            raise ValueError(
+                f"Loaded definition fingerprint mismatch for campaign '{campaign_id}': "
+                f"expected '{defn.definition_fingerprint}', got '{data.get('definition_fingerprint')}'."
+            )
+        return defn
+
+    def save_trial_plan(self, plan: ResearchTrialPlan) -> Path:
+        if not isinstance(plan, ResearchTrialPlan):
+            raise TypeError("plan must be a ResearchTrialPlan instance.")
+        cdir = self._campaign_dir(plan.campaign_id)
+        cdir.mkdir(parents=True, exist_ok=True)
+        path = cdir / "plan.json"
+        if path.exists():
+            existing = self.load_trial_plan(plan.campaign_id)
+            if existing.plan_fingerprint != plan.plan_fingerprint:
+                raise FileExistsError(
+                    f"Cannot overwrite trial plan at '{path}' with conflicting plan fingerprint."
+                )
+            return path
+        content = json.dumps(plan.as_dict(), indent=2)
+        path.write_text(content, encoding="utf-8")
+        return path
+
+    def load_trial_plan(self, campaign_id: str) -> ResearchTrialPlan:
+        path = self._campaign_dir(campaign_id) / "plan.json"
+        if not path.exists():
+            raise FileNotFoundError(f"Trial plan not found at: {path}")
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except Exception as exc:
+            raise ValueError(f"Failed to parse trial plan JSON at {path}: {exc}") from exc
+
+        trials = []
+        for t_data in data.get("trials", []):
+            t = ResearchPlannedTrial(
+                campaign_id=t_data.get("campaign_id", ""),
+                trial_id=t_data.get("trial_id", ""),
+                trial_index=int(t_data.get("trial_index", 0)),
+                candidate_id=t_data.get("candidate_id", ""),
+                candidate_fingerprint=t_data.get("candidate_fingerprint", ""),
+                hypothesis_fingerprint=t_data.get("hypothesis_fingerprint", ""),
+                strategy_name=t_data.get("strategy_name", ""),
+                strategy_version=t_data.get("strategy_version", ""),
+                dataset_id=t_data.get("dataset_id", ""),
+                execution_assumptions_id=t_data.get("execution_assumptions_id", ""),
+                planned_status=t_data.get("planned_status", "PENDING"),
+            )
+            trials.append(t)
+
+        plan = ResearchTrialPlan(
+            campaign_id=data.get("campaign_id", ""),
+            definition_fingerprint=data.get("definition_fingerprint", ""),
+            trials=tuple(trials),
+        )
+        if plan.plan_fingerprint != data.get("plan_fingerprint"):
+            raise ValueError(
+                f"Loaded plan fingerprint mismatch for campaign '{campaign_id}': "
+                f"expected '{plan.plan_fingerprint}', got '{data.get('plan_fingerprint')}'."
+            )
+        return plan
+
+    def save_lifecycle_state(
+        self,
+        campaign_id: str,
+        status: ResearchCampaignStatus,
+        reason: str = "",
+        updated_at_utc: str = "",
+    ) -> Path:
+        if not isinstance(status, ResearchCampaignStatus):
+            raise TypeError("status must be a ResearchCampaignStatus enum member.")
+        cdir = self._campaign_dir(campaign_id)
+        cdir.mkdir(parents=True, exist_ok=True)
+        path = cdir / "state.json"
+
+        if path.exists():
+            curr_state = self.load_lifecycle_state(campaign_id)
+            current_status = ResearchCampaignStatus(curr_state.get("status"))
+            validate_campaign_state_transition(current_status, status)
+
+        timestamp = updated_at_utc if updated_at_utc else datetime.now(timezone.utc).isoformat()
+        state_data = {
+            "campaign_id": campaign_id.strip(),
+            "status": status.value,
+            "reason": reason,
+            "updated_at_utc": timestamp,
+        }
+        path.write_text(json.dumps(state_data, indent=2), encoding="utf-8")
+        return path
+
+    def load_lifecycle_state(self, campaign_id: str) -> dict[str, Any]:
+        path = self._campaign_dir(campaign_id) / "state.json"
+        if not path.exists():
+            raise FileNotFoundError(f"Campaign lifecycle state not found at: {path}")
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except Exception as exc:
+            raise ValueError(f"Failed to parse lifecycle state JSON at {path}: {exc}") from exc
+
+        if not isinstance(data, dict) or "status" not in data:
+            raise ValueError(f"Invalid state data at {path}")
+        return data
+
+    def save_trial_checkpoint(self, checkpoint: ResearchTrialCheckpoint) -> Path:
+        if not isinstance(checkpoint, ResearchTrialCheckpoint):
+            raise TypeError("checkpoint must be a ResearchTrialCheckpoint instance.")
+        cp_dir = self._checkpoints_dir(checkpoint.campaign_id)
+        cp_dir.mkdir(parents=True, exist_ok=True)
+        path = cp_dir / f"{checkpoint.trial_id}.json"
+
+        timestamp = checkpoint.updated_at_utc or datetime.now(timezone.utc).isoformat()
+        if checkpoint.updated_at_utc != timestamp:
+            checkpoint = ResearchTrialCheckpoint(
+                trial_id=checkpoint.trial_id,
+                campaign_id=checkpoint.campaign_id,
+                candidate_id=checkpoint.candidate_id,
+                trial_index=checkpoint.trial_index,
+                attempt_number=checkpoint.attempt_number,
+                status=checkpoint.status,
+                experiment_fingerprint=checkpoint.experiment_fingerprint,
+                evidence_fingerprint=checkpoint.evidence_fingerprint,
+                qualification_status=checkpoint.qualification_status,
+                rejection_reasons=checkpoint.rejection_reasons,
+                error_message=checkpoint.error_message,
+                execution_history=checkpoint.execution_history,
+                updated_at_utc=timestamp,
+            )
+
+        content = json.dumps(checkpoint.as_dict(), indent=2)
+        path.write_text(content, encoding="utf-8")
+        return path
+
+    def load_trial_checkpoint(self, campaign_id: str, trial_id: str) -> ResearchTrialCheckpoint:
+        path = self._checkpoints_dir(campaign_id) / f"{trial_id}.json"
+        if not path.exists():
+            raise FileNotFoundError(f"Trial checkpoint not found at: {path}")
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except Exception as exc:
+            raise ValueError(f"Failed to parse trial checkpoint JSON at {path}: {exc}") from exc
+
+        return ResearchTrialCheckpoint(
+            trial_id=data.get("trial_id", ""),
+            campaign_id=data.get("campaign_id", ""),
+            candidate_id=data.get("candidate_id", ""),
+            trial_index=int(data.get("trial_index", 0)),
+            attempt_number=int(data.get("attempt_number", 1)),
+            status=data.get("status", "PENDING"),
+            experiment_fingerprint=data.get("experiment_fingerprint"),
+            evidence_fingerprint=data.get("evidence_fingerprint"),
+            qualification_status=data.get("qualification_status"),
+            rejection_reasons=tuple(data.get("rejection_reasons", [])),
+            error_message=data.get("error_message", ""),
+            execution_history=tuple(data.get("execution_history", [])),
+            updated_at_utc=data.get("updated_at_utc", ""),
+        )
+
+    def list_trial_checkpoints(self, campaign_id: str) -> list[ResearchTrialCheckpoint]:
+        cp_dir = self._checkpoints_dir(campaign_id)
+        if not cp_dir.exists():
+            return []
+        checkpoints: list[ResearchTrialCheckpoint] = []
+        for path in sorted(cp_dir.glob("*.json")):
+            try:
+                cp = self.load_trial_checkpoint(campaign_id, path.stem)
+                checkpoints.append(cp)
+            except Exception:
+                pass
+        return sorted(checkpoints, key=lambda c: c.trial_index)
+
+    def get_completed_trials(self, campaign_id: str) -> list[ResearchTrialCheckpoint]:
+        return [
+            cp for cp in self.list_trial_checkpoints(campaign_id)
+            if cp.status in ("COMPLETED", "QUALIFIED", "REJECTED")
+        ]
+
+    def get_pending_trials(self, campaign_id: str) -> list[ResearchTrialCheckpoint]:
+        return [
+            cp for cp in self.list_trial_checkpoints(campaign_id)
+            if cp.status in ("PENDING", "RUNNING")
+        ]

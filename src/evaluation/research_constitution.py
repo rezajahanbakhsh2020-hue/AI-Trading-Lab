@@ -11,12 +11,13 @@ and structured evidence tracking without altering Protected Core trading or eval
 
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass, field
-from enum import Enum
 import hashlib
 import json
 import math
-from typing import Any, Mapping, Sequence
+from collections.abc import Mapping, Sequence
+from dataclasses import asdict, dataclass, field
+from enum import Enum
+from typing import Any
 
 
 class PromotionStatus(str, Enum):
@@ -32,9 +33,61 @@ class PromotionStatus(str, Enum):
 class ResearchCampaignStatus(str, Enum):
     """Explicit lifecycle status for a Research Campaign / Discovery Run."""
 
+    PLANNED = "PLANNED"
+    RUNNING = "RUNNING"
+    PAUSED = "PAUSED"
     COMPLETED = "COMPLETED"
     TRUNCATED = "TRUNCATED"
     FAILED = "FAILED"
+    CANCELLED = "CANCELLED"
+
+
+class InvalidLifecycleTransitionError(ValueError):
+    """Raised when an invalid lifecycle state transition is attempted."""
+
+
+_VALID_CAMPAIGN_STATE_TRANSITIONS: dict[ResearchCampaignStatus, set[ResearchCampaignStatus]] = {
+    ResearchCampaignStatus.PLANNED: {
+        ResearchCampaignStatus.RUNNING,
+        ResearchCampaignStatus.CANCELLED,
+    },
+    ResearchCampaignStatus.RUNNING: {
+        ResearchCampaignStatus.PAUSED,
+        ResearchCampaignStatus.COMPLETED,
+        ResearchCampaignStatus.TRUNCATED,
+        ResearchCampaignStatus.FAILED,
+        ResearchCampaignStatus.CANCELLED,
+    },
+    ResearchCampaignStatus.PAUSED: {
+        ResearchCampaignStatus.RUNNING,
+        ResearchCampaignStatus.CANCELLED,
+    },
+    ResearchCampaignStatus.COMPLETED: set(),
+    ResearchCampaignStatus.TRUNCATED: set(),
+    ResearchCampaignStatus.FAILED: set(),
+    ResearchCampaignStatus.CANCELLED: set(),
+}
+
+
+def validate_campaign_state_transition(
+    current_status: ResearchCampaignStatus,
+    target_status: ResearchCampaignStatus,
+) -> None:
+    """Validate lifecycle state transition. Fails closed with InvalidLifecycleTransitionError."""
+    if not isinstance(current_status, ResearchCampaignStatus):
+        raise TypeError(f"current_status must be ResearchCampaignStatus enum, got {type(current_status).__name__}")
+    if not isinstance(target_status, ResearchCampaignStatus):
+        raise TypeError(f"target_status must be ResearchCampaignStatus enum, got {type(target_status).__name__}")
+
+    if current_status == target_status:
+        return
+
+    allowed = _VALID_CAMPAIGN_STATE_TRANSITIONS.get(current_status, set())
+    if target_status not in allowed:
+        raise InvalidLifecycleTransitionError(
+            f"Invalid campaign state transition from '{current_status.value}' to '{target_status.value}'. "
+            f"Allowed transitions from '{current_status.value}': {[s.value for s in sorted(a.value for a in allowed)]}"
+        )
 
 
 class HypothesisStatus(str, Enum):
@@ -963,6 +1016,268 @@ def compute_campaign_fingerprint(
 
 
 @dataclass(frozen=True)
+class ResearchCampaignDefinition:
+    """Immutable, fingerprintable representation of a Research Campaign Definition.
+
+    Binds search space, policy, criteria, dataset scope, execution assumptions, code provenance,
+    methodology version, candidate list, trial count, walk-forward protocol, governance constraints,
+    and memory policy identity. Excludes volatile wall-clock timestamps and runtime IDs.
+    """
+
+    search_space_fingerprint: str
+    search_policy_fingerprint: str
+    criteria_fingerprint: str
+    dataset_scope: DatasetScope
+    execution_assumptions: ExecutionAssumptions
+    code_provenance: CodeProvenance
+    methodology_version: str
+    candidate_ids: tuple[str, ...]
+    trial_count: int
+    walk_forward_protocol: WalkForwardProtocol | None = None
+    governance_constraints: dict[str, Any] = field(default_factory=dict)
+    memory_policy_id: str = "default_memory_policy_v1"
+    campaign_id: str = field(init=False)
+    definition_fingerprint: str = field(init=False)
+
+    def __post_init__(self) -> None:
+        if not self.search_space_fingerprint or not self.search_space_fingerprint.strip():
+            raise ValueError("search_space_fingerprint must be a non-empty string.")
+        if not self.search_policy_fingerprint or not self.search_policy_fingerprint.strip():
+            raise ValueError("search_policy_fingerprint must be a non-empty string.")
+        if not self.criteria_fingerprint or not self.criteria_fingerprint.strip():
+            raise ValueError("criteria_fingerprint must be a non-empty string.")
+        if not isinstance(self.dataset_scope, DatasetScope):
+            raise TypeError("dataset_scope must be a DatasetScope instance.")
+        if not isinstance(self.execution_assumptions, ExecutionAssumptions):
+            raise TypeError("execution_assumptions must be an ExecutionAssumptions instance.")
+        if not isinstance(self.code_provenance, CodeProvenance):
+            raise TypeError("code_provenance must be a CodeProvenance instance.")
+        if not self.methodology_version or not self.methodology_version.strip():
+            raise ValueError("methodology_version must be a non-empty string.")
+        if not isinstance(self.candidate_ids, tuple):
+            object.__setattr__(self, "candidate_ids", tuple(self.candidate_ids))
+        if self.trial_count < 0:
+            raise ValueError("trial_count cannot be negative.")
+        if self.walk_forward_protocol is not None and not isinstance(
+            self.walk_forward_protocol, WalkForwardProtocol
+        ):
+            raise TypeError("walk_forward_protocol must be a WalkForwardProtocol instance or None.")
+
+        cid = compute_campaign_fingerprint(
+            search_space_fingerprint=self.search_space_fingerprint,
+            search_policy_fingerprint=self.search_policy_fingerprint,
+            criteria_fingerprint=self.criteria_fingerprint,
+            dataset_scope=self.dataset_scope,
+            execution_assumptions=self.execution_assumptions,
+            code_provenance=self.code_provenance,
+            candidate_ids=self.candidate_ids,
+        )
+        object.__setattr__(self, "campaign_id", cid)
+
+        def_payload = {
+            "campaign_id": cid,
+            "search_space_fingerprint": self.search_space_fingerprint.strip(),
+            "search_policy_fingerprint": self.search_policy_fingerprint.strip(),
+            "criteria_fingerprint": self.criteria_fingerprint.strip(),
+            "dataset_scope": {
+                "dataset_id": self.dataset_scope.dataset_id.strip(),
+                "symbol": self.dataset_scope.symbol.strip(),
+                "timeframe": self.dataset_scope.timeframe.strip(),
+                "start_date": self.dataset_scope.start_date.strip(),
+                "end_date": self.dataset_scope.end_date.strip(),
+            },
+            "execution_assumptions": {
+                "transaction_cost": float(self.execution_assumptions.transaction_cost),
+                "slippage": float(self.execution_assumptions.slippage),
+                "latency_ms": float(self.execution_assumptions.latency_ms),
+            },
+            "code_provenance": {
+                "commit_sha": self.code_provenance.commit_sha.strip(),
+                "repository_status": self.code_provenance.repository_status.strip(),
+                "author": self.code_provenance.author.strip(),
+            },
+            "methodology_version": self.methodology_version.strip(),
+            "candidate_ids": list(self.candidate_ids),
+            "trial_count": self.trial_count,
+            "governance_constraints": self.governance_constraints,
+            "memory_policy_id": self.memory_policy_id.strip(),
+        }
+        if self.walk_forward_protocol is not None:
+            def_payload["walk_forward_protocol"] = {
+                "train_size": int(self.walk_forward_protocol.train_size),
+                "test_size": int(self.walk_forward_protocol.test_size),
+            }
+
+        serialized = json.dumps(def_payload, sort_keys=True, ensure_ascii=True)
+        def_fp = hashlib.sha256(serialized.encode("utf-8")).hexdigest()
+        object.__setattr__(self, "definition_fingerprint", def_fp)
+
+    def as_dict(self) -> dict[str, Any]:
+        return {
+            "campaign_id": self.campaign_id,
+            "definition_fingerprint": self.definition_fingerprint,
+            "search_space_fingerprint": self.search_space_fingerprint,
+            "search_policy_fingerprint": self.search_policy_fingerprint,
+            "criteria_fingerprint": self.criteria_fingerprint,
+            "dataset_scope": asdict(self.dataset_scope),
+            "execution_assumptions": asdict(self.execution_assumptions),
+            "code_provenance": asdict(self.code_provenance),
+            "methodology_version": self.methodology_version,
+            "candidate_ids": list(self.candidate_ids),
+            "trial_count": self.trial_count,
+            "walk_forward_protocol": asdict(self.walk_forward_protocol) if self.walk_forward_protocol else None,
+            "governance_constraints": self.governance_constraints,
+            "memory_policy_id": self.memory_policy_id,
+        }
+
+
+@dataclass(frozen=True)
+class ResearchPlannedTrial:
+    """Authoritative representation of a single planned trial in a Research Campaign plan."""
+
+    campaign_id: str
+    trial_id: str
+    trial_index: int
+    candidate_id: str
+    candidate_fingerprint: str
+    hypothesis_fingerprint: str
+    strategy_name: str
+    strategy_version: str
+    dataset_id: str
+    execution_assumptions_id: str
+    planned_status: str = "PENDING"
+
+    def __post_init__(self) -> None:
+        if not self.campaign_id or not self.campaign_id.strip():
+            raise ValueError("campaign_id must be a non-empty string.")
+        if not self.trial_id or not self.trial_id.strip():
+            raise ValueError("trial_id must be a non-empty string.")
+        if self.trial_index < 0:
+            raise ValueError("trial_index must be non-negative.")
+        if not self.candidate_id or not self.candidate_id.strip():
+            raise ValueError("candidate_id must be a non-empty string.")
+        if not self.candidate_fingerprint or not self.candidate_fingerprint.strip():
+            raise ValueError("candidate_fingerprint must be a non-empty string.")
+
+    def as_dict(self) -> dict[str, Any]:
+        return {
+            "campaign_id": self.campaign_id,
+            "trial_id": self.trial_id,
+            "trial_index": self.trial_index,
+            "candidate_id": self.candidate_id,
+            "candidate_fingerprint": self.candidate_fingerprint,
+            "hypothesis_fingerprint": self.hypothesis_fingerprint,
+            "strategy_name": self.strategy_name,
+            "strategy_version": self.strategy_version,
+            "dataset_id": self.dataset_id,
+            "execution_assumptions_id": self.execution_assumptions_id,
+            "planned_status": self.planned_status,
+        }
+
+
+@dataclass(frozen=True)
+class ResearchTrialPlan:
+    """Authoritative, deterministic trial plan for a Research Campaign."""
+
+    campaign_id: str
+    definition_fingerprint: str
+    trials: tuple[ResearchPlannedTrial, ...]
+    plan_fingerprint: str = field(init=False)
+
+    def __post_init__(self) -> None:
+        if not self.campaign_id or not self.campaign_id.strip():
+            raise ValueError("campaign_id must be a non-empty string.")
+        if not self.definition_fingerprint or not self.definition_fingerprint.strip():
+            raise ValueError("definition_fingerprint must be a non-empty string.")
+        if not isinstance(self.trials, tuple):
+            object.__setattr__(self, "trials", tuple(self.trials))
+
+        seen_trial_ids: set[str] = set()
+        for t in self.trials:
+            if not isinstance(t, ResearchPlannedTrial):
+                raise TypeError("All items in trials must be ResearchPlannedTrial instances.")
+            if t.trial_id in seen_trial_ids:
+                raise ValueError(f"Duplicate trial_id '{t.trial_id}' in trial plan.")
+            seen_trial_ids.add(t.trial_id)
+            if t.campaign_id != self.campaign_id:
+                raise ValueError(f"Trial '{t.trial_id}' campaign_id '{t.campaign_id}' mismatch with plan '{self.campaign_id}'.")
+
+        plan_payload = {
+            "campaign_id": self.campaign_id,
+            "definition_fingerprint": self.definition_fingerprint,
+            "trials": [t.as_dict() for t in self.trials],
+        }
+        serialized = json.dumps(plan_payload, sort_keys=True, ensure_ascii=True)
+        object.__setattr__(self, "plan_fingerprint", hashlib.sha256(serialized.encode("utf-8")).hexdigest())
+
+    def as_dict(self) -> dict[str, Any]:
+        return {
+            "campaign_id": self.campaign_id,
+            "definition_fingerprint": self.definition_fingerprint,
+            "plan_fingerprint": self.plan_fingerprint,
+            "trials": [t.as_dict() for t in self.trials],
+        }
+
+
+@dataclass(frozen=True)
+class ResearchTrialCheckpoint:
+    """Authoritative durable checkpoint record for a single trial within a Research Campaign."""
+
+    trial_id: str
+    campaign_id: str
+    candidate_id: str
+    trial_index: int
+    attempt_number: int = 1
+    status: str = "PENDING"
+    experiment_fingerprint: str | None = None
+    evidence_fingerprint: str | None = None
+    qualification_status: str | None = None
+    rejection_reasons: tuple[str, ...] = field(default_factory=tuple)
+    error_message: str = ""
+    execution_history: tuple[dict[str, Any], ...] = field(default_factory=tuple)
+    updated_at_utc: str = ""
+
+    def __post_init__(self) -> None:
+        if not self.trial_id or not self.trial_id.strip():
+            raise ValueError("trial_id must be a non-empty string.")
+        if not self.campaign_id or not self.campaign_id.strip():
+            raise ValueError("campaign_id must be a non-empty string.")
+        if not self.candidate_id or not self.candidate_id.strip():
+            raise ValueError("candidate_id must be a non-empty string.")
+        if self.trial_index < 0:
+            raise ValueError("trial_index must be non-negative.")
+        if self.attempt_number <= 0:
+            raise ValueError("attempt_number must be a positive integer.")
+        if self.status not in (
+            "PENDING",
+            "RUNNING",
+            "COMPLETED",
+            "FAILED",
+            "QUALIFIED",
+            "REJECTED",
+            "BLOCKED",
+        ):
+            raise ValueError(f"Invalid trial status '{self.status}'.")
+
+    def as_dict(self) -> dict[str, Any]:
+        return {
+            "trial_id": self.trial_id,
+            "campaign_id": self.campaign_id,
+            "candidate_id": self.candidate_id,
+            "trial_index": self.trial_index,
+            "attempt_number": self.attempt_number,
+            "status": self.status,
+            "experiment_fingerprint": self.experiment_fingerprint,
+            "evidence_fingerprint": self.evidence_fingerprint,
+            "qualification_status": self.qualification_status,
+            "rejection_reasons": list(self.rejection_reasons),
+            "error_message": self.error_message,
+            "execution_history": list(self.execution_history),
+            "updated_at_utc": self.updated_at_utc,
+        }
+
+
+@dataclass(frozen=True)
 class ResearchCampaign:
     """Authoritative domain representation of a multi-experiment Research Campaign / Discovery Run.
 
@@ -984,6 +1299,11 @@ class ResearchCampaign:
     selected_candidate_ids: tuple[str, ...]
     status: ResearchCampaignStatus
     created_at_utc: str = ""
+    definition_fingerprint: str = ""
+    trial_plan_fingerprint: str = ""
+    executed_trial_count: int = 0
+    failed_trial_count: int = 0
+    blocked_trial_count: int = 0
     reproducibility_fingerprint: str = field(init=False)
 
     def __post_init__(self) -> None:
@@ -1036,6 +1356,11 @@ class ResearchCampaign:
             "evidence_fingerprints": sorted(self.evidence_fingerprints),
             "selected_candidate_ids": sorted(self.selected_candidate_ids),
             "status": self.status.value,
+            "definition_fingerprint": self.definition_fingerprint,
+            "trial_plan_fingerprint": self.trial_plan_fingerprint,
+            "executed_trial_count": self.executed_trial_count,
+            "failed_trial_count": self.failed_trial_count,
+            "blocked_trial_count": self.blocked_trial_count,
         }
         computed_repro = hashlib.sha256(json.dumps(repro_payload, sort_keys=True).encode("utf-8")).hexdigest()
         object.__setattr__(self, "reproducibility_fingerprint", computed_repro)
@@ -1054,5 +1379,10 @@ class ResearchCampaign:
             "selected_candidate_ids": list(self.selected_candidate_ids),
             "status": self.status.value,
             "created_at_utc": self.created_at_utc,
+            "definition_fingerprint": self.definition_fingerprint,
+            "trial_plan_fingerprint": self.trial_plan_fingerprint,
+            "executed_trial_count": self.executed_trial_count,
+            "failed_trial_count": self.failed_trial_count,
+            "blocked_trial_count": self.blocked_trial_count,
             "reproducibility_fingerprint": self.reproducibility_fingerprint,
         }
