@@ -954,8 +954,8 @@ class ResearchCampaignStore:
             try:
                 cp = self.load_trial_checkpoint(campaign_id, path.stem)
                 checkpoints.append(cp)
-            except Exception:
-                pass
+            except Exception as exc:
+                raise ValueError(f"Failed to load trial checkpoint at '{path}': {exc}") from exc
         return sorted(checkpoints, key=lambda c: c.trial_index)
 
     def get_completed_trials(self, campaign_id: str) -> list[ResearchTrialCheckpoint]:

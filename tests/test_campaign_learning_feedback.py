@@ -384,7 +384,21 @@ def test_learning_artifact_selected_candidates_must_exactly_match_decision(tmp_s
     defn, plan = _save_mock_definition_and_plan(c_store, cid)
     c_store.save_lifecycle_state(cid, ResearchCampaignStatus.COMPLETED)
 
-    from src.evaluation.campaign_synthesis import ResearchCampaignEvidenceSynthesis
+    from src.evaluation.campaign_synthesis import (
+        ResearchCampaignEvidenceSynthesis,
+        ResearchCandidateComparison,
+    )
+    comp = ResearchCandidateComparison(
+        candidate_id="cand_1",
+        candidate_fingerprint="cand_fp_1",
+        experiment_fingerprint="exp_1",
+        evidence_fingerprint="ev_1",
+        qualification_status="QUALIFIED",
+        qualification_fingerprint="qual_1",
+        robustness_fingerprint="rob_1",
+        robustness_status="PASSED",
+    )
+
     syn = ResearchCampaignEvidenceSynthesis(
         campaign_id=cid,
         campaign_definition_fingerprint=defn.definition_fingerprint,
@@ -405,7 +419,7 @@ def test_learning_artifact_selected_candidates_must_exactly_match_decision(tmp_s
         rejected_candidate_count=0,
         selection_governance_status="SELECTION_NOT_APPLICABLE",
         selection_policy_fingerprint="pol_fp_001",
-        candidate_comparisons=(),
+        candidate_comparisons=(comp,),
     )
     c_store.save_evidence_synthesis(syn)
 
@@ -451,7 +465,21 @@ def test_learning_artifact_evidence_lineage_must_exactly_match_decision(tmp_stor
     defn, plan = _save_mock_definition_and_plan(c_store, cid)
     c_store.save_lifecycle_state(cid, ResearchCampaignStatus.COMPLETED)
 
-    from src.evaluation.campaign_synthesis import ResearchCampaignEvidenceSynthesis
+    from src.evaluation.campaign_synthesis import (
+        ResearchCampaignEvidenceSynthesis,
+        ResearchCandidateComparison,
+    )
+    comp = ResearchCandidateComparison(
+        candidate_id="cand_1",
+        candidate_fingerprint="cand_fp_1",
+        experiment_fingerprint="exp_1",
+        evidence_fingerprint="ev_1",
+        qualification_status="QUALIFIED",
+        qualification_fingerprint="qual_1",
+        robustness_fingerprint="rob_1",
+        robustness_status="PASSED",
+    )
+
     syn = ResearchCampaignEvidenceSynthesis(
         campaign_id=cid,
         campaign_definition_fingerprint=defn.definition_fingerprint,
@@ -472,7 +500,7 @@ def test_learning_artifact_evidence_lineage_must_exactly_match_decision(tmp_stor
         rejected_candidate_count=0,
         selection_governance_status="SELECTION_NOT_APPLICABLE",
         selection_policy_fingerprint="pol_fp_001",
-        candidate_comparisons=(),
+        candidate_comparisons=(comp,),
     )
     c_store.save_evidence_synthesis(syn)
 
@@ -518,7 +546,21 @@ def test_learning_artifact_robustness_lineage_must_exactly_match_decision(tmp_st
     defn, plan = _save_mock_definition_and_plan(c_store, cid)
     c_store.save_lifecycle_state(cid, ResearchCampaignStatus.COMPLETED)
 
-    from src.evaluation.campaign_synthesis import ResearchCampaignEvidenceSynthesis
+    from src.evaluation.campaign_synthesis import (
+        ResearchCampaignEvidenceSynthesis,
+        ResearchCandidateComparison,
+    )
+    comp = ResearchCandidateComparison(
+        candidate_id="cand_1",
+        candidate_fingerprint="cand_fp_1",
+        experiment_fingerprint="exp_1",
+        evidence_fingerprint="ev_1",
+        qualification_status="QUALIFIED",
+        qualification_fingerprint="qual_1",
+        robustness_fingerprint="rob_1",
+        robustness_status="PASSED",
+    )
+
     syn = ResearchCampaignEvidenceSynthesis(
         campaign_id=cid,
         campaign_definition_fingerprint=defn.definition_fingerprint,
@@ -539,7 +581,7 @@ def test_learning_artifact_robustness_lineage_must_exactly_match_decision(tmp_st
         rejected_candidate_count=0,
         selection_governance_status="SELECTION_NOT_APPLICABLE",
         selection_policy_fingerprint="pol_fp_001",
-        candidate_comparisons=(),
+        candidate_comparisons=(comp,),
     )
     c_store.save_evidence_synthesis(syn)
 
@@ -585,7 +627,21 @@ def test_learning_artifact_qualification_lineage_must_exactly_match_decision(tmp
     defn, plan = _save_mock_definition_and_plan(c_store, cid)
     c_store.save_lifecycle_state(cid, ResearchCampaignStatus.COMPLETED)
 
-    from src.evaluation.campaign_synthesis import ResearchCampaignEvidenceSynthesis
+    from src.evaluation.campaign_synthesis import (
+        ResearchCampaignEvidenceSynthesis,
+        ResearchCandidateComparison,
+    )
+    comp = ResearchCandidateComparison(
+        candidate_id="cand_1",
+        candidate_fingerprint="cand_fp_1",
+        experiment_fingerprint="exp_1",
+        evidence_fingerprint="ev_1",
+        qualification_status="QUALIFIED",
+        qualification_fingerprint="qual_1",
+        robustness_fingerprint="rob_1",
+        robustness_status="PASSED",
+    )
+
     syn = ResearchCampaignEvidenceSynthesis(
         campaign_id=cid,
         campaign_definition_fingerprint=defn.definition_fingerprint,
@@ -606,7 +662,7 @@ def test_learning_artifact_qualification_lineage_must_exactly_match_decision(tmp
         rejected_candidate_count=0,
         selection_governance_status="SELECTION_NOT_APPLICABLE",
         selection_policy_fingerprint="pol_fp_001",
-        candidate_comparisons=(),
+        candidate_comparisons=(comp,),
     )
     c_store.save_evidence_synthesis(syn)
 
@@ -953,3 +1009,330 @@ def test_feedback_loop_rejects_cross_campaign_lineage(tmp_stores, sample_dataset
     # Validate against wrong campaign ID
     with pytest.raises(CampaignLearningIntegrityError, match="campaign_id mismatch"):
         validate_feedback_loop_lineage("OTHER_CAMPAIGN_ID", hyp, store=c_store, registry_store=r_store)
+
+
+def test_missing_registry_references_fails_without_explicit_store(tmp_stores):
+    c_store, r_store, _ = tmp_stores
+    cid = "camp_missing_reg_001"
+
+    defn, plan = _save_mock_definition_and_plan(c_store, cid)
+    c_store.save_lifecycle_state(cid, ResearchCampaignStatus.COMPLETED)
+
+    from src.evaluation.campaign_synthesis import (
+        ResearchCampaignEvidenceSynthesis,
+        ResearchCandidateComparison,
+    )
+    comp = ResearchCandidateComparison(
+        candidate_id="cand_1",
+        candidate_fingerprint="cand_fp_1",
+        experiment_fingerprint="exp_1",
+        evidence_fingerprint="ev_1",
+        qualification_status="QUALIFIED",
+        qualification_fingerprint="qual_1",
+        robustness_fingerprint="rob_1",
+        robustness_status="PASSED",
+    )
+
+    syn = ResearchCampaignEvidenceSynthesis(
+        campaign_id=cid,
+        campaign_definition_fingerprint=defn.definition_fingerprint,
+        trial_plan_fingerprint=plan.plan_fingerprint,
+        search_space_fingerprint="ss_fp_001",
+        search_policy_fingerprint="sp_fp_001",
+        criteria_fingerprint="crit_fp_001",
+        dataset_identity={},
+        execution_assumptions={},
+        code_provenance={},
+        methodology_version="1.0",
+        ordered_trial_identities=(),
+        ordered_evidence_fingerprints=("ev_1",),
+        completed_trial_count=1,
+        failed_trial_count=0,
+        blocked_trial_count=0,
+        qualified_candidate_count=1,
+        rejected_candidate_count=0,
+        selection_governance_status="SELECTION_NOT_APPLICABLE",
+        selection_policy_fingerprint="pol_fp_001",
+        candidate_comparisons=(comp,),
+    )
+    c_store.save_evidence_synthesis(syn)
+
+    dec = ResearchCampaignSelectionDecision(
+        campaign_id=cid,
+        synthesis_fingerprint=syn.synthesis_fingerprint,
+        selection_policy_fingerprint="pol_fp_001",
+        selected_candidate_ids=("cand_1",),
+        eligible_candidate_ids=("cand_1",),
+        rejected_candidate_ids=(),
+        blocked_candidate_ids=(),
+        candidate_comparison_fingerprints=("comp_1",),
+        selection_governance_fingerprints=(),
+        qualification_fingerprints=("qual_1",),
+        robustness_fingerprints=("rob_1",),
+        evidence_fingerprints=("ev_1",),
+        decision_status="SELECTED",
+        decision_reason="Top candidate",
+        deterministic_ordering=("cand_1",),
+    )
+    c_store.save_selection_decision(dec)
+
+    art_with_nonexistent_ids = GovernedCampaignLearningArtifact(
+        campaign_id=cid,
+        campaign_selection_decision_fingerprint=dec.decision_fingerprint,
+        synthesis_fingerprint=syn.synthesis_fingerprint,
+        selected_candidate_ids=("cand_1",),
+        supporting_evidence_fingerprints=("ev_1",),
+        robustness_fingerprints=("rob_1",),
+        qualification_fingerprints=("qual_1",),
+        learning_record_ids=("nonexistent_lr_999",),
+        knowledge_pattern_ids=("nonexistent_kp_999",),
+    )
+
+    # Calling validator without registry_store must fail closed via default ResearchRegistryStore
+    with pytest.raises(CampaignLearningIntegrityError, match="Referenced learning record ID 'nonexistent_lr_999' not found"):
+        from src.evaluation.campaign_learning import CampaignLearningIntegrityValidator
+        CampaignLearningIntegrityValidator.validate_campaign_learning_integrity(
+            art_with_nonexistent_ids, store=c_store, registry_store=None
+        )
+
+
+def test_non_selected_candidate_contamination_rejected(tmp_stores):
+    c_store, r_store, _ = tmp_stores
+    cid = "camp_non_selected_001"
+
+    defn, plan = _save_mock_definition_and_plan(c_store, cid)
+    c_store.save_lifecycle_state(cid, ResearchCampaignStatus.COMPLETED)
+
+    from src.evaluation.campaign_synthesis import (
+        ResearchCampaignEvidenceSynthesis,
+        ResearchCandidateComparison,
+    )
+    comp1 = ResearchCandidateComparison(
+        candidate_id="cand_1",
+        candidate_fingerprint="cand_fp_1",
+        experiment_fingerprint="exp_1",
+        evidence_fingerprint="ev_1",
+        qualification_status="QUALIFIED",
+        qualification_fingerprint="qual_1",
+        robustness_fingerprint="rob_1",
+        robustness_status="PASSED",
+        comparison_metrics={"sharpe_ratio": 2.0, "profit_factor": 1.5},
+    )
+    comp2 = ResearchCandidateComparison(
+        candidate_id="cand_2",
+        candidate_fingerprint="cand_fp_2",
+        experiment_fingerprint="exp_2",
+        evidence_fingerprint="ev_2",
+        qualification_status="QUALIFIED",
+        qualification_fingerprint="qual_2",
+        robustness_fingerprint="rob_2",
+        robustness_status="PASSED",
+        comparison_metrics={"sharpe_ratio": 1.0, "profit_factor": 1.2},
+    )
+
+    syn = ResearchCampaignEvidenceSynthesis(
+        campaign_id=cid,
+        campaign_definition_fingerprint=defn.definition_fingerprint,
+        trial_plan_fingerprint=plan.plan_fingerprint,
+        search_space_fingerprint="ss_fp_001",
+        search_policy_fingerprint="sp_fp_001",
+        criteria_fingerprint="crit_fp_001",
+        dataset_identity={},
+        execution_assumptions={},
+        code_provenance={},
+        methodology_version="1.0",
+        ordered_trial_identities=("trial_1", "trial_2"),
+        ordered_evidence_fingerprints=("ev_1", "ev_2"),
+        completed_trial_count=2,
+        failed_trial_count=0,
+        blocked_trial_count=0,
+        qualified_candidate_count=2,
+        rejected_candidate_count=0,
+        selection_governance_status="SELECTION_NOT_APPLICABLE",
+        selection_policy_fingerprint="pol_fp_001",
+        candidate_comparisons=(comp1, comp2),
+    )
+    c_store.save_evidence_synthesis(syn)
+
+    sel_policy = ResearchCampaignSelectionPolicy(
+        required_governance_states=("QUALIFIED", "PROMOTABLE", "VALIDATED"),
+        required_oos_evidence=False,
+        required_walk_forward_evidence=False,
+        max_selected_candidates=1,
+    )
+    decision = select_campaign_candidate(syn, selection_policy=sel_policy)
+    c_store.save_selection_decision(decision)
+
+    assert decision.decision_status == "SELECTED"
+    assert decision.selected_candidate_ids == ("cand_1",)
+
+    # Save checkpoints for both candidates
+    from src.evaluation.research_constitution import ResearchTrialCheckpoint
+    cp1 = ResearchTrialCheckpoint(
+        trial_id="trial_1", campaign_id=cid, candidate_id="cand_1", trial_index=0,
+        attempt_number=1, status="COMPLETED", experiment_fingerprint="exp_1", evidence_fingerprint="ev_1"
+    )
+    cp2 = ResearchTrialCheckpoint(
+        trial_id="trial_2", campaign_id=cid, candidate_id="cand_2", trial_index=1,
+        attempt_number=1, status="COMPLETED", experiment_fingerprint="exp_2", evidence_fingerprint="ev_2"
+    )
+    c_store.save_trial_checkpoint(cp1)
+    c_store.save_trial_checkpoint(cp2)
+
+    art = derive_governed_campaign_learning(cid, store=c_store, registry_store=r_store)
+
+    # Verify candidate 2 is NOT in selected_candidate_ids
+    assert "cand_2" not in art.selected_candidate_ids
+
+
+def test_ambiguous_missing_candidate_lineage_rejected(tmp_stores):
+    c_store, r_store, _ = tmp_stores
+    cid = "camp_ambiguous_lineage_001"
+
+    defn, plan = _save_mock_definition_and_plan(c_store, cid)
+    c_store.save_lifecycle_state(cid, ResearchCampaignStatus.COMPLETED)
+
+    from src.evaluation.campaign_synthesis import (
+        ResearchCampaignEvidenceSynthesis,
+        ResearchCandidateComparison,
+    )
+    comp = ResearchCandidateComparison(
+        candidate_id="cand_1",
+        candidate_fingerprint="cand_fp_1",
+        experiment_fingerprint="exp_1",
+        evidence_fingerprint="ev_1",
+        qualification_status="QUALIFIED",
+        qualification_fingerprint="qual_1",
+        robustness_fingerprint="rob_1",
+        robustness_status="PASSED",
+    )
+
+    syn = ResearchCampaignEvidenceSynthesis(
+        campaign_id=cid,
+        campaign_definition_fingerprint=defn.definition_fingerprint,
+        trial_plan_fingerprint=plan.plan_fingerprint,
+        search_space_fingerprint="ss_fp_001",
+        search_policy_fingerprint="sp_fp_001",
+        criteria_fingerprint="crit_fp_001",
+        dataset_identity={},
+        execution_assumptions={},
+        code_provenance={},
+        methodology_version="1.0",
+        ordered_trial_identities=(),
+        ordered_evidence_fingerprints=("ev_1",),
+        completed_trial_count=1,
+        failed_trial_count=0,
+        blocked_trial_count=0,
+        qualified_candidate_count=1,
+        rejected_candidate_count=0,
+        selection_governance_status="SELECTION_NOT_APPLICABLE",
+        selection_policy_fingerprint="pol_fp_001",
+        candidate_comparisons=(comp,),
+    )
+    c_store.save_evidence_synthesis(syn)
+
+    dec = ResearchCampaignSelectionDecision(
+        campaign_id=cid,
+        synthesis_fingerprint=syn.synthesis_fingerprint,
+        selection_policy_fingerprint="pol_fp_001",
+        selected_candidate_ids=("cand_1",),
+        eligible_candidate_ids=("cand_1",),
+        rejected_candidate_ids=(),
+        blocked_candidate_ids=(),
+        candidate_comparison_fingerprints=("comp_1",),
+        selection_governance_fingerprints=(),
+        qualification_fingerprints=("qual_1",),
+        robustness_fingerprints=("rob_1",),
+        evidence_fingerprints=("ev_1",),
+        decision_status="SELECTED",
+        decision_reason="Top candidate",
+        deterministic_ordering=("cand_1",),
+    )
+    c_store.save_selection_decision(dec)
+
+    # Save checkpoint with un-parsable candidate_id in raw json to test fail-closed handling
+    cp_path = c_store._checkpoints_dir(cid) / "trial_ambiguous.json"
+    cp_path.parent.mkdir(parents=True, exist_ok=True)
+    import json
+    cp_path.write_text(json.dumps({
+        "trial_id": "trial_ambiguous",
+        "campaign_id": cid,
+        "candidate_id": "   ",  # Blank/whitespace candidate_id
+        "trial_index": 0,
+        "attempt_number": 1,
+        "status": "COMPLETED",
+        "experiment_fingerprint": "exp_1",
+        "evidence_fingerprint": "ev_1",
+    }), encoding="utf-8")
+
+    with pytest.raises(CampaignLearningIntegrityError, match="candidate_id must be a non-empty string"):
+        derive_governed_campaign_learning(cid, store=c_store, registry_store=r_store)
+
+
+def test_duplicate_identity_rejected(tmp_stores):
+    c_store, r_store, _ = tmp_stores
+    cid = "camp_dup_identity_001"
+
+    defn, plan = _save_mock_definition_and_plan(c_store, cid)
+    c_store.save_lifecycle_state(cid, ResearchCampaignStatus.COMPLETED)
+
+    from src.evaluation.campaign_synthesis import ResearchCampaignEvidenceSynthesis
+    syn = ResearchCampaignEvidenceSynthesis(
+        campaign_id=cid,
+        campaign_definition_fingerprint=defn.definition_fingerprint,
+        trial_plan_fingerprint=plan.plan_fingerprint,
+        search_space_fingerprint="ss_fp_001",
+        search_policy_fingerprint="sp_fp_001",
+        criteria_fingerprint="crit_fp_001",
+        dataset_identity={},
+        execution_assumptions={},
+        code_provenance={},
+        methodology_version="1.0",
+        ordered_trial_identities=(),
+        ordered_evidence_fingerprints=("ev_1",),
+        completed_trial_count=1,
+        failed_trial_count=0,
+        blocked_trial_count=0,
+        qualified_candidate_count=1,
+        rejected_candidate_count=0,
+        selection_governance_status="SELECTION_NOT_APPLICABLE",
+        selection_policy_fingerprint="pol_fp_001",
+        candidate_comparisons=(),
+    )
+    c_store.save_evidence_synthesis(syn)
+
+    # Selection decision containing duplicate candidate IDs
+    dec = ResearchCampaignSelectionDecision(
+        campaign_id=cid,
+        synthesis_fingerprint=syn.synthesis_fingerprint,
+        selection_policy_fingerprint="pol_fp_001",
+        selected_candidate_ids=("cand_1", "cand_1"),  # Duplicate
+        eligible_candidate_ids=("cand_1",),
+        rejected_candidate_ids=(),
+        blocked_candidate_ids=(),
+        candidate_comparison_fingerprints=("comp_1",),
+        selection_governance_fingerprints=(),
+        qualification_fingerprints=("qual_1",),
+        robustness_fingerprints=("rob_1",),
+        evidence_fingerprints=("ev_1",),
+        decision_status="SELECTED",
+        decision_reason="Top candidate",
+        deterministic_ordering=("cand_1",),
+    )
+    c_store.save_selection_decision(dec)
+
+    art = GovernedCampaignLearningArtifact(
+        campaign_id=cid,
+        campaign_selection_decision_fingerprint=dec.decision_fingerprint,
+        synthesis_fingerprint=syn.synthesis_fingerprint,
+        selected_candidate_ids=("cand_1",),
+        supporting_evidence_fingerprints=("ev_1",),
+        robustness_fingerprints=("rob_1",),
+        qualification_fingerprints=("qual_1",),
+        learning_record_ids=(),
+        knowledge_pattern_ids=(),
+    )
+
+    with pytest.raises(CampaignLearningIntegrityError, match="selected_candidate_ids contains invalid duplicate identifiers"):
+        from src.evaluation.campaign_learning import CampaignLearningIntegrityValidator
+        CampaignLearningIntegrityValidator.validate_campaign_learning_integrity(art, store=c_store, registry_store=r_store)
