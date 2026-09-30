@@ -616,12 +616,15 @@ class ResearchRegistryStore:
 
     def get_by_trial_id(self, trial_id: str) -> ResearchRegistryRecord | None:
         """Retrieve record matching trial_id."""
-        for file_path in self.base_dir.glob("*/*.json"):
-            if file_path.name.startswith("rec_tmp_"):
+        for exp_dir in self.base_dir.iterdir():
+            if not exp_dir.is_dir() or exp_dir.name in ("learning", "knowledge", "feedback", "hypotheses"):
                 continue
-            rec = self._load_record_file(file_path)
-            if rec.trial_id == trial_id:
-                return rec
+            for file_path in exp_dir.glob("*.json"):
+                if file_path.name.startswith("rec_tmp_"):
+                    continue
+                rec = self._load_record_file(file_path)
+                if rec.trial_id == trial_id:
+                    return rec
         return None
 
     def get_by_search_fingerprint(
@@ -629,12 +632,15 @@ class ResearchRegistryStore:
     ) -> tuple[ResearchRegistryRecord, ...]:
         """Retrieve all records matching search_fingerprint."""
         records: list[ResearchRegistryRecord] = []
-        for file_path in sorted(self.base_dir.glob("*/*.json")):
-            if file_path.name.startswith("rec_tmp_"):
+        for exp_dir in sorted(self.base_dir.iterdir()):
+            if not exp_dir.is_dir() or exp_dir.name in ("learning", "knowledge", "feedback", "hypotheses"):
                 continue
-            rec = self._load_record_file(file_path)
-            if rec.search_fingerprint == search_fingerprint:
-                records.append(rec)
+            for file_path in sorted(exp_dir.glob("*.json")):
+                if file_path.name.startswith("rec_tmp_"):
+                    continue
+                rec = self._load_record_file(file_path)
+                if rec.search_fingerprint == search_fingerprint:
+                    records.append(rec)
         return tuple(records)
 
     def get_by_candidate_id(
@@ -642,21 +648,27 @@ class ResearchRegistryStore:
     ) -> tuple[ResearchRegistryRecord, ...]:
         """Retrieve all records matching candidate_id."""
         records: list[ResearchRegistryRecord] = []
-        for file_path in sorted(self.base_dir.glob("*/*.json")):
-            if file_path.name.startswith("rec_tmp_"):
+        for exp_dir in sorted(self.base_dir.iterdir()):
+            if not exp_dir.is_dir() or exp_dir.name in ("learning", "knowledge", "feedback", "hypotheses"):
                 continue
-            rec = self._load_record_file(file_path)
-            if rec.candidate_id == candidate_id:
-                records.append(rec)
+            for file_path in sorted(exp_dir.glob("*.json")):
+                if file_path.name.startswith("rec_tmp_"):
+                    continue
+                rec = self._load_record_file(file_path)
+                if rec.candidate_id == candidate_id:
+                    records.append(rec)
         return tuple(records)
 
     def list_records(self) -> tuple[ResearchRegistryRecord, ...]:
         """List all persisted research registry records."""
         records: list[ResearchRegistryRecord] = []
-        for file_path in sorted(self.base_dir.glob("*/*.json")):
-            if file_path.name.startswith("rec_tmp_"):
+        for exp_dir in sorted(self.base_dir.iterdir()):
+            if not exp_dir.is_dir() or exp_dir.name in ("learning", "knowledge", "feedback", "hypotheses"):
                 continue
-            records.append(self._load_record_file(file_path))
+            for file_path in sorted(exp_dir.glob("*.json")):
+                if file_path.name.startswith("rec_tmp_"):
+                    continue
+                records.append(self._load_record_file(file_path))
         return tuple(records)
 
     def get_evidence_lineage(
