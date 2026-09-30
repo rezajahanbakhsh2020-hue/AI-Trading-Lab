@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any
 
 import pandas as pd
 
@@ -14,7 +14,6 @@ from src.evaluation.live_decision_lifecycle import (
     LiveDecisionLifecycleState,
     create_canonical_live_decision,
     transition_live_decision,
-    validate_live_decision_lifecycle,
 )
 from src.evaluation.live_decision_store import (
     DEFAULT_STORE_PATH,
@@ -24,7 +23,6 @@ from src.evaluation.live_production_decision import (
     Direction,
     ProductionAuthorizationReceipt,
     ProductionDecision,
-    ProductionRuntimeAuthorizationError,
     ProductionSignal,
     authorize_production_runtime,
     calculate_production_risk_levels,
@@ -32,6 +30,11 @@ from src.evaluation.live_production_decision import (
 )
 from src.evaluation.live_publication_store import (
     publish_canonical_live_decision,
+)
+from src.evaluation.live_runtime_context import (
+    AuthorizedProductionRuntimeContext,
+    RuntimeContextValidationError,
+    create_authorized_runtime_context,
 )
 from src.evaluation.live_trade_display import (
     build_live_trade_display,
@@ -46,7 +49,7 @@ from src.evaluation.research_store import (
 class LiveRuntimeResult:
     decision: dict[str, Any]
     display: dict[str, Any]
-    canonical_decision: Optional[CanonicalLiveDecision] = None
+    canonical_decision: CanonicalLiveDecision | None = None
 
 
 def build_live_runtime(
@@ -57,13 +60,14 @@ def build_live_runtime(
     symbol: str = "XAUUSD",
     interval: str = "5m",
     min_stability_score: float = 0.50,
-    candidate_id: Optional[str] = None,
-    research_dir: Optional[Any] = None,
-    store_path: Optional[Path | str] = None,
-    publisher: Optional[Any] = None,
+    candidate_id: str | None = None,
+    research_dir: Any | None = None,
+    store_path: Path | str | None = None,
+    publisher: Any | None = None,
     publish: bool = False,
     skip_if_no_trade: bool = False,
     persist: bool = True,
+    authorized_context: AuthorizedProductionRuntimeContext | None = None,
 ) -> LiveRuntimeResult:
     """Build and execute the complete canonical live decision lifecycle.
 
@@ -79,22 +83,6 @@ def build_live_runtime(
     if data.empty:
         raise ValueError("data must not be empty.")
 
-    r_dir = research_dir if research_dir is not None else DEFAULT_RESEARCH_DIR
-    resolved_candidate = resolve_promoted_candidate(
-        candidate_id=candidate_id,
-        strategy_id=stable_strategy,
-        symbol=symbol,
-        timeframe=interval,
-        base_dir=r_dir,
-    )
-
-    if resolved_candidate is None:
-        raise ValueError(
-            f"No authoritative promoted candidate resolved for strategy '{stable_strategy}' "
-            f"(candidate_id={candidate_id!r}, symbol={symbol!r}, timeframe={interval!r}). "
-            f"Operational production runtime fails closed."
-        )
-
     if "timestamp" in data.columns and not data.empty:
         last_ts = pd.to_datetime(data["timestamp"].iloc[-1], utc=True)
         now_ts = pd.Timestamp.now(tz="UTC")
@@ -105,14 +93,61 @@ def build_live_runtime(
     else:
         ref_now = None
 
-    # 1. Authorize exactly once
-    authorization = authorize_production_runtime(
-        resolved_candidate,
-        symbol=symbol,
-        timeframe=interval,
-        now=ref_now,
-    )
-    receipt = ProductionAuthorizationReceipt.from_authorization(authorization)
+    if authorized_context is not None:
+        if not isinstance(authorized_context, AuthorizedProductionRuntimeContext):
+            raise RuntimeContextValidationError(
+                f"authorized_context must be an AuthorizedProductionRuntimeContext, got {type(authorized_context).__name__}"
+            )
+
+        # Validate scope matching against context
+        req_sym = str(symbol).strip().upper()
+        req_tf = str(interval).strip()
+
+        if authorized_context.symbol.upper() != req_sym:
+            raise RuntimeContextValidationError(
+                f"authorized_context symbol '{authorized_context.symbol}' does not match requested symbol '{req_sym}'."
+            )
+        if authorized_context.timeframe != req_tf:
+            raise RuntimeContextValidationError(
+                f"authorized_context timeframe '{authorized_context.timeframe}' does not match requested timeframe '{req_tf}'."
+            )
+        if (
+            candidate_id is not None
+            and str(candidate_id).strip()
+            and authorized_context.candidate_id != str(candidate_id).strip()
+        ):
+            raise RuntimeContextValidationError(
+                f"authorized_context candidate_id '{authorized_context.candidate_id}' does not match requested candidate_id '{candidate_id}'."
+            )
+
+        resolved_candidate = authorized_context.candidate
+        receipt = authorized_context.authorization_receipt
+    else:
+        # Legacy/Direct invocation: resolve and authorize exactly once
+        r_dir = research_dir if research_dir is not None else DEFAULT_RESEARCH_DIR
+        resolved_candidate = resolve_promoted_candidate(
+            candidate_id=candidate_id,
+            strategy_id=stable_strategy,
+            symbol=symbol,
+            timeframe=interval,
+            base_dir=r_dir,
+        )
+
+        if resolved_candidate is None:
+            raise ValueError(
+                f"No authoritative promoted candidate resolved for strategy '{stable_strategy}' "
+                f"(candidate_id={candidate_id!r}, symbol={symbol!r}, timeframe={interval!r}). "
+                f"Operational production runtime fails closed."
+            )
+
+        authorization = authorize_production_runtime(
+            resolved_candidate,
+            symbol=symbol,
+            timeframe=interval,
+            now=ref_now,
+        )
+        receipt = ProductionAuthorizationReceipt.from_authorization(authorization)
+        authorized_context = create_authorized_runtime_context(resolved_candidate, authorization)
 
     # 2. Evaluate strategy decision
     decision_obj = evaluate_production_decision(
@@ -302,6 +337,7 @@ def build_live_runtime(
         "promoted_artifact_fingerprint": receipt.promoted_artifact_fingerprint,
         "governance_decision_fingerprint": receipt.governance_decision_fingerprint,
         "campaign_selection_decision_fingerprint": receipt.campaign_selection_decision_fingerprint,
+        "context_fingerprint": authorized_context.context_fingerprint,
     }
     if pub_result:
         decision_dict["publish_result"] = pub_result
