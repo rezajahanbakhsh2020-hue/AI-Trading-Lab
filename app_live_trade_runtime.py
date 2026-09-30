@@ -121,6 +121,8 @@ def main() -> None:
 
     except Exception as exc:
         st.error(f"Live runtime failed: {exc}")
+        st.metric("Decision", "BLOCKED")
+        st.info("BLOCKED — Canonical Live Decision Authorization or Lifecycle Validation Failed.")
         st.stop()
 
     col1, col2, col3, col4 = st.columns(4)

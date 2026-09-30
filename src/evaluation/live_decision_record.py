@@ -36,6 +36,14 @@ AUTHORIZATION_RECORD_FIELDS = (
     "strategy_version",
 )
 
+LIFECYCLE_RECORD_FIELDS = (
+    "decision_id",
+    "signal_id",
+    "canonical_live_decision_fingerprint",
+    "current_lifecycle_state",
+    "transition_history",
+)
+
 
 def build_live_decision_record(
     snapshot: Mapping[str, Any],
@@ -86,6 +94,11 @@ def build_live_decision_record(
     for auth_field in AUTHORIZATION_RECORD_FIELDS:
         if auth_field in snapshot:
             res[auth_field] = snapshot.get(auth_field)
+
+    # Include lifecycle fields if present in snapshot
+    for life_field in LIFECYCLE_RECORD_FIELDS:
+        if life_field in snapshot:
+            res[life_field] = snapshot.get(life_field)
 
     return res
 
@@ -153,6 +166,13 @@ def validate_live_decision_record(
             raise ValueError(
                 "Production live decision record field 'campaign_selection_decision_fingerprint' cannot be empty if provided."
             )
+
+    # Validate canonical lifecycle fingerprint if present
+    cld_fp = record.get("canonical_live_decision_fingerprint")
+    if cld_fp is not None and not str(cld_fp).strip():
+        raise ValueError(
+            "Production live decision record field 'canonical_live_decision_fingerprint' cannot be empty if provided."
+        )
 
     return True
 

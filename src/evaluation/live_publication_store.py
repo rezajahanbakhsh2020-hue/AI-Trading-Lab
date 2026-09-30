@@ -91,6 +91,25 @@ def append_publication_record(
                         f"runtime_authorization_fingerprint mismatch ('{ext_auth_fp}' vs '{new_auth_fp}')."
                     )
 
+                # Compare canonical live decision fingerprint in provenance explicitly for conflict detection
+                new_cld_fp = new_prov.get("canonical_live_decision_fingerprint") or new_record.get("canonical_live_decision_fingerprint")
+                ext_cld_fp = ext_prov.get("canonical_live_decision_fingerprint") or existing.get("canonical_live_decision_fingerprint")
+
+                new_cld_str = str(new_cld_fp).strip() if new_cld_fp is not None and str(new_cld_fp).strip() != "" else None
+                ext_cld_str = str(ext_cld_fp).strip() if ext_cld_fp is not None and str(ext_cld_fp).strip() != "" else None
+
+                if (ext_cld_str is not None) != (new_cld_str is not None):
+                    raise PublicationIntegrityError(
+                        f"Conflicting publication replay detected for publication_id '{pub_id}': "
+                        "canonical_live_decision_fingerprint presence mismatch."
+                    )
+
+                if ext_cld_str is not None and new_cld_str is not None and ext_cld_str != new_cld_str:
+                    raise PublicationIntegrityError(
+                        f"Conflicting publication replay detected for publication_id '{pub_id}': "
+                        f"canonical_live_decision_fingerprint mismatch ('{ext_cld_str}' vs '{new_cld_str}')."
+                    )
+
                 # Compare canonical publication content
                 payload_keys = ("publication_id", "signal_id", "decision_id", "symbol", "timeframe", "decision", "entry", "stop_loss", "tp1")
                 match_all = True

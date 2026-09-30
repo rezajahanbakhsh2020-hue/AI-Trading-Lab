@@ -142,6 +142,25 @@ def append_live_decision_to_store(
                         f"runtime_authorization_fingerprint mismatch ('{ext_auth_fp}' vs '{new_auth_fp}')."
                     )
 
+                # Compare canonical live decision fingerprint explicitly for conflict detection
+                new_cld_fp = new_record.get("canonical_live_decision_fingerprint")
+                ext_cld_fp = existing.get("canonical_live_decision_fingerprint")
+
+                new_cld_str = str(new_cld_fp).strip() if new_cld_fp is not None and str(new_cld_fp).strip() != "" else None
+                ext_cld_str = str(ext_cld_fp).strip() if ext_cld_fp is not None and str(ext_cld_fp).strip() != "" else None
+
+                if (ext_cld_str is not None) != (new_cld_str is not None):
+                    raise ValueError(
+                        f"Conflicting replay detected for decision/signal identity '{new_dec_id or new_sig_id}': "
+                        "canonical_live_decision_fingerprint presence mismatch."
+                    )
+
+                if ext_cld_str is not None and new_cld_str is not None and ext_cld_str != new_cld_str:
+                    raise ValueError(
+                        f"Conflicting replay detected for decision/signal identity '{new_dec_id or new_sig_id}': "
+                        f"canonical_live_decision_fingerprint mismatch ('{ext_cld_str}' vs '{new_cld_str}')."
+                    )
+
                 # Compare canonical content
                 # Exclude runtime volatile timestamps if present
                 keys_to_compare = [k for k in new_record if k not in ("recorded_at", "created_at")]

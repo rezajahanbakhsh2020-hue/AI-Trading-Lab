@@ -5,9 +5,11 @@ from typing import Any
 
 import pandas as pd
 
+from src.evaluation.live_decision_lifecycle import CanonicalLiveDecision
 from src.evaluation.live_production_decision import (
     DEFAULT_INTERVAL,
     DEFAULT_SYMBOL,
+    Direction,
     build_live_production_decision,
 )
 
@@ -53,8 +55,8 @@ def _validate_decision(decision: dict[str, Any]) -> None:
 def build_live_trade_display(
     data: pd.DataFrame,
     *,
-    stable_strategy: str,
-    stability_score: float,
+    stable_strategy: str = "momentum",
+    stability_score: float = 1.0,
     min_stability_score: float = 0.50,
     momentum_window: int = 10,
     fast_window: int = 20,
@@ -66,6 +68,7 @@ def build_live_trade_display(
     tp3_multiplier: float = DEFAULT_TP3_MULTIPLIER,
     symbol: str = DEFAULT_SYMBOL,
     interval: str = DEFAULT_INTERVAL,
+    canonical_decision: Optional[CanonicalLiveDecision] = None,
 ) -> dict[str, Any]:
     """
     Build final live trade levels from the existing production decision.
@@ -101,19 +104,60 @@ def build_live_trade_display(
     if not tp1_multiplier < tp2_multiplier < tp3_multiplier:
         raise ValueError("TP multipliers must satisfy TP1 < TP2 < TP3.")
 
-    decision = build_live_production_decision(
-        data,
-        stable_strategy=stable_strategy,
-        stability_score=stability_score,
-        min_stability_score=min_stability_score,
-        momentum_window=momentum_window,
-        fast_window=fast_window,
-        slow_window=slow_window,
-        stop_loss_pct=stop_loss_pct,
-        take_profit_pct=take_profit_pct,
-        symbol=symbol,
-        interval=interval,
-    )
+    if canonical_decision is not None:
+        if not isinstance(canonical_decision, CanonicalLiveDecision):
+            raise TypeError("canonical_decision must be a CanonicalLiveDecision instance.")
+
+        dec_obj = canonical_decision.decision
+        risk_obj = canonical_decision.risk_levels
+        receipt = canonical_decision.authorization_receipt
+
+        from live_trend import build_live_trend_snapshot
+        trend_snap = build_live_trend_snapshot(data, fast_window=fast_window, slow_window=slow_window)
+
+        close_price = float(data["close"].iloc[-1]) if ("close" in data.columns and not data.empty) else None
+
+        decision = {
+            "symbol": receipt.symbol,
+            "interval": receipt.timeframe,
+            "decision": dec_obj.direction.value,
+            "reason": dec_obj.reason,
+            "stable_strategy": receipt.strategy_name,
+            "stability_score": dec_obj.confidence if dec_obj.confidence is not None else stability_score,
+            "min_stability_score": min_stability_score,
+            "strategy_supported": receipt.strategy_name.lower() == "momentum",
+            "signal": 1 if dec_obj.direction == Direction.BUY else 0,
+            "signal_label": dec_obj.direction.value,
+            "trend": str(trend_snap.get("trend", "NEUTRAL")),
+            "momentum": close_price,
+            "entry_price": risk_obj.entry_price,
+            "stop_loss": risk_obj.stop_loss,
+            "take_profit": risk_obj.tp2 if risk_obj.tp2 is not None else risk_obj.tp1,
+            "risk_reward_ratio": risk_obj.risk_reward_ratio,
+            "stop_loss_pct": stop_loss_pct,
+            "take_profit_pct": take_profit_pct,
+            "momentum_window": momentum_window,
+            "fast_window": fast_window,
+            "slow_window": slow_window,
+            "timestamp": dec_obj.market_timestamp,
+            "decision_id": dec_obj.decision_id,
+            "canonical_live_decision_fingerprint": canonical_decision.canonical_live_decision_fingerprint,
+            "authorization_fingerprint": receipt.authorization_fingerprint,
+        }
+    else:
+        decision = build_live_production_decision(
+            data,
+            stable_strategy=stable_strategy,
+            stability_score=stability_score,
+            min_stability_score=min_stability_score,
+            momentum_window=momentum_window,
+            fast_window=fast_window,
+            slow_window=slow_window,
+            stop_loss_pct=stop_loss_pct,
+            take_profit_pct=take_profit_pct,
+            symbol=symbol,
+            interval=interval,
+        )
 
     _validate_decision(decision)
 
@@ -174,7 +218,7 @@ def build_live_trade_display(
             (tp3 - entry_price) / risk_distance
         )
 
-    return {
+    res = {
         "symbol": decision["symbol"],
         "interval": decision["interval"],
         "decision": decision["decision"],
@@ -207,3 +251,9 @@ def build_live_trade_display(
         "slow_window": decision["slow_window"],
         "timestamp": decision["timestamp"],
     }
+
+    for opt_key in ("decision_id", "canonical_live_decision_fingerprint", "authorization_fingerprint"):
+        if opt_key in decision:
+            res[opt_key] = decision[opt_key]
+
+    return res
