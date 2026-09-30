@@ -126,31 +126,27 @@ def test_positive_campaign_learning_feedback_loop(tmp_stores, sample_dataset, ba
         criteria=criteria,
     )
 
+    sel_policy = ResearchCampaignSelectionPolicy(
+        required_governance_states=("QUALIFIED", "PROMOTABLE", "VALIDATED", "REJECTED"),
+        required_oos_evidence=False,
+        required_walk_forward_evidence=False,
+    )
+
     campaign = orchestrator.execute_campaign(
         campaign_id=defn.campaign_id,
         df=sample_dataset,
         search_space=search_space,
         criteria=criteria,
         execution_policy=ResearchCampaignExecutionPolicy(max_trials=10),
+        selection_policy=sel_policy,
         persist_registry_dir=r_store.base_dir,
     )
 
     assert campaign.status == ResearchCampaignStatus.COMPLETED
 
     # 2. Synthesize evidence and make selection decision
-    synthesis = synthesize_campaign_evidence(defn.campaign_id, store=c_store)
-    c_store.save_evidence_synthesis(synthesis)
-
-    sel_policy = ResearchCampaignSelectionPolicy(
-        required_governance_states=("QUALIFIED", "PROMOTABLE", "VALIDATED", "REJECTED"),
-        required_oos_evidence=False,
-        required_walk_forward_evidence=False,
-    )
-    decision = select_campaign_candidate(synthesis, selection_policy=sel_policy)
-    if decision.decision_status != "SELECTED":
-        comps_info = [(c.candidate_id, c.qualification_status, c.robustness_status, c.rejection_reasons) for c in synthesis.candidate_comparisons]
-        raise ValueError(f"Selection failed status={decision.decision_status}, reason={decision.decision_reason}, comps={comps_info}")
-    c_store.save_selection_decision(decision)
+    synthesis = c_store.load_evidence_synthesis(defn.campaign_id)
+    decision = c_store.load_selection_decision(defn.campaign_id)
     assert decision.decision_status == "SELECTED"
 
     # 3. Derive and register campaign learning artifact
@@ -234,6 +230,11 @@ def test_fail_closed_missing_selection_decision(tmp_stores, sample_dataset, base
         criteria=criteria,
     )
     orchestrator.execute_campaign(defn.campaign_id, sample_dataset, search_space, criteria)
+
+    # Delete auto-saved selection decision to test missing selection decision
+    sel_path = c_store._campaign_dir(defn.campaign_id) / "selection_decision.json"
+    if sel_path.exists():
+        sel_path.unlink()
 
     # Synthesis saved, but selection decision NOT saved
     synthesis = synthesize_campaign_evidence(defn.campaign_id, store=c_store)
@@ -727,25 +728,24 @@ def test_materialization_is_deterministic(tmp_stores, sample_dataset, base_conte
         criteria=criteria,
     )
 
+    sel_policy = ResearchCampaignSelectionPolicy(
+        required_governance_states=("QUALIFIED", "PROMOTABLE", "VALIDATED", "REJECTED"),
+        required_oos_evidence=False,
+        required_walk_forward_evidence=False,
+    )
+
     orchestrator.execute_campaign(
         campaign_id=defn.campaign_id,
         df=sample_dataset,
         search_space=search_space,
         criteria=criteria,
         execution_policy=ResearchCampaignExecutionPolicy(max_trials=10),
+        selection_policy=sel_policy,
         persist_registry_dir=r_store.base_dir,
     )
 
-    synthesis = synthesize_campaign_evidence(defn.campaign_id, store=c_store)
-    c_store.save_evidence_synthesis(synthesis)
-
-    sel_policy = ResearchCampaignSelectionPolicy(
-        required_governance_states=("QUALIFIED", "PROMOTABLE", "VALIDATED", "REJECTED"),
-        required_oos_evidence=False,
-        required_walk_forward_evidence=False,
-    )
-    decision = select_campaign_candidate(synthesis, selection_policy=sel_policy)
-    c_store.save_selection_decision(decision)
+    synthesis = c_store.load_evidence_synthesis(defn.campaign_id)
+    decision = c_store.load_selection_decision(defn.campaign_id)
 
     art1 = derive_governed_campaign_learning(defn.campaign_id, store=c_store, registry_store=r_store)
     art2 = derive_governed_campaign_learning(defn.campaign_id, store=c_store, registry_store=r_store)
@@ -780,25 +780,24 @@ def test_materialization_is_idempotent(tmp_stores, sample_dataset, base_context)
         criteria=criteria,
     )
 
+    sel_policy = ResearchCampaignSelectionPolicy(
+        required_governance_states=("QUALIFIED", "PROMOTABLE", "VALIDATED", "REJECTED"),
+        required_oos_evidence=False,
+        required_walk_forward_evidence=False,
+    )
+
     orchestrator.execute_campaign(
         campaign_id=defn.campaign_id,
         df=sample_dataset,
         search_space=search_space,
         criteria=criteria,
         execution_policy=ResearchCampaignExecutionPolicy(max_trials=10),
+        selection_policy=sel_policy,
         persist_registry_dir=r_store.base_dir,
     )
 
-    synthesis = synthesize_campaign_evidence(defn.campaign_id, store=c_store)
-    c_store.save_evidence_synthesis(synthesis)
-
-    sel_policy = ResearchCampaignSelectionPolicy(
-        required_governance_states=("QUALIFIED", "PROMOTABLE", "VALIDATED", "REJECTED"),
-        required_oos_evidence=False,
-        required_walk_forward_evidence=False,
-    )
-    decision = select_campaign_candidate(synthesis, selection_policy=sel_policy)
-    c_store.save_selection_decision(decision)
+    synthesis = c_store.load_evidence_synthesis(defn.campaign_id)
+    decision = c_store.load_selection_decision(defn.campaign_id)
 
     art1 = materialize_governed_campaign_feedback(defn.campaign_id, store=c_store, registry_store=r_store)
     art2 = materialize_governed_campaign_feedback(defn.campaign_id, store=c_store, registry_store=r_store)
@@ -832,25 +831,24 @@ def test_generated_hypothesis_preserves_canonical_learning_lineage(tmp_stores, s
         criteria=criteria,
     )
 
+    sel_policy = ResearchCampaignSelectionPolicy(
+        required_governance_states=("QUALIFIED", "PROMOTABLE", "VALIDATED", "REJECTED"),
+        required_oos_evidence=False,
+        required_walk_forward_evidence=False,
+    )
+
     orchestrator.execute_campaign(
         campaign_id=defn.campaign_id,
         df=sample_dataset,
         search_space=search_space,
         criteria=criteria,
         execution_policy=ResearchCampaignExecutionPolicy(max_trials=10),
+        selection_policy=sel_policy,
         persist_registry_dir=r_store.base_dir,
     )
 
-    synthesis = synthesize_campaign_evidence(defn.campaign_id, store=c_store)
-    c_store.save_evidence_synthesis(synthesis)
-
-    sel_policy = ResearchCampaignSelectionPolicy(
-        required_governance_states=("QUALIFIED", "PROMOTABLE", "VALIDATED", "REJECTED"),
-        required_oos_evidence=False,
-        required_walk_forward_evidence=False,
-    )
-    decision = select_campaign_candidate(synthesis, selection_policy=sel_policy)
-    c_store.save_selection_decision(decision)
+    synthesis = c_store.load_evidence_synthesis(defn.campaign_id)
+    decision = c_store.load_selection_decision(defn.campaign_id)
 
     artifact = materialize_governed_campaign_feedback(defn.campaign_id, store=c_store, registry_store=r_store)
 
@@ -896,25 +894,24 @@ def test_feedback_loop_rejects_tampered_learning_artifact(tmp_stores, sample_dat
         criteria=criteria,
     )
 
+    sel_policy = ResearchCampaignSelectionPolicy(
+        required_governance_states=("QUALIFIED", "PROMOTABLE", "VALIDATED", "REJECTED"),
+        required_oos_evidence=False,
+        required_walk_forward_evidence=False,
+    )
+
     orchestrator.execute_campaign(
         campaign_id=defn.campaign_id,
         df=sample_dataset,
         search_space=search_space,
         criteria=criteria,
         execution_policy=ResearchCampaignExecutionPolicy(max_trials=10),
+        selection_policy=sel_policy,
         persist_registry_dir=r_store.base_dir,
     )
 
-    synthesis = synthesize_campaign_evidence(defn.campaign_id, store=c_store)
-    c_store.save_evidence_synthesis(synthesis)
-
-    sel_policy = ResearchCampaignSelectionPolicy(
-        required_governance_states=("QUALIFIED", "PROMOTABLE", "VALIDATED", "REJECTED"),
-        required_oos_evidence=False,
-        required_walk_forward_evidence=False,
-    )
-    decision = select_campaign_candidate(synthesis, selection_policy=sel_policy)
-    c_store.save_selection_decision(decision)
+    synthesis = c_store.load_evidence_synthesis(defn.campaign_id)
+    decision = c_store.load_selection_decision(defn.campaign_id)
 
     materialize_governed_campaign_feedback(defn.campaign_id, store=c_store, registry_store=r_store)
 
@@ -975,25 +972,24 @@ def test_feedback_loop_rejects_cross_campaign_lineage(tmp_stores, sample_dataset
         criteria=criteria,
     )
 
+    sel_policy = ResearchCampaignSelectionPolicy(
+        required_governance_states=("QUALIFIED", "PROMOTABLE", "VALIDATED", "REJECTED"),
+        required_oos_evidence=False,
+        required_walk_forward_evidence=False,
+    )
+
     orchestrator.execute_campaign(
         campaign_id=defn.campaign_id,
         df=sample_dataset,
         search_space=search_space,
         criteria=criteria,
         execution_policy=ResearchCampaignExecutionPolicy(max_trials=10),
+        selection_policy=sel_policy,
         persist_registry_dir=r_store.base_dir,
     )
 
-    synthesis = synthesize_campaign_evidence(defn.campaign_id, store=c_store)
-    c_store.save_evidence_synthesis(synthesis)
-
-    sel_policy = ResearchCampaignSelectionPolicy(
-        required_governance_states=("QUALIFIED", "PROMOTABLE", "VALIDATED", "REJECTED"),
-        required_oos_evidence=False,
-        required_walk_forward_evidence=False,
-    )
-    decision = select_campaign_candidate(synthesis, selection_policy=sel_policy)
-    c_store.save_selection_decision(decision)
+    synthesis = c_store.load_evidence_synthesis(defn.campaign_id)
+    decision = c_store.load_selection_decision(defn.campaign_id)
 
     materialize_governed_campaign_feedback(defn.campaign_id, store=c_store, registry_store=r_store)
 

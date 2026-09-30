@@ -77,6 +77,20 @@ from src.evaluation.research_registry import (
 from src.evaluation.research_robustness import (
     assess_research_robustness,
 )
+from src.evaluation.campaign_learning import (
+    CampaignLearningIntegrityError,
+    CampaignLearningIntegrityValidator,
+    materialize_governed_campaign_feedback,
+)
+from src.evaluation.campaign_synthesis import (
+    CampaignSelectionIntegrityError,
+    CampaignSelectionStatus,
+    ResearchCampaignEvidenceSynthesis,
+    ResearchCampaignSelectionDecision,
+    ResearchCampaignSelectionPolicy,
+    select_campaign_candidate,
+    synthesize_campaign_evidence,
+)
 from src.evaluation.research_runner import (
     run_research_experiment,
     validate_and_prepare_dataset,
@@ -330,6 +344,7 @@ class ResearchCampaignOrchestrator:
         search_space: ResearchSearchSpace,
         criteria: Any,
         execution_policy: ResearchCampaignExecutionPolicy | None = None,
+        selection_policy: ResearchCampaignSelectionPolicy | None = None,
         val_ratio: float = 0.2,
         oos_ratio: float = 0.3,
         wf_train_size: int | None = None,
@@ -354,15 +369,58 @@ class ResearchCampaignOrchestrator:
         if current_status in (
             ResearchCampaignStatus.COMPLETED,
             ResearchCampaignStatus.TRUNCATED,
-            ResearchCampaignStatus.FAILED,
-            ResearchCampaignStatus.CANCELLED,
         ):
-            # Already terminal - load and return existing campaign manifest
+            # Finalize completed campaign (idempotent / resumes missing finalization phase)
+            eff_registry = (
+                persist_registry_dir
+                if persist_registry_dir
+                else (self.memory_store if isinstance(self.memory_store, ResearchRegistryStore) else None)
+            )
+            self.finalize_completed_campaign(
+                campaign_id,
+                selection_policy=selection_policy,
+                registry_store=eff_registry,
+            )
             try:
                 from src.evaluation.research_store import load_research_campaign
                 return load_research_campaign(campaign_id, base_dir=self.store.base_dir)
             except Exception:
-                # If manifest JSON missing, reconstruct manifest from checkpoints without state transition
+                all_cps = self.store.list_trial_checkpoints(campaign_id)
+                executed_count = sum(1 for c in all_cps if c.status in ("COMPLETED", "QUALIFIED", "REJECTED"))
+                failed_count = sum(1 for c in all_cps if c.status == "FAILED")
+                blocked_count = sum(1 for c in all_cps if c.status == "BLOCKED")
+                selected_ids = tuple(c.candidate_id for c in all_cps if c.status == "QUALIFIED")
+                ev_fps = tuple(c.evidence_fingerprint for c in all_cps if c.evidence_fingerprint)
+
+                return ResearchCampaign(
+                    campaign_id=campaign_id,
+                    search_space_fingerprint=definition.search_space_fingerprint,
+                    search_policy_fingerprint=definition.search_policy_fingerprint,
+                    criteria_fingerprint=definition.criteria_fingerprint,
+                    dataset_scope=definition.dataset_scope,
+                    execution_assumptions=definition.execution_assumptions,
+                    code_provenance=definition.code_provenance,
+                    candidate_ids=definition.candidate_ids,
+                    evidence_fingerprints=ev_fps,
+                    selected_candidate_ids=selected_ids,
+                    status=current_status,
+                    created_at_utc=datetime.now(timezone.utc).isoformat(),
+                    definition_fingerprint=definition.definition_fingerprint,
+                    trial_plan_fingerprint=plan.plan_fingerprint,
+                    executed_trial_count=executed_count,
+                    failed_trial_count=failed_count,
+                    blocked_trial_count=blocked_count,
+                )
+
+        if current_status in (
+            ResearchCampaignStatus.FAILED,
+            ResearchCampaignStatus.CANCELLED,
+        ):
+            # Already terminal (failed/cancelled) -> load and return existing campaign manifest
+            try:
+                from src.evaluation.research_store import load_research_campaign
+                return load_research_campaign(campaign_id, base_dir=self.store.base_dir)
+            except Exception:
                 all_cps = self.store.list_trial_checkpoints(campaign_id)
                 executed_count = sum(1 for c in all_cps if c.status in ("COMPLETED", "QUALIFIED", "REJECTED"))
                 failed_count = sum(1 for c in all_cps if c.status == "FAILED")
@@ -752,7 +810,194 @@ class ResearchCampaignOrchestrator:
             reason="Campaign execution completed cleanly",
         )
 
+        if final_campaign_status in (
+            ResearchCampaignStatus.COMPLETED,
+            ResearchCampaignStatus.TRUNCATED,
+        ):
+            eff_registry = (
+                registry_store
+                if registry_store is not None
+                else (self.memory_store if isinstance(self.memory_store, ResearchRegistryStore) else None)
+            )
+            self.finalize_completed_campaign(
+                campaign_id,
+                selection_policy=selection_policy,
+                registry_store=eff_registry,
+            )
+
         return campaign
+
+    def finalize_completed_campaign(
+        self,
+        campaign_id: str,
+        *,
+        selection_policy: ResearchCampaignSelectionPolicy | None = None,
+        registry_store: ResearchRegistryStore | None = None,
+        experiment_store_dir: str | Path | None = None,
+    ) -> ResearchCampaignSelectionDecision:
+        """Canonical orchestration finalization boundary for completed or truncated campaigns.
+
+        Responsibilities:
+        1. Load durable campaign lifecycle state.
+        2. Allow finalization only for COMPLETED and TRUNCATED campaigns; fail closed for others.
+        3. Validate campaign integrity before finalization.
+        4. Synthesize campaign evidence using canonical synthesis API & check/save synthesis artifact idempotently.
+        5. Execute candidate selection using canonical selection API & check/save decision artifact idempotently.
+        6. If decision status is SELECTED, derive/materialize governed campaign learning and validate artifact.
+        7. If decision status is non-selected (e.g. NO_ELIGIBLE_CANDIDATE, TIE_UNRESOLVED), persist decision without learning.
+        8. Return authoritative selection decision.
+        """
+        # 1. Load lifecycle state
+        try:
+            state_data = self.store.load_lifecycle_state(campaign_id)
+            status_str = state_data.get("status")
+        except Exception as exc:
+            raise CampaignIntegrityError(
+                f"Failed to load campaign lifecycle state for '{campaign_id}': {exc}"
+            ) from exc
+
+        # 2. Validate terminal completion state
+        if status_str not in (
+            ResearchCampaignStatus.COMPLETED.value,
+            ResearchCampaignStatus.TRUNCATED.value,
+        ):
+            raise CampaignIntegrityError(
+                f"Cannot finalize campaign '{campaign_id}' in lifecycle state '{status_str}'. "
+                "Only COMPLETED or TRUNCATED campaigns can be finalized."
+            )
+
+        # 3. Validate campaign structural & evidence integrity
+        validate_campaign_integrity(campaign_id, store=self.store, research_dir=experiment_store_dir or DEFAULT_RESEARCH_DIR)
+
+        sel_policy = selection_policy or ResearchCampaignSelectionPolicy()
+        eff_registry_store = (
+            registry_store
+            if registry_store is not None
+            else (self.memory_store if isinstance(self.memory_store, ResearchRegistryStore) else ResearchRegistryStore())
+        )
+
+        # 4. Canonical evidence synthesis
+        try:
+            derived_synthesis = synthesize_campaign_evidence(
+                campaign_id=campaign_id,
+                selection_policy=sel_policy,
+                store=self.store,
+                experiment_store_dir=experiment_store_dir,
+            )
+        except Exception as exc:
+            if isinstance(exc, (CampaignIntegrityError, CampaignSelectionIntegrityError)):
+                raise CampaignIntegrityError(str(exc)) from exc
+            raise CampaignIntegrityError(
+                f"Campaign evidence synthesis failed for campaign '{campaign_id}': {exc}"
+            ) from exc
+
+        try:
+            existing_synthesis = self.store.load_evidence_synthesis(campaign_id)
+            if existing_synthesis.synthesis_fingerprint != derived_synthesis.synthesis_fingerprint:
+                raise CampaignIntegrityError(
+                    f"Conflicting persisted evidence synthesis for campaign '{campaign_id}': "
+                    f"existing fingerprint '{existing_synthesis.synthesis_fingerprint}', "
+                    f"derived fingerprint '{derived_synthesis.synthesis_fingerprint}'."
+                )
+            synthesis = existing_synthesis
+        except FileNotFoundError:
+            try:
+                self.store.save_evidence_synthesis(derived_synthesis)
+                synthesis = derived_synthesis
+            except Exception as exc:
+                raise CampaignIntegrityError(
+                    f"Failed to persist evidence synthesis for campaign '{campaign_id}': {exc}"
+                ) from exc
+        except CampaignIntegrityError:
+            raise
+        except Exception as exc:
+            raise CampaignIntegrityError(
+                f"Conflicting persisted evidence synthesis for campaign '{campaign_id}': {exc}"
+            ) from exc
+
+        # 5. Canonical selection decision
+        try:
+            derived_decision = select_campaign_candidate(
+                synthesis=synthesis,
+                selection_policy=sel_policy,
+            )
+        except Exception as exc:
+            if isinstance(exc, (CampaignIntegrityError, CampaignSelectionIntegrityError)):
+                raise CampaignIntegrityError(str(exc)) from exc
+            raise CampaignIntegrityError(
+                f"Campaign candidate selection failed for campaign '{campaign_id}': {exc}"
+            ) from exc
+
+        try:
+            existing_decision = self.store.load_selection_decision(campaign_id)
+            if existing_decision.decision_fingerprint != derived_decision.decision_fingerprint:
+                raise CampaignIntegrityError(
+                    f"Conflicting persisted selection decision for campaign '{campaign_id}': "
+                    f"existing fingerprint '{existing_decision.decision_fingerprint}', "
+                    f"derived fingerprint '{derived_decision.decision_fingerprint}'."
+                )
+            decision = existing_decision
+        except FileNotFoundError:
+            try:
+                self.store.save_selection_decision(derived_decision)
+                decision = derived_decision
+            except Exception as exc:
+                raise CampaignIntegrityError(
+                    f"Failed to persist selection decision for campaign '{campaign_id}': {exc}"
+                ) from exc
+        except CampaignIntegrityError:
+            raise
+        except Exception as exc:
+            raise CampaignIntegrityError(
+                f"Conflicting persisted selection decision for campaign '{campaign_id}': {exc}"
+            ) from exc
+
+        # 6. Governed learning materialization (ONLY when status is SELECTED)
+        if decision.decision_status == CampaignSelectionStatus.SELECTED.value:
+            try:
+                existing_learning = self.store.load_campaign_learning(campaign_id)
+                # Verify existing learning artifact integrity and matching decision/synthesis fingerprints
+                if existing_learning.synthesis_fingerprint != decision.synthesis_fingerprint:
+                    raise CampaignIntegrityError(
+                        f"Conflicting persisted campaign learning artifact synthesis_fingerprint for '{campaign_id}': "
+                        f"existing '{existing_learning.synthesis_fingerprint}', expected '{decision.synthesis_fingerprint}'."
+                    )
+                if existing_learning.campaign_selection_decision_fingerprint != decision.decision_fingerprint:
+                    raise CampaignIntegrityError(
+                        f"Conflicting persisted campaign learning artifact decision_fingerprint for '{campaign_id}': "
+                        f"existing '{existing_learning.campaign_selection_decision_fingerprint}', expected '{decision.decision_fingerprint}'."
+                    )
+                CampaignLearningIntegrityValidator.validate_campaign_learning_integrity(
+                    existing_learning,
+                    store=self.store,
+                    registry_store=eff_registry_store,
+                )
+            except FileNotFoundError:
+                try:
+                    learning_art = materialize_governed_campaign_feedback(
+                        campaign_id=campaign_id,
+                        store=self.store,
+                        registry_store=eff_registry_store,
+                    )
+                    CampaignLearningIntegrityValidator.validate_campaign_learning_integrity(
+                        learning_art,
+                        store=self.store,
+                        registry_store=eff_registry_store,
+                    )
+                except Exception as exc:
+                    if isinstance(exc, (CampaignIntegrityError, CampaignLearningIntegrityError)):
+                        raise CampaignIntegrityError(str(exc)) from exc
+                    raise CampaignIntegrityError(
+                        f"Failed to materialize governed campaign learning for campaign '{campaign_id}': {exc}"
+                    ) from exc
+            except CampaignIntegrityError:
+                raise
+            except Exception as exc:
+                raise CampaignIntegrityError(
+                    f"Failed to load or verify existing campaign learning artifact for '{campaign_id}': {exc}"
+                ) from exc
+
+        return decision
 
     def resume_campaign(
         self,
@@ -761,6 +1006,8 @@ class ResearchCampaignOrchestrator:
         search_space: ResearchSearchSpace,
         criteria: Any,
         execution_policy: ResearchCampaignExecutionPolicy | None = None,
+        selection_policy: ResearchCampaignSelectionPolicy | None = None,
+        persist_registry_dir: str | Path | None = None,
         **kwargs: Any,
     ) -> ResearchCampaign:
         """Resume an interrupted or paused Research Campaign."""
@@ -769,6 +1016,25 @@ class ResearchCampaignOrchestrator:
         if status in (
             ResearchCampaignStatus.COMPLETED,
             ResearchCampaignStatus.TRUNCATED,
+        ):
+            # Finalize completed campaign (idempotent / resumes missing finalization phase)
+            eff_registry = (
+                persist_registry_dir
+                if persist_registry_dir
+                else (self.memory_store if isinstance(self.memory_store, ResearchRegistryStore) else None)
+            )
+            self.finalize_completed_campaign(
+                campaign_id,
+                selection_policy=selection_policy,
+                registry_store=eff_registry,
+            )
+            try:
+                from src.evaluation.research_store import load_research_campaign
+                return load_research_campaign(campaign_id, base_dir=self.store.base_dir)
+            except Exception:
+                pass
+
+        if status in (
             ResearchCampaignStatus.FAILED,
             ResearchCampaignStatus.CANCELLED,
         ):
@@ -785,6 +1051,8 @@ class ResearchCampaignOrchestrator:
             search_space=search_space,
             criteria=criteria,
             execution_policy=execution_policy,
+            selection_policy=selection_policy,
+            persist_registry_dir=persist_registry_dir,
             **kwargs,
         )
 
