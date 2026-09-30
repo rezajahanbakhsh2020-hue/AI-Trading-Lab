@@ -16,11 +16,8 @@ from src.visualization.live_trade_overlay import (
 
 
 def _realistic_rising_market(rows: int = 80) -> pd.DataFrame:
-    timestamps = pd.date_range(
-        "2026-01-01",
-        periods=rows,
-        freq="1D",
-    )
+    now = pd.Timestamp.now(tz="UTC")
+    timestamps = [now - pd.Timedelta(days=rows - 1 - i) for i in range(rows)]
 
     close = pd.Series(
         [2000.0 + index * 2.0 for index in range(rows)],
@@ -41,7 +38,7 @@ def _realistic_rising_market(rows: int = 80) -> pd.DataFrame:
 def test_end_to_end_live_proof():
     data = _realistic_rising_market()
 
-    decision = build_live_production_decision(
+    runtime = build_live_runtime(
         data,
         stable_strategy="momentum",
         stability_score=0.80,
@@ -49,27 +46,18 @@ def test_end_to_end_live_proof():
         interval="1d",
     )
 
-    assert decision["decision"] == "BUY"
-    assert decision["trend"] == "UP"
-    assert decision["signal_label"] == "BUY"
-    assert decision["entry_price"] is not None
-    assert decision["stop_loss"] is not None
-    assert decision["take_profit"] is not None
-
+    assert runtime.authorized_decision is not None
     display = build_live_trade_display(
-        data,
-        stable_strategy="momentum",
+        authorized_decision=runtime.authorized_decision,
         stability_score=0.80,
-        symbol="XAUUSD",
-        interval="1d",
     )
 
     assert display["decision"] == "BUY"
     assert display["entry_price"] == pytest.approx(
-        decision["entry_price"]
+        runtime.decision["entry_price"]
     )
     assert display["stop_loss"] == pytest.approx(
-        decision["stop_loss"]
+        runtime.decision["stop_loss"]
     )
 
     runtime = build_live_runtime(

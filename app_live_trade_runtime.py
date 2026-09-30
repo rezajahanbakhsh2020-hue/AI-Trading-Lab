@@ -112,6 +112,7 @@ def main() -> None:
             stability_score=selection["stability_score"],
             symbol=SYMBOL,
             interval=INTERVAL,
+            candidate_id=selection.get("candidate_id"),
         )
 
         overlay = build_live_trade_overlay(
@@ -120,7 +121,8 @@ def main() -> None:
         )
 
     except Exception as exc:
-        st.error(f"Live runtime failed: {exc}")
+        st.error(f"Live runtime authorization / execution failed: {exc}")
+        st.info("NO LIVE DECISION — candidate resolution or runtime authorization failed.")
         st.stop()
 
     col1, col2, col3, col4 = st.columns(4)

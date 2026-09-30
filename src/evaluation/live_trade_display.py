@@ -6,9 +6,8 @@ from typing import Any
 import pandas as pd
 
 from src.evaluation.live_production_decision import (
-    DEFAULT_INTERVAL,
-    DEFAULT_SYMBOL,
-    build_live_production_decision,
+    AuthorizedLiveDecision,
+    Direction,
 )
 
 
@@ -29,95 +28,36 @@ def _validate_multiplier(name: str, value: float) -> float:
     return value
 
 
-def _validate_decision(decision: dict[str, Any]) -> None:
-    if not isinstance(decision, dict):
-        raise ValueError("decision must be a dictionary.")
-
-    required = (
-        "decision",
-        "entry_price",
-        "stop_loss",
-        "take_profit",
-        "strategy_supported",
-        "stability_score",
-    )
-
-    missing = [key for key in required if key not in decision]
-
-    if missing:
-        raise ValueError(
-            f"decision is missing required fields: {', '.join(missing)}"
-        )
-
-
 def build_live_trade_display(
-    data: pd.DataFrame,
+    authorized_decision: AuthorizedLiveDecision,
     *,
-    stable_strategy: str,
-    stability_score: float,
+    stability_score: float | None = None,
     min_stability_score: float = 0.50,
-    momentum_window: int = 10,
-    fast_window: int = 20,
-    slow_window: int = 50,
-    stop_loss_pct: float = 0.01,
-    take_profit_pct: float = 0.02,
     tp1_multiplier: float = DEFAULT_TP1_MULTIPLIER,
     tp2_multiplier: float = DEFAULT_TP2_MULTIPLIER,
     tp3_multiplier: float = DEFAULT_TP3_MULTIPLIER,
-    symbol: str = DEFAULT_SYMBOL,
-    interval: str = DEFAULT_INTERVAL,
 ) -> dict[str, Any]:
+    """Build final live trade display solely as a pure consumer of AuthorizedLiveDecision.
+
+    Does not resolve candidates, fetch market data, or independently evaluate decisions.
+    Fails closed if authorized_decision is missing or invalid.
     """
-    Build final live trade levels from the existing production decision.
+    if not isinstance(authorized_decision, AuthorizedLiveDecision):
+        raise TypeError(
+            f"authorized_decision must be an AuthorizedLiveDecision instance, got {type(authorized_decision).__name__}"
+        )
 
-    BUY:
-        Entry + SL + TP1 + TP2 + TP3 are returned.
-
-    NO TRADE:
-        All trade price levels are returned as None.
-
-    This layer does not create SELL logic.
-    """
-
-    if not isinstance(data, pd.DataFrame):
-        raise ValueError("data must be a pandas DataFrame.")
-
-    if data.empty:
-        raise ValueError("data must not be empty.")
-
-    tp1_multiplier = _validate_multiplier(
-        "tp1_multiplier",
-        tp1_multiplier,
-    )
-    tp2_multiplier = _validate_multiplier(
-        "tp2_multiplier",
-        tp2_multiplier,
-    )
-    tp3_multiplier = _validate_multiplier(
-        "tp3_multiplier",
-        tp3_multiplier,
-    )
+    tp1_multiplier = _validate_multiplier("tp1_multiplier", tp1_multiplier)
+    tp2_multiplier = _validate_multiplier("tp2_multiplier", tp2_multiplier)
+    tp3_multiplier = _validate_multiplier("tp3_multiplier", tp3_multiplier)
 
     if not tp1_multiplier < tp2_multiplier < tp3_multiplier:
         raise ValueError("TP multipliers must satisfy TP1 < TP2 < TP3.")
 
-    decision = build_live_production_decision(
-        data,
-        stable_strategy=stable_strategy,
-        stability_score=stability_score,
-        min_stability_score=min_stability_score,
-        momentum_window=momentum_window,
-        fast_window=fast_window,
-        slow_window=slow_window,
-        stop_loss_pct=stop_loss_pct,
-        take_profit_pct=take_profit_pct,
-        symbol=symbol,
-        interval=interval,
-    )
+    dec = authorized_decision.decision
+    risk = authorized_decision.risk_levels
 
-    _validate_decision(decision)
-
-    is_buy = decision["decision"] == "BUY"
+    is_buy = dec.direction == Direction.BUY
 
     if not is_buy:
         entry_price = None
@@ -132,60 +72,42 @@ def build_live_trade_display(
         risk_reward_tp2 = None
         risk_reward_tp3 = None
     else:
-        if (
-            decision["entry_price"] is None
-            or decision["stop_loss"] is None
-        ):
-            raise ValueError(
-                "BUY decision must contain entry_price and stop_loss."
-            )
+        if risk.entry_price is None or risk.stop_loss is None:
+            raise ValueError("BUY decision must contain entry_price and stop_loss.")
 
-        entry_price = float(decision["entry_price"])
-        stop_loss = float(decision["stop_loss"])
+        entry_price = float(risk.entry_price)
+        stop_loss = float(risk.stop_loss)
 
         risk_distance = entry_price - stop_loss
-
         if risk_distance <= 0:
-            raise ValueError(
-                "BUY risk distance must be greater than zero."
-            )
+            raise ValueError("BUY risk distance must be greater than zero.")
 
-        tp1 = entry_price + (
-            risk_distance * tp1_multiplier
-        )
-        tp2 = entry_price + (
-            risk_distance * tp2_multiplier
-        )
-        tp3 = entry_price + (
-            risk_distance * tp3_multiplier
-        )
+        tp1 = entry_price + (risk_distance * tp1_multiplier)
+        tp2 = entry_price + (risk_distance * tp2_multiplier)
+        tp3 = entry_price + (risk_distance * tp3_multiplier)
 
-        take_profit = float(decision["take_profit"])
-        reward_distance = take_profit - entry_price
-        risk_reward_ratio = reward_distance / risk_distance if risk_distance > 0 else None
+        take_profit = tp2 if tp2 is not None else tp1
+        reward_distance = take_profit - entry_price if take_profit is not None else 0.0
+        risk_reward_ratio = risk.risk_reward_ratio or (reward_distance / risk_distance if risk_distance > 0 else None)
 
-        risk_reward_tp1 = (
-            (tp1 - entry_price) / risk_distance
-        )
-        risk_reward_tp2 = (
-            (tp2 - entry_price) / risk_distance
-        )
-        risk_reward_tp3 = (
-            (tp3 - entry_price) / risk_distance
-        )
+        risk_reward_tp1 = ((tp1 - entry_price) / risk_distance) if tp1 is not None else None
+        risk_reward_tp2 = ((tp2 - entry_price) / risk_distance) if tp2 is not None else None
+        risk_reward_tp3 = ((tp3 - entry_price) / risk_distance) if tp3 is not None else None
+
+    eff_stab_score = stability_score if stability_score is not None else dec.confidence
 
     return {
-        "symbol": decision["symbol"],
-        "interval": decision["interval"],
-        "decision": decision["decision"],
-        "reason": decision["reason"],
-        "stable_strategy": decision["stable_strategy"],
-        "stability_score": decision["stability_score"],
-        "strategy_supported": decision["strategy_supported"],
-        "signal": decision["signal"],
-        "signal_label": decision["signal_label"],
-        "trend": decision["trend"],
-        "momentum": decision["momentum"],
+        "symbol": authorized_decision.symbol,
+        "interval": authorized_decision.timeframe,
+        "decision": dec.direction.value,
+        "reason": dec.reason,
+        "stable_strategy": authorized_decision.strategy_name,
+        "stability_score": eff_stab_score,
+        "strategy_supported": authorized_decision.strategy_name.lower() == "momentum",
+        "signal": 1 if dec.direction == Direction.BUY else 0,
+        "signal_label": dec.direction.value,
+        "trend": "UP" if dec.direction == Direction.BUY else "NEUTRAL",
+        "momentum": entry_price if is_buy else None,
         "entry_price": entry_price,
         "stop_loss": stop_loss,
         "tp1": tp1,
@@ -197,13 +119,17 @@ def build_live_trade_display(
         "risk_reward_tp1": risk_reward_tp1,
         "risk_reward_tp2": risk_reward_tp2,
         "risk_reward_tp3": risk_reward_tp3,
-        "stop_loss_pct": decision["stop_loss_pct"],
-        "take_profit_pct": decision["take_profit_pct"],
+        "stop_loss_pct": dec.parameters.get("stop_loss_pct"),
+        "take_profit_pct": dec.parameters.get("take_profit_pct"),
         "tp1_multiplier": tp1_multiplier,
         "tp2_multiplier": tp2_multiplier,
         "tp3_multiplier": tp3_multiplier,
-        "momentum_window": decision["momentum_window"],
-        "fast_window": decision["fast_window"],
-        "slow_window": decision["slow_window"],
-        "timestamp": decision["timestamp"],
+        "momentum_window": dec.parameters.get("momentum_window", dec.parameters.get("window")),
+        "fast_window": dec.parameters.get("fast_window", 20),
+        "slow_window": dec.parameters.get("slow_window", 50),
+        "timestamp": dec.market_timestamp,
+        "candidate_id": authorized_decision.candidate_id,
+        "authorization_fingerprint": authorized_decision.authorization_fingerprint,
+        "promoted_artifact_fingerprint": authorized_decision.promoted_artifact_fingerprint,
+        "governance_decision_fingerprint": authorized_decision.governance_decision_fingerprint,
     }

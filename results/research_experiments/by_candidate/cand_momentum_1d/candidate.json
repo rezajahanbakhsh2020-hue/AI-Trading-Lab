@@ -10,5 +10,7 @@
     "momentum_window": 10,
     "stop_loss_pct": 0.01,
     "take_profit_pct": 0.02
-  }
+  },
+  "governance_decision_fingerprint": "gov_fp_cand_momentum_1d",
+  "campaign_selection_decision_fingerprint": null
 }

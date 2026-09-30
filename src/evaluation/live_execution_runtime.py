@@ -28,7 +28,9 @@ from src.data.provider import (
 from src.evaluation.live_decision_record import build_live_decision_record
 from src.evaluation.live_decision_store import append_live_decision_to_store
 from src.evaluation.live_production_decision import (
+    AuthorizedLiveDecision,
     Direction,
+    ProductionAuthorizationReceipt,
     ProductionDecision,
     ProductionIntelligencePublication,
     ProductionRuntimeAuthorization,
@@ -515,6 +517,9 @@ class LiveExecutionRuntime:
                 timeframe=self.interval,
                 now=ref_now,
             )
+            receipt = ProductionAuthorizationReceipt.from_authorization(
+                authorization
+            )
         except ProductionRuntimeAuthorizationError as exc:
             blocked = ProductionBlocked(
                 reason="ProductionRuntimeAuthorizationError",
@@ -637,9 +642,18 @@ class LiveExecutionRuntime:
                 data=data,
                 reference_now=ref_now,
                 max_age_seconds=max_age,
+                authorization=receipt,
             )
             signal = ProductionSignal.from_decision(decision)
             risk = calculate_production_risk_levels(decision, candidate)
+
+            authorized_live_decision = AuthorizedLiveDecision.create(
+                authorization=receipt,
+                candidate=candidate,
+                decision=decision,
+                risk_levels=risk,
+                event_time_utc=decision.market_timestamp,
+            )
 
             display = {
                 "symbol": self.symbol,
@@ -679,6 +693,7 @@ class LiveExecutionRuntime:
             signal=signal,
             risk=risk,
             candidate=candidate,
+            authorization=receipt,
             confidence=stability_score,
         )
 
@@ -686,13 +701,15 @@ class LiveExecutionRuntime:
         record = build_live_decision_record(display)
         record["decision_id"] = decision.decision_id
         record["signal_id"] = signal.signal_id
-        record["runtime_authorization_fingerprint"] = authorization.authorization_fingerprint
-        record["promoted_artifact_fingerprint"] = authorization.promoted_artifact_fingerprint
-        record["governance_decision_fingerprint"] = authorization.governance_decision_fingerprint
-        record["campaign_selection_decision_fingerprint"] = authorization.campaign_selection_decision_fingerprint
-        record["candidate_id"] = authorization.candidate_id
-        record["strategy_name"] = authorization.strategy_name
-        record["strategy_version"] = authorization.strategy_version
+        record["runtime_authorization_fingerprint"] = receipt.authorization_fingerprint
+        record["authorization_policy_version"] = receipt.authorization_policy_version
+        record["authorized_at_utc"] = receipt.authorized_at_utc
+        record["promoted_artifact_fingerprint"] = receipt.promoted_artifact_fingerprint
+        record["governance_decision_fingerprint"] = receipt.governance_decision_fingerprint
+        record["campaign_selection_decision_fingerprint"] = receipt.campaign_selection_decision_fingerprint
+        record["candidate_id"] = receipt.candidate_id
+        record["strategy_name"] = receipt.strategy_name
+        record["strategy_version"] = receipt.strategy_version
 
         if persist:
             append_live_decision_to_store(record, self.store_path)
@@ -720,10 +737,13 @@ class LiveExecutionRuntime:
             "evidence_id": candidate.evidence.evidence_id,
             "research_fingerprint": candidate.evidence.experiment_fingerprint,
             "strategy_version": candidate.strategy_version,
-            "runtime_authorization_fingerprint": authorization.authorization_fingerprint,
-            "promoted_artifact_fingerprint": authorization.promoted_artifact_fingerprint,
-            "governance_decision_fingerprint": authorization.governance_decision_fingerprint,
-            "campaign_selection_decision_fingerprint": authorization.campaign_selection_decision_fingerprint,
+            "runtime_authorization": receipt.as_dict(),
+            "runtime_authorization_fingerprint": receipt.authorization_fingerprint,
+            "authorization_policy_version": receipt.authorization_policy_version,
+            "authorized_at_utc": receipt.authorized_at_utc,
+            "promoted_artifact_fingerprint": receipt.promoted_artifact_fingerprint,
+            "governance_decision_fingerprint": receipt.governance_decision_fingerprint,
+            "campaign_selection_decision_fingerprint": receipt.campaign_selection_decision_fingerprint,
             "record": record,
             "publication": publication.as_dict(),
             "contract_payload": contract_payload,

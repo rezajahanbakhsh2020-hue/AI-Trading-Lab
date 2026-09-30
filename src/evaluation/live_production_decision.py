@@ -37,6 +37,283 @@ class Direction(str, Enum):
 
 
 @dataclass(frozen=True)
+class AuthorizedLiveDecision:
+    """Canonical, immutable live decision artifact binding the authorized decision, risk levels, and authorization receipt."""
+
+    authorization_receipt: ProductionAuthorizationReceipt
+    candidate_id: str
+    strategy_name: str
+    strategy_version: str
+    symbol: str
+    timeframe: str
+
+    decision: ProductionDecision
+    risk_levels: ProductionRiskLevels
+
+    promoted_artifact_fingerprint: str
+    governance_decision_fingerprint: str
+    campaign_selection_decision_fingerprint: Optional[str]
+    authorization_fingerprint: str
+
+    event_time_utc: str
+    decision_artifact_fingerprint: str = field(init=False)
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.authorization_receipt, ProductionAuthorizationReceipt):
+            raise ProductionRuntimeAuthorizationError(
+                f"authorization_receipt must be ProductionAuthorizationReceipt, got {type(self.authorization_receipt).__name__}"
+            )
+        if not isinstance(self.decision, ProductionDecision):
+            raise ProductionRuntimeAuthorizationError("decision must be a ProductionDecision instance.")
+        if not isinstance(self.risk_levels, ProductionRiskLevels):
+            raise ProductionRuntimeAuthorizationError("risk_levels must be a ProductionRiskLevels instance.")
+
+        rec = self.authorization_receipt
+
+        # Invariant checks against receipt
+        if self.candidate_id != rec.candidate_id:
+            raise ProductionRuntimeAuthorizationError(
+                f"candidate_id '{self.candidate_id}' does not match authorization receipt candidate_id '{rec.candidate_id}'."
+            )
+        if self.strategy_name != rec.strategy_name:
+            raise ProductionRuntimeAuthorizationError(
+                f"strategy_name '{self.strategy_name}' does not match authorization receipt strategy_name '{rec.strategy_name}'."
+            )
+        if self.strategy_version != rec.strategy_version:
+            raise ProductionRuntimeAuthorizationError(
+                f"strategy_version '{self.strategy_version}' does not match authorization receipt strategy_version '{rec.strategy_version}'."
+            )
+        if self.symbol.upper() != rec.symbol.upper():
+            raise ProductionRuntimeAuthorizationError(
+                f"symbol '{self.symbol}' does not match authorization receipt symbol '{rec.symbol}'."
+            )
+        if self.timeframe != rec.timeframe:
+            raise ProductionRuntimeAuthorizationError(
+                f"timeframe '{self.timeframe}' does not match authorization receipt timeframe '{rec.timeframe}'."
+            )
+        if self.promoted_artifact_fingerprint != rec.promoted_artifact_fingerprint:
+            raise ProductionRuntimeAuthorizationError(
+                f"promoted_artifact_fingerprint mismatch against authorization receipt."
+            )
+        if self.governance_decision_fingerprint != rec.governance_decision_fingerprint:
+            raise ProductionRuntimeAuthorizationError(
+                f"governance_decision_fingerprint mismatch against authorization receipt."
+            )
+        if self.campaign_selection_decision_fingerprint != rec.campaign_selection_decision_fingerprint:
+            raise ProductionRuntimeAuthorizationError(
+                f"campaign_selection_decision_fingerprint mismatch against authorization receipt."
+            )
+        if self.authorization_fingerprint != rec.authorization_fingerprint:
+            raise ProductionRuntimeAuthorizationError(
+                f"authorization_fingerprint mismatch against authorization receipt."
+            )
+
+        # Decision & Risk invariants against receipt/candidate identity
+        if self.decision.candidate_id != rec.candidate_id:
+            raise ProductionRuntimeAuthorizationError(
+                f"Decision candidate_id '{self.decision.candidate_id}' does not match authorization candidate_id '{rec.candidate_id}'."
+            )
+        if self.decision.symbol.upper() != rec.symbol.upper():
+            raise ProductionRuntimeAuthorizationError(
+                f"Decision symbol '{self.decision.symbol}' does not match authorization symbol '{rec.symbol}'."
+            )
+        if self.decision.timeframe != rec.timeframe:
+            raise ProductionRuntimeAuthorizationError(
+                f"Decision timeframe '{self.decision.timeframe}' does not match authorization timeframe '{rec.timeframe}'."
+            )
+        if self.risk_levels.decision_id != self.decision.decision_id:
+            raise ProductionRuntimeAuthorizationError(
+                f"Risk decision_id '{self.risk_levels.decision_id}' does not match decision ID '{self.decision.decision_id}'."
+            )
+
+        if not self.event_time_utc or not str(self.event_time_utc).strip():
+            raise ProductionRuntimeAuthorizationError("event_time_utc must be a non-empty string.")
+
+        object.__setattr__(self, "symbol", self.symbol.upper())
+        object.__setattr__(self, "event_time_utc", str(self.event_time_utc).strip())
+
+        payload = {
+            "candidate_id": self.candidate_id,
+            "strategy_name": self.strategy_name,
+            "strategy_version": self.strategy_version,
+            "symbol": self.symbol,
+            "timeframe": self.timeframe,
+            "decision_id": self.decision.decision_id,
+            "risk_id": self.risk_levels.risk_id,
+            "promoted_artifact_fingerprint": self.promoted_artifact_fingerprint,
+            "governance_decision_fingerprint": self.governance_decision_fingerprint,
+            "campaign_selection_decision_fingerprint": self.campaign_selection_decision_fingerprint,
+            "authorization_fingerprint": self.authorization_fingerprint,
+            "event_time_utc": self.event_time_utc,
+        }
+        serialized = json.dumps(payload, sort_keys=True, ensure_ascii=True)
+        object.__setattr__(
+            self,
+            "decision_artifact_fingerprint",
+            hashlib.sha256(serialized.encode("utf-8")).hexdigest(),
+        )
+
+    @classmethod
+    def create(
+        cls,
+        *,
+        authorization: ProductionRuntimeAuthorization | ProductionAuthorizationReceipt,
+        candidate: PromotedCandidateArtifact,
+        decision: ProductionDecision,
+        risk_levels: ProductionRiskLevels,
+        event_time_utc: Optional[str] = None,
+    ) -> AuthorizedLiveDecision:
+        """Construct a canonical AuthorizedLiveDecision from an authorized candidate and its evaluated decision."""
+        if not isinstance(candidate, PromotedCandidateArtifact):
+            raise TypeError("candidate must be a PromotedCandidateArtifact instance.")
+
+        receipt = (
+            authorization
+            if isinstance(authorization, ProductionAuthorizationReceipt)
+            else ProductionAuthorizationReceipt.from_authorization(authorization)
+        )
+
+        if candidate.candidate_id != receipt.candidate_id:
+            raise ProductionRuntimeAuthorizationError(
+                f"Supplied candidate ID '{candidate.candidate_id}' does not match authorization receipt candidate ID '{receipt.candidate_id}'."
+            )
+
+        evt_time = event_time_utc or decision.market_timestamp
+
+        return cls(
+            authorization_receipt=receipt,
+            candidate_id=receipt.candidate_id,
+            strategy_name=receipt.strategy_name,
+            strategy_version=receipt.strategy_version,
+            symbol=receipt.symbol,
+            timeframe=receipt.timeframe,
+            decision=decision,
+            risk_levels=risk_levels,
+            promoted_artifact_fingerprint=receipt.promoted_artifact_fingerprint,
+            governance_decision_fingerprint=receipt.governance_decision_fingerprint,
+            campaign_selection_decision_fingerprint=receipt.campaign_selection_decision_fingerprint,
+            authorization_fingerprint=receipt.authorization_fingerprint,
+            event_time_utc=evt_time,
+        )
+
+    def as_dict(self) -> dict[str, Any]:
+        return {
+            "decision_artifact_fingerprint": self.decision_artifact_fingerprint,
+            "authorization_receipt": self.authorization_receipt.as_dict(),
+            "candidate_id": self.candidate_id,
+            "strategy_name": self.strategy_name,
+            "strategy_version": self.strategy_version,
+            "symbol": self.symbol,
+            "timeframe": self.timeframe,
+            "decision": self.decision.as_dict(),
+            "risk_levels": self.risk_levels.as_dict(),
+            "promoted_artifact_fingerprint": self.promoted_artifact_fingerprint,
+            "governance_decision_fingerprint": self.governance_decision_fingerprint,
+            "campaign_selection_decision_fingerprint": self.campaign_selection_decision_fingerprint,
+            "authorization_fingerprint": self.authorization_fingerprint,
+            "event_time_utc": self.event_time_utc,
+        }
+
+
+@dataclass(frozen=True)
+class ProductionAuthorizationReceipt:
+    """Canonical immutable projection of ProductionRuntimeAuthorization for durable execution lineage."""
+
+    candidate_id: str
+    strategy_name: str
+    strategy_version: str
+    symbol: str
+    timeframe: str
+    promoted_artifact_fingerprint: str
+    governance_decision_fingerprint: str
+    campaign_selection_decision_fingerprint: Optional[str]
+    authorization_policy_version: str
+    authorized_at_utc: str
+    authorization_fingerprint: str
+
+    def __post_init__(self) -> None:
+        if not self.candidate_id or not str(self.candidate_id).strip():
+            raise ProductionRuntimeAuthorizationError("candidate_id must be a non-empty string.")
+        if not self.strategy_name or not str(self.strategy_name).strip():
+            raise ProductionRuntimeAuthorizationError("strategy_name must be a non-empty string.")
+        if not self.strategy_version or not str(self.strategy_version).strip():
+            raise ProductionRuntimeAuthorizationError("strategy_version must be a non-empty string.")
+        if not self.symbol or not str(self.symbol).strip():
+            raise ProductionRuntimeAuthorizationError("symbol must be a non-empty string.")
+        if not self.timeframe or not str(self.timeframe).strip():
+            raise ProductionRuntimeAuthorizationError("timeframe must be a non-empty string.")
+
+        if not self.promoted_artifact_fingerprint or not str(self.promoted_artifact_fingerprint).strip():
+            raise ProductionRuntimeAuthorizationError("promoted_artifact_fingerprint must be a non-empty string.")
+        if not self.governance_decision_fingerprint or not str(self.governance_decision_fingerprint).strip():
+            raise ProductionRuntimeAuthorizationError("governance_decision_fingerprint must be a non-empty string.")
+
+        csdf = self.campaign_selection_decision_fingerprint
+        if csdf is not None:
+            csdf_str = str(csdf).strip()
+            if not csdf_str:
+                raise ProductionRuntimeAuthorizationError("campaign_selection_decision_fingerprint cannot be empty if provided.")
+            object.__setattr__(self, "campaign_selection_decision_fingerprint", csdf_str)
+
+        if not self.authorization_policy_version or not str(self.authorization_policy_version).strip():
+            raise ProductionRuntimeAuthorizationError("authorization_policy_version must be a non-empty string.")
+        if not self.authorized_at_utc or not str(self.authorized_at_utc).strip():
+            raise ProductionRuntimeAuthorizationError("authorized_at_utc must be a non-empty string.")
+        if not self.authorization_fingerprint or not str(self.authorization_fingerprint).strip():
+            raise ProductionRuntimeAuthorizationError("authorization_fingerprint must be a non-empty string.")
+
+        object.__setattr__(self, "candidate_id", str(self.candidate_id).strip())
+        object.__setattr__(self, "strategy_name", str(self.strategy_name).strip())
+        object.__setattr__(self, "strategy_version", str(self.strategy_version).strip())
+        object.__setattr__(self, "symbol", str(self.symbol).strip().upper())
+        object.__setattr__(self, "timeframe", str(self.timeframe).strip())
+        object.__setattr__(self, "promoted_artifact_fingerprint", str(self.promoted_artifact_fingerprint).strip())
+        object.__setattr__(self, "governance_decision_fingerprint", str(self.governance_decision_fingerprint).strip())
+        object.__setattr__(self, "authorization_policy_version", str(self.authorization_policy_version).strip())
+        object.__setattr__(self, "authorized_at_utc", str(self.authorized_at_utc).strip())
+        object.__setattr__(self, "authorization_fingerprint", str(self.authorization_fingerprint).strip())
+
+    @classmethod
+    def from_authorization(
+        cls, authorization: ProductionRuntimeAuthorization
+    ) -> ProductionAuthorizationReceipt:
+        """Construct a receipt projection from an authoritative ProductionRuntimeAuthorization."""
+        if not isinstance(authorization, ProductionRuntimeAuthorization):
+            raise ProductionRuntimeAuthorizationError(
+                f"authorization must be a ProductionRuntimeAuthorization, got {type(authorization).__name__}"
+            )
+
+        return cls(
+            candidate_id=authorization.candidate_id,
+            strategy_name=authorization.strategy_name,
+            strategy_version=authorization.strategy_version,
+            symbol=authorization.symbol,
+            timeframe=authorization.timeframe,
+            promoted_artifact_fingerprint=authorization.promoted_artifact_fingerprint,
+            governance_decision_fingerprint=authorization.governance_decision_fingerprint,
+            campaign_selection_decision_fingerprint=authorization.campaign_selection_decision_fingerprint,
+            authorization_policy_version=authorization.authorization_policy_version,
+            authorized_at_utc=authorization.authorized_at_utc,
+            authorization_fingerprint=authorization.authorization_fingerprint,
+        )
+
+    def as_dict(self) -> dict[str, Any]:
+        return {
+            "candidate_id": self.candidate_id,
+            "strategy_name": self.strategy_name,
+            "strategy_version": self.strategy_version,
+            "symbol": self.symbol,
+            "timeframe": self.timeframe,
+            "promoted_artifact_fingerprint": self.promoted_artifact_fingerprint,
+            "governance_decision_fingerprint": self.governance_decision_fingerprint,
+            "campaign_selection_decision_fingerprint": self.campaign_selection_decision_fingerprint,
+            "authorization_policy_version": self.authorization_policy_version,
+            "authorized_at_utc": self.authorized_at_utc,
+            "authorization_fingerprint": self.authorization_fingerprint,
+        }
+
+
+@dataclass(frozen=True)
 class ProductionRuntimeAuthorization:
     """Explicit, immutable authorization artifact required for live runtime execution."""
 
@@ -599,10 +876,34 @@ def evaluate_production_decision(
     data: pd.DataFrame,
     reference_now: Optional[Any] = None,
     max_age_seconds: float = 300.0,
+    authorization: Optional[ProductionRuntimeAuthorization | ProductionAuthorizationReceipt] = None,
 ) -> ProductionDecision:
     """Evaluate promoted candidate strategy against live market data to produce an authoritative ProductionDecision."""
     if not isinstance(candidate, PromotedCandidateArtifact):
         raise TypeError("candidate must be a PromotedCandidateArtifact instance.")
+
+    if authorization is not None:
+        rec = (
+            authorization
+            if isinstance(authorization, ProductionAuthorizationReceipt)
+            else ProductionAuthorizationReceipt.from_authorization(authorization)
+        )
+        if rec.candidate_id != candidate.candidate_id:
+            raise ProductionRuntimeAuthorizationError(
+                f"Authorization candidate_id '{rec.candidate_id}' does not match candidate '{candidate.candidate_id}'."
+            )
+        if rec.symbol.upper() != candidate.symbol.upper():
+            raise ProductionRuntimeAuthorizationError(
+                f"Authorization symbol '{rec.symbol}' does not match candidate symbol '{candidate.symbol}'."
+            )
+        if rec.timeframe != candidate.timeframe:
+            raise ProductionRuntimeAuthorizationError(
+                f"Authorization timeframe '{rec.timeframe}' does not match candidate timeframe '{candidate.timeframe}'."
+            )
+        if rec.promoted_artifact_fingerprint != candidate.artifact_fingerprint:
+            raise ProductionRuntimeAuthorizationError(
+                "Authorization artifact fingerprint mismatch."
+            )
 
     latest_bar = validate_market_data_for_production(
         data=data,
@@ -1050,6 +1351,7 @@ class ProductionIntelligencePublication:
         signal: ProductionSignal,
         risk: ProductionRiskLevels,
         candidate: PromotedCandidateArtifact,
+        authorization: Optional[ProductionRuntimeAuthorization | ProductionAuthorizationReceipt] = None,
         confidence: Optional[float] = None,
         schema_version: str = "1.0",
     ) -> ProductionIntelligencePublication:
@@ -1098,6 +1400,24 @@ class ProductionIntelligencePublication:
         }
 
         conf = confidence if confidence is not None else decision.confidence
+
+        if authorization is not None:
+            receipt = (
+                authorization
+                if isinstance(authorization, ProductionAuthorizationReceipt)
+                else ProductionAuthorizationReceipt.from_authorization(authorization)
+            )
+            provenance.update({
+                "candidate_id": receipt.candidate_id,
+                "strategy_name": receipt.strategy_name,
+                "strategy_version": receipt.strategy_version,
+                "runtime_authorization_fingerprint": receipt.authorization_fingerprint,
+                "promoted_artifact_fingerprint": receipt.promoted_artifact_fingerprint,
+                "governance_decision_fingerprint": receipt.governance_decision_fingerprint,
+                "campaign_selection_decision_fingerprint": receipt.campaign_selection_decision_fingerprint,
+                "authorization_policy_version": receipt.authorization_policy_version,
+                "authorized_at_utc": receipt.authorized_at_utc,
+            })
 
         return cls(
             schema_version=schema_version,
@@ -1228,6 +1548,7 @@ def build_live_production_decision(
     interval: str = DEFAULT_INTERVAL,
     candidate_id: Optional[str] = None,
     research_dir: Optional[Any] = None,
+    authorization: Optional[ProductionRuntimeAuthorization | ProductionAuthorizationReceipt] = None,
 ) -> dict[str, Any]:
     """Operational wrapper delegating directly to authoritative candidate resolution, decision evaluation, and risk calculation."""
     from live_trend import build_live_trend_snapshot
@@ -1274,12 +1595,21 @@ def build_live_production_decision(
     else:
         ref_now = None
 
+    if authorization is None:
+        authorization = authorize_production_runtime(
+            resolved_candidate,
+            symbol=symbol,
+            timeframe=interval,
+            now=ref_now,
+        )
+
     # Authoritative evaluation through promoted candidate
     decision_obj = evaluate_production_decision(
         candidate=resolved_candidate,
         data=data,
         reference_now=ref_now,
         max_age_seconds=float("inf"),
+        authorization=authorization,
     )
 
     from live_signal import generate_live_signal
