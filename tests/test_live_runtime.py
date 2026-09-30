@@ -22,13 +22,14 @@ def _data() -> pd.DataFrame:
     )
 
 
-def test_live_runtime_builds_decision_and_display():
+def test_live_runtime_builds_decision_and_display(tmp_path):
     result = build_live_runtime(
         data=_data(),
         stable_strategy="momentum",
         stability_score=0.80,
         symbol="XAUUSD",
         interval="5m",
+        store_path=tmp_path / "store.json",
     )
 
     assert result.decision["symbol"] == "XAUUSD"
@@ -42,13 +43,17 @@ def test_live_runtime_builds_decision_and_display():
     assert result.display["decision"] == result.decision["decision"]
 
 
-def test_live_runtime_display_contains_tp_levels():
+def test_live_runtime_display_contains_tp_levels(tmp_path):
+    df = _data()
+    ref_now = pd.to_datetime(df["timestamp"], utc=True).iloc[-1].to_pydatetime()
     result = build_live_runtime(
-        data=_data(),
+        data=df,
         stable_strategy="momentum",
         stability_score=0.80,
         symbol="XAUUSD",
         interval="5m",
+        reference_now=ref_now,
+        store_path=tmp_path / "store.json",
     )
 
     assert "tp1" in result.display
@@ -60,11 +65,12 @@ def test_live_runtime_display_contains_tp_levels():
     assert result.display["tp3"] is not None
 
 
-def test_live_runtime_keeps_decision_and_display_consistent():
+def test_live_runtime_keeps_decision_and_display_consistent(tmp_path):
     result = build_live_runtime(
         data=_data(),
         stable_strategy="momentum",
         stability_score=0.80,
+        store_path=tmp_path / "store.json",
     )
 
     assert (

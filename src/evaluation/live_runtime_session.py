@@ -32,6 +32,7 @@ def build_live_runtime_session(
     market_data_ready: bool = True,
     quote_ready: bool = True,
     timestamp_ready: bool = True,
+    store_path: Any | None = None,
 ) -> LiveRuntimeSession:
     """
     Build a complete live-runtime session.
@@ -65,6 +66,7 @@ def build_live_runtime_session(
         symbol=symbol,
         interval=interval,
         min_stability_score=min_stability_score,
+        store_path=store_path,
     )
 
     runtime_decision = {
@@ -126,6 +128,7 @@ def is_live_runtime_session_ready(
     market_data_ready: bool = True,
     quote_ready: bool = True,
     timestamp_ready: bool = True,
+    store_path: Any | None = None,
 ) -> bool:
     """
     Return only whether the complete live-runtime session
@@ -142,6 +145,7 @@ def is_live_runtime_session_ready(
         market_data_ready=market_data_ready,
         quote_ready=quote_ready,
         timestamp_ready=timestamp_ready,
+        store_path=store_path,
     )
 
     return bool(session.session_ready)
@@ -158,6 +162,7 @@ def live_runtime_session_message(
     market_data_ready: bool = True,
     quote_ready: bool = True,
     timestamp_ready: bool = True,
+    store_path: Any | None = None,
 ) -> str:
     """
     Return a concise session status message.
@@ -173,6 +178,7 @@ def live_runtime_session_message(
         market_data_ready=market_data_ready,
         quote_ready=quote_ready,
         timestamp_ready=timestamp_ready,
+        store_path=store_path,
     )
 
     if session.session_ready:

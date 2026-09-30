@@ -23,6 +23,8 @@ def run_production_end_to_end(
     symbol: str = "XAUUSD",
     interval: str = "1d",
     min_stability_score: float = 0.50,
+    reference_now: Any | None = None,
+    store_path: Any | None = None,
 ) -> dict[str, Any]:
     """Connect the saved production selection to the live E2E pipeline."""
 
@@ -37,6 +39,8 @@ def run_production_end_to_end(
         symbol=symbol,
         interval=interval,
         min_stability_score=min_stability_score,
+        reference_now=reference_now,
+        store_path=store_path,
     )
 
     result["production_selection"] = selection

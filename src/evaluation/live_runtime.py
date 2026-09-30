@@ -19,6 +19,11 @@ from src.evaluation.live_decision_store import (
     DEFAULT_STORE_PATH,
     persist_canonical_live_decision,
 )
+from src.evaluation.live_market_evaluation import (
+    LiveMarketEvaluation,
+    create_live_market_evaluation,
+    validate_market_evaluation_context_lineage,
+)
 from src.evaluation.live_production_decision import (
     Direction,
     ProductionAuthorizationReceipt,
@@ -52,11 +57,321 @@ class LiveRuntimeResult:
     canonical_decision: CanonicalLiveDecision | None = None
 
 
+def evaluate_authorized_live_runtime(
+    data: pd.DataFrame,
+    *,
+    evaluation: LiveMarketEvaluation,
+    context: AuthorizedProductionRuntimeContext,
+    stable_strategy: str,
+    stability_score: float | None = None,
+    min_stability_score: float = 0.50,
+    store_path: Path | str | None = None,
+    publisher: Any | None = None,
+    publish: bool = False,
+    skip_if_no_trade: bool = False,
+    persist: bool = True,
+    actor: str = "live_runtime",
+) -> LiveRuntimeResult:
+    """Canonical downstream execution boundary for Project 1 live execution.
+
+    Takes an immutable AuthorizedProductionRuntimeContext and LiveMarketEvaluation
+    and executes the single unified lifecycle for both fresh and stale market data.
+    """
+    if not isinstance(data, pd.DataFrame):
+        raise TypeError("data must be a pandas DataFrame.")
+    if not isinstance(context, AuthorizedProductionRuntimeContext):
+        raise RuntimeContextValidationError(
+            f"context must be an AuthorizedProductionRuntimeContext, got {type(context).__name__}"
+        )
+    if not isinstance(evaluation, LiveMarketEvaluation):
+        raise TypeError("evaluation must be a LiveMarketEvaluation instance.")
+
+    # Validate fail-closed lineage consistency
+    validate_market_evaluation_context_lineage(evaluation, context)
+
+    resolved_candidate = context.candidate
+    receipt = context.authorization_receipt
+    symbol = context.symbol
+    interval = context.timeframe
+
+    ts_now = evaluation.reference_timestamp_utc
+    try:
+        ref_now = datetime.fromisoformat(ts_now.replace("Z", "+00:00"))
+        if ref_now.tzinfo is None:
+            ref_now = ref_now.replace(tzinfo=timezone.utc)
+    except Exception:
+        ref_now = None
+
+    if evaluation.fresh:
+        # FRESH DATA PATH: Evaluate strategy decision & signal
+        decision_obj = evaluate_production_decision(
+            candidate=resolved_candidate,
+            data=data,
+            reference_now=ref_now,
+            max_age_seconds=float("inf"),
+        )
+
+        from live_signal import generate_live_signal
+        from live_trend import build_live_trend_snapshot
+
+        eff_window = resolved_candidate.parameters.get(
+            "momentum_window",
+            resolved_candidate.parameters.get("window", 10),
+        )
+        sig_df = generate_live_signal(data, window=int(eff_window))
+        sig_val = int(sig_df["signal"].iloc[-1])
+
+        trend_snap = build_live_trend_snapshot(data)
+        trend_val = trend_snap["trend"]
+
+        # Operational gating criteria
+        if stability_score is None:
+            reason = "missing_stability_score"
+            final_direction = Direction.NO_TRADE
+        elif stability_score < min_stability_score:
+            reason = "stability_score_below_threshold"
+            final_direction = Direction.NO_TRADE
+        elif stable_strategy != "momentum":
+            reason = "stable_strategy_not_supported_by_live_signal"
+            final_direction = Direction.NO_TRADE
+        elif trend_val != "UP":
+            reason = "trend_not_confirmed"
+            final_direction = Direction.NO_TRADE
+        elif sig_val != 1:
+            reason = "live_signal_not_active"
+            final_direction = Direction.NO_TRADE
+        else:
+            reason = "stable_strategy_live_signal_and_trend_confirmed"
+            final_direction = Direction.BUY
+
+        now_ts = decision_obj.decision_timestamp
+        market_ts = decision_obj.market_timestamp
+        close_price = float(data["close"].iloc[-1]) if "close" in data.columns else None
+
+        final_decision_obj = ProductionDecision(
+            candidate_id=resolved_candidate.candidate_id,
+            evidence_id=resolved_candidate.evidence.evidence_id,
+            experiment_fingerprint=resolved_candidate.evidence.experiment_fingerprint,
+            symbol=resolved_candidate.symbol,
+            timeframe=resolved_candidate.timeframe,
+            decision_timestamp=now_ts,
+            market_timestamp=market_ts,
+            direction=final_direction,
+            reason=reason,
+            entry_price=close_price if final_direction == Direction.BUY else None,
+            invalidation_condition="Close below stop_loss or trend turns DOWN" if final_direction == Direction.BUY else None,
+            confidence=stability_score,
+            parameters=resolved_candidate.parameters,
+        )
+    else:
+        # STALE/UNSAFE DATA PATH: Create NO_TRADE decision with evaluation's authoritative reason without fabricating market timestamp
+        sig_val = 0
+        trend_val = "NEUTRAL"
+        eff_window = resolved_candidate.parameters.get(
+            "momentum_window",
+            resolved_candidate.parameters.get("window", 10),
+        )
+
+        final_decision_obj = ProductionDecision(
+            candidate_id=resolved_candidate.candidate_id,
+            evidence_id=resolved_candidate.evidence.evidence_id,
+            experiment_fingerprint=resolved_candidate.evidence.experiment_fingerprint,
+            symbol=symbol,
+            timeframe=interval,
+            decision_timestamp=ts_now,
+            market_timestamp=evaluation.candle_timestamp_utc,
+            direction=Direction.NO_TRADE,
+            reason=evaluation.freshness_reason,
+            entry_price=None,
+            invalidation_condition=None,
+            confidence=stability_score,
+            parameters=resolved_candidate.parameters,
+        )
+
+    # Common Downstream Path: Derive Signal & Risk
+    signal_obj = ProductionSignal.from_decision(final_decision_obj)
+    risk_obj = calculate_production_risk_levels(
+        decision=final_decision_obj,
+        candidate=resolved_candidate,
+    )
+
+    # Create Canonical Live Decision Artifact (AUTHORIZED)
+    canonical_dec = create_canonical_live_decision(
+        authorization_receipt=receipt,
+        decision=final_decision_obj,
+        signal=signal_obj,
+        risk_levels=risk_obj,
+        actor=actor,
+        timestamp_utc=ts_now,
+        reason="runtime_authorization_and_evaluation",
+    )
+
+    # Lifecycle transitions
+    canonical_dec = transition_live_decision(
+        canonical_dec,
+        LiveDecisionLifecycleState.EVALUATED,
+        actor=actor,
+        timestamp_utc=ts_now,
+        reason="strategy_evaluation_complete",
+    )
+    canonical_dec = transition_live_decision(
+        canonical_dec,
+        LiveDecisionLifecycleState.RISK_VALIDATED,
+        actor=actor,
+        timestamp_utc=ts_now,
+        reason="risk_geometry_validated",
+    )
+    canonical_dec = transition_live_decision(
+        canonical_dec,
+        LiveDecisionLifecycleState.PRESENTABLE,
+        actor=actor,
+        timestamp_utc=ts_now,
+        reason="canonical_artifact_presentable",
+    )
+
+    # Enforce persistence boundary
+    st_path = Path(store_path) if store_path is not None else DEFAULT_STORE_PATH
+    if persist:
+        final_cld = persist_canonical_live_decision(
+            canonical_dec,
+            path=st_path,
+            actor=actor,
+            timestamp_utc=ts_now,
+        )
+    else:
+        final_cld = canonical_dec
+
+    # Enforce publication boundary
+    pub_result = None
+    if publish and publisher is not None:
+        pub_store_path = st_path.parent / "publication_history.json"
+        pub_ts_now = ts_now
+        try:
+            cld_last_ts = final_cld.transition_history[-1].timestamp_utc
+            if cld_last_ts > pub_ts_now:
+                pub_ts_now = cld_last_ts
+        except Exception:
+            pass
+        published_dec, _, pub_res = publish_canonical_live_decision(
+            final_cld,
+            publisher=publisher,
+            candidate=resolved_candidate,
+            path=pub_store_path,
+            skip_if_no_trade=skip_if_no_trade,
+            actor=actor,
+            timestamp_utc=pub_ts_now,
+        )
+        final_cld = published_dec
+        pub_result = pub_res
+
+    # Presentation display consumer
+    if evaluation.fresh:
+        display = build_live_trade_display(
+            data,
+            canonical_decision=final_cld,
+            stable_strategy=stable_strategy,
+            stability_score=stability_score,
+            min_stability_score=min_stability_score,
+            symbol=symbol,
+            interval=interval,
+        )
+        display["quote_stale"] = False
+        display["quote_age_seconds"] = evaluation.age_seconds
+    else:
+        display = {
+            "symbol": symbol,
+            "interval": interval,
+            "decision": "NO TRADE",
+            "reason": evaluation.freshness_reason,
+            "stable_strategy": str(stable_strategy),
+            "stability_score": stability_score,
+            "strategy_supported": str(stable_strategy) == "momentum",
+            "signal": 0,
+            "signal_label": "NO TRADE",
+            "trend": "NEUTRAL",
+            "momentum": None,
+            "entry_price": None,
+            "stop_loss": None,
+            "tp1": None,
+            "tp2": None,
+            "tp3": None,
+            "take_profit": None,
+            "risk_distance": None,
+            "risk_reward_ratio": None,
+            "risk_reward_tp1": None,
+            "risk_reward_tp2": None,
+            "risk_reward_tp3": None,
+            "stop_loss_pct": None,
+            "take_profit_pct": None,
+            "tp1_multiplier": None,
+            "tp2_multiplier": None,
+            "tp3_multiplier": None,
+            "momentum_window": None,
+            "fast_window": None,
+            "slow_window": None,
+            "timestamp": evaluation.candle_timestamp_utc,
+            "quote_stale": True,
+            "quote_age_seconds": evaluation.age_seconds,
+        }
+
+    decision_dict = {
+        "symbol": symbol,
+        "interval": interval,
+        "decision": final_decision_obj.direction.value,
+        "reason": final_decision_obj.reason,
+        "stable_strategy": stable_strategy,
+        "stability_score": stability_score,
+        "min_stability_score": min_stability_score,
+        "strategy_supported": stable_strategy == "momentum",
+        "signal": sig_val if (evaluation.fresh and stable_strategy == "momentum") else 0,
+        "signal_label": "BUY" if (evaluation.fresh and sig_val == 1 and stable_strategy == "momentum") else "NO TRADE",
+        "trend": str(trend_val),
+        "momentum": float(data["close"].iloc[-1]) if (evaluation.fresh and "close" in data.columns) else None,
+        "entry_price": risk_obj.entry_price,
+        "stop_loss": risk_obj.stop_loss,
+        "take_profit": risk_obj.tp2 if risk_obj.tp2 is not None else risk_obj.tp1,
+        "risk_reward_ratio": risk_obj.risk_reward_ratio,
+        "stop_loss_pct": resolved_candidate.parameters.get("stop_loss_pct"),
+        "take_profit_pct": resolved_candidate.parameters.get("take_profit_pct"),
+        "momentum_window": eff_window,
+        "fast_window": 20,
+        "slow_window": 50,
+        "timestamp": final_decision_obj.market_timestamp,
+        "quote_stale": not evaluation.fresh,
+        "quote_age_seconds": evaluation.age_seconds,
+        "candidate_id": resolved_candidate.candidate_id,
+        "evidence_id": resolved_candidate.evidence.evidence_id,
+        "experiment_fingerprint": resolved_candidate.evidence.experiment_fingerprint,
+        "decision_id": final_decision_obj.decision_id,
+        "canonical_live_decision_fingerprint": final_cld.canonical_live_decision_fingerprint,
+        "current_lifecycle_state": final_cld.current_state.value,
+        "runtime_authorization_fingerprint": receipt.authorization_fingerprint,
+        "authorization_policy_version": receipt.authorization_policy_version,
+        "authorized_at_utc": receipt.authorized_at_utc,
+        "promoted_artifact_fingerprint": receipt.promoted_artifact_fingerprint,
+        "governance_decision_fingerprint": receipt.governance_decision_fingerprint,
+        "campaign_selection_decision_fingerprint": receipt.campaign_selection_decision_fingerprint,
+        "context_fingerprint": context.context_fingerprint,
+        "evaluation_fingerprint": evaluation.evaluation_fingerprint,
+    }
+    if pub_result:
+        decision_dict["publish_result"] = pub_result
+
+    if display["decision"] != decision_dict["decision"]:
+        raise ValueError("Live decision and live display decisions do not match.")
+
+    return LiveRuntimeResult(
+        decision=decision_dict,
+        display=display,
+        canonical_decision=final_cld,
+    )
+
+
 def build_live_runtime(
     data: pd.DataFrame,
     *,
     stable_strategy: str,
-    stability_score: float,
+    stability_score: float | None = None,
     symbol: str = "XAUUSD",
     interval: str = "5m",
     min_stability_score: float = 0.50,
@@ -67,15 +382,13 @@ def build_live_runtime(
     publish: bool = False,
     skip_if_no_trade: bool = False,
     persist: bool = True,
+    reference_now: datetime | None = None,
     authorized_context: AuthorizedProductionRuntimeContext | None = None,
 ) -> LiveRuntimeResult:
-    """Build and execute the complete canonical live decision lifecycle.
+    """Thin wrapper around evaluate_authorized_live_runtime for legacy direct callers.
 
-    Enforces the single canonical runtime flow:
-    resolve candidate -> authorize exactly once -> evaluate decision -> calculate risk ->
-    create CanonicalLiveDecision (AUTHORIZED) -> transition EVALUATED -> RISK_VALIDATED ->
-    PRESENTABLE -> persist_canonical_live_decision (PERSISTED) ->
-    if publish: publish_canonical_live_decision (PUBLISHED) -> presentation display.
+    If authorized_context is supplied, reuses it directly without re-resolving or re-authorizing.
+    Otherwise resolves candidate and authorizes runtime exactly once for legacy calls.
     """
     if not isinstance(data, pd.DataFrame):
         raise TypeError("data must be a pandas DataFrame.")
@@ -83,15 +396,12 @@ def build_live_runtime(
     if data.empty:
         raise ValueError("data must not be empty.")
 
-    if "timestamp" in data.columns and not data.empty:
-        last_ts = pd.to_datetime(data["timestamp"].iloc[-1], utc=True)
-        now_ts = pd.Timestamp.now(tz="UTC")
-        if (now_ts - last_ts).total_seconds() > 300.0:
-            ref_now = last_ts
-        else:
-            ref_now = now_ts
+    if reference_now is not None:
+        ref_now = reference_now
+        if ref_now.tzinfo is None:
+            ref_now = ref_now.replace(tzinfo=timezone.utc)
     else:
-        ref_now = None
+        ref_now = datetime.now(timezone.utc)
 
     if authorized_context is not None:
         if not isinstance(authorized_context, AuthorizedProductionRuntimeContext):
@@ -99,7 +409,6 @@ def build_live_runtime(
                 f"authorized_context must be an AuthorizedProductionRuntimeContext, got {type(authorized_context).__name__}"
             )
 
-        # Validate scope matching against context
         req_sym = str(symbol).strip().upper()
         req_tf = str(interval).strip()
 
@@ -120,10 +429,9 @@ def build_live_runtime(
                 f"authorized_context candidate_id '{authorized_context.candidate_id}' does not match requested candidate_id '{candidate_id}'."
             )
 
-        resolved_candidate = authorized_context.candidate
-        receipt = authorized_context.authorization_receipt
+        context = authorized_context
     else:
-        # Legacy/Direct invocation: resolve and authorize exactly once
+        # Legacy direct caller path: resolve and authorize candidate
         r_dir = research_dir if research_dir is not None else DEFAULT_RESEARCH_DIR
         resolved_candidate = resolve_promoted_candidate(
             candidate_id=candidate_id,
@@ -147,210 +455,30 @@ def build_live_runtime(
             now=ref_now,
         )
         receipt = ProductionAuthorizationReceipt.from_authorization(authorization)
-        authorized_context = create_authorized_runtime_context(
+        context = create_authorized_runtime_context(
             candidate=resolved_candidate,
             authorization=authorization,
             authorization_receipt=receipt,
         )
 
-    # 2. Evaluate strategy decision
-    decision_obj = evaluate_production_decision(
-        candidate=resolved_candidate,
+    evaluation = create_live_market_evaluation(
         data=data,
+        context=context,
         reference_now=ref_now,
-        max_age_seconds=float("inf"),
+        max_age_seconds=300.0,
     )
 
-    from live_signal import generate_live_signal
-    from live_trend import build_live_trend_snapshot
-
-    eff_window = resolved_candidate.parameters.get(
-        "momentum_window",
-        resolved_candidate.parameters.get("window", 10),
-    )
-    sig_df = generate_live_signal(data, window=int(eff_window))
-    sig_val = int(sig_df["signal"].iloc[-1])
-
-    trend_snap = build_live_trend_snapshot(data)
-    trend_val = trend_snap["trend"]
-
-    # Operational gating criteria
-    if stability_score < min_stability_score:
-        reason = "stability_score_below_threshold"
-        final_direction = Direction.NO_TRADE
-    elif stable_strategy != "momentum":
-        reason = "stable_strategy_not_supported_by_live_signal"
-        final_direction = Direction.NO_TRADE
-    elif trend_val != "UP":
-        reason = "trend_not_confirmed"
-        final_direction = Direction.NO_TRADE
-    elif sig_val != 1:
-        reason = "live_signal_not_active"
-        final_direction = Direction.NO_TRADE
-    else:
-        reason = "stable_strategy_live_signal_and_trend_confirmed"
-        final_direction = Direction.BUY
-
-    now_ts = decision_obj.decision_timestamp
-    market_ts = decision_obj.market_timestamp
-    close_price = float(data["close"].iloc[-1]) if "close" in data.columns else None
-
-    # Calculate quote age in seconds
-    quote_age = None
-    quote_stale = False
-    if "timestamp" in data.columns and not data.empty:
-        last_dt = pd.to_datetime(data["timestamp"].iloc[-1], utc=True)
-        now_dt = pd.Timestamp.now(tz="UTC") if ref_now is None else pd.to_datetime(ref_now, utc=True)
-        quote_age = (now_dt - last_dt).total_seconds()
-        if quote_age > 300.0:
-            quote_stale = True
-
-    final_decision_obj = ProductionDecision(
-        candidate_id=resolved_candidate.candidate_id,
-        evidence_id=resolved_candidate.evidence.evidence_id,
-        experiment_fingerprint=resolved_candidate.evidence.experiment_fingerprint,
-        symbol=resolved_candidate.symbol,
-        timeframe=resolved_candidate.timeframe,
-        decision_timestamp=now_ts,
-        market_timestamp=market_ts,
-        direction=final_direction,
-        reason=reason,
-        entry_price=close_price if final_direction == Direction.BUY else None,
-        invalidation_condition="Close below stop_loss or trend turns DOWN" if final_direction == Direction.BUY else None,
-        confidence=stability_score,
-        parameters=resolved_candidate.parameters,
-    )
-
-    # 3. Derive signal & risk
-    signal_obj = ProductionSignal.from_decision(final_decision_obj)
-    risk_obj = calculate_production_risk_levels(
-        decision=final_decision_obj,
-        candidate=resolved_candidate,
-    )
-
-    # 4. Create Canonical Live Decision Artifact (Initial State: AUTHORIZED)
-    ts_now = ref_now.isoformat() if ref_now is not None else datetime.now(timezone.utc).isoformat()
-    canonical_dec = create_canonical_live_decision(
-        authorization_receipt=receipt,
-        decision=final_decision_obj,
-        signal=signal_obj,
-        risk_levels=risk_obj,
-        actor="live_runtime",
-        timestamp_utc=ts_now,
-        reason="runtime_authorization_and_evaluation",
-    )
-
-    # 5. Lifecycle transitions to PRESENTABLE
-    canonical_dec = transition_live_decision(
-        canonical_dec,
-        LiveDecisionLifecycleState.EVALUATED,
-        actor="live_runtime",
-        timestamp_utc=ts_now,
-        reason="strategy_evaluation_complete",
-    )
-    canonical_dec = transition_live_decision(
-        canonical_dec,
-        LiveDecisionLifecycleState.RISK_VALIDATED,
-        actor="live_runtime",
-        timestamp_utc=ts_now,
-        reason="risk_geometry_validated",
-    )
-    canonical_dec = transition_live_decision(
-        canonical_dec,
-        LiveDecisionLifecycleState.PRESENTABLE,
-        actor="live_runtime",
-        timestamp_utc=ts_now,
-        reason="canonical_artifact_presentable",
-    )
-
-    # 6. Enforce persistence boundary if persist is True
-    st_path = Path(store_path) if store_path is not None else DEFAULT_STORE_PATH
-    if persist:
-        final_cld = persist_canonical_live_decision(
-            canonical_dec,
-            path=st_path,
-            actor="live_runtime",
-            timestamp_utc=ts_now,
-        )
-    else:
-        final_cld = canonical_dec
-
-    # 7. Enforce publication boundary if publishing requested
-    pub_result = None
-    if publish and publisher is not None:
-        pub_store_path = st_path.parent / "publication_history.json"
-        published_dec, _, pub_res = publish_canonical_live_decision(
-            final_cld,
-            publisher=publisher,
-            candidate=resolved_candidate,
-            path=pub_store_path,
-            skip_if_no_trade=skip_if_no_trade,
-            actor="live_runtime",
-            timestamp_utc=ts_now,
-        )
-        final_cld = published_dec
-        pub_result = pub_res
-
-    # 8. Presentation display consumer
-    display = build_live_trade_display(
-        data,
-        canonical_decision=final_cld,
+    return evaluate_authorized_live_runtime(
+        data=data,
+        evaluation=evaluation,
+        context=context,
         stable_strategy=stable_strategy,
         stability_score=stability_score,
         min_stability_score=min_stability_score,
-        symbol=symbol,
-        interval=interval,
-    )
-    display["quote_stale"] = quote_stale
-    display["quote_age_seconds"] = quote_age
-
-    decision_dict = {
-        "symbol": symbol,
-        "interval": interval,
-        "decision": final_decision_obj.direction.value,
-        "reason": final_decision_obj.reason,
-        "stable_strategy": stable_strategy,
-        "stability_score": stability_score,
-        "min_stability_score": min_stability_score,
-        "strategy_supported": stable_strategy == "momentum",
-        "signal": sig_val if stable_strategy == "momentum" else 0,
-        "signal_label": "BUY" if (sig_val == 1 and stable_strategy == "momentum") else "NO TRADE",
-        "trend": str(trend_val),
-        "momentum": close_price,
-        "entry_price": risk_obj.entry_price,
-        "stop_loss": risk_obj.stop_loss,
-        "take_profit": risk_obj.tp2 if risk_obj.tp2 is not None else risk_obj.tp1,
-        "risk_reward_ratio": risk_obj.risk_reward_ratio,
-        "stop_loss_pct": resolved_candidate.parameters.get("stop_loss_pct"),
-        "take_profit_pct": resolved_candidate.parameters.get("take_profit_pct"),
-        "momentum_window": eff_window,
-        "fast_window": 20,
-        "slow_window": 50,
-        "timestamp": final_decision_obj.market_timestamp,
-        "quote_stale": quote_stale,
-        "quote_age_seconds": quote_age,
-        "candidate_id": resolved_candidate.candidate_id,
-        "evidence_id": resolved_candidate.evidence.evidence_id,
-        "experiment_fingerprint": resolved_candidate.evidence.experiment_fingerprint,
-        "decision_id": final_decision_obj.decision_id,
-        "canonical_live_decision_fingerprint": final_cld.canonical_live_decision_fingerprint,
-        "current_lifecycle_state": final_cld.current_state.value,
-        "runtime_authorization_fingerprint": receipt.authorization_fingerprint,
-        "authorization_policy_version": receipt.authorization_policy_version,
-        "authorized_at_utc": receipt.authorized_at_utc,
-        "promoted_artifact_fingerprint": receipt.promoted_artifact_fingerprint,
-        "governance_decision_fingerprint": receipt.governance_decision_fingerprint,
-        "campaign_selection_decision_fingerprint": receipt.campaign_selection_decision_fingerprint,
-        "context_fingerprint": authorized_context.context_fingerprint,
-    }
-    if pub_result:
-        decision_dict["publish_result"] = pub_result
-
-    if display["decision"] != decision_dict["decision"]:
-        raise ValueError("Live decision and live display decisions do not match.")
-
-    return LiveRuntimeResult(
-        decision=decision_dict,
-        display=display,
-        canonical_decision=final_cld,
+        store_path=store_path,
+        publisher=publisher,
+        publish=publish,
+        skip_if_no_trade=skip_if_no_trade,
+        persist=persist,
+        actor="live_runtime",
     )

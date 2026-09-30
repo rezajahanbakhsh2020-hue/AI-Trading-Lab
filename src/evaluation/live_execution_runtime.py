@@ -24,31 +24,21 @@ from src.data.provider import (
     resolve_provider_for_symbol,
     resolve_requested_symbol,
 )
-from src.evaluation.live_decision_lifecycle import (
-    LiveDecisionLifecycleState,
-    create_canonical_live_decision,
-    transition_live_decision,
-)
 from src.evaluation.live_decision_record import build_live_decision_record
-from src.evaluation.live_decision_store import (
-    persist_canonical_live_decision,
+from src.evaluation.live_market_evaluation import (
+    create_live_market_evaluation,
 )
 from src.evaluation.live_production_decision import (
-    Direction,
     ProductionAuthorizationReceipt,
-    ProductionDecision,
     ProductionIntelligencePublication,
     ProductionRuntimeAuthorizationError,
-    ProductionSignal,
     PromotedCandidateArtifact,
     authorize_production_runtime,
-    calculate_production_risk_levels,
     validate_production_scope,
 )
-from src.evaluation.live_publication_store import (
-    publish_canonical_live_decision,
+from src.evaluation.live_runtime import (
+    evaluate_authorized_live_runtime,
 )
-from src.evaluation.live_runtime import build_live_runtime
 from src.evaluation.live_runtime_context import (
     create_authorized_runtime_context,
 )
@@ -479,7 +469,7 @@ class LiveExecutionRuntime:
         reference_now: datetime.datetime | None = None,
         max_age_seconds: float | None = None,
     ) -> dict[str, Any]:
-        """Execute one full cycle: resolve persisted promotion -> market data -> decision -> persist -> publish."""
+        """Execute one full cycle: resolve persisted promotion -> authorize context -> evaluate market data -> canonical downstream runtime."""
         max_age = max_age_seconds if max_age_seconds is not None else self.max_age_seconds
         ref_now = reference_now if reference_now is not None else datetime.datetime.now(datetime.timezone.utc)
         if ref_now.tzinfo is None:
@@ -508,6 +498,7 @@ class LiveExecutionRuntime:
                 research_dir=self.research_dir,
             )
 
+        # 1. Resolve candidate EXACTLY ONCE per cycle
         resolved = resolve_authoritative_promoted_candidate(config)
         if isinstance(resolved, ProductionBlocked):
             return self._blocked_result(
@@ -518,6 +509,7 @@ class LiveExecutionRuntime:
                 reference_now=ref_now,
             )
 
+        # 2. Authorize runtime & create receipt EXACTLY ONCE per cycle
         try:
             authorization = authorize_production_runtime(
                 resolved,
@@ -558,7 +550,7 @@ class LiveExecutionRuntime:
             raw_score = selection.get("confidence")
         stability_score = float(raw_score) if raw_score is not None else None
 
-        # 1. Fetch market data only after authoritative promotion resolution
+        # 3. Fetch market data
         try:
             data = load_live_market_data(
                 symbol=self.symbol,
@@ -588,174 +580,28 @@ class LiveExecutionRuntime:
             }
             return res
 
-        # 2. Evaluate market data freshness safety boundary
-        freshness = validate_market_data_freshness(
+        # 4. Create authoritative LiveMarketEvaluation
+        evaluation = create_live_market_evaluation(
             data=data,
-            max_age_seconds=max_age,
+            context=context,
             reference_now=ref_now,
+            max_age_seconds=max_age,
         )
 
-        now_iso = ref_now.isoformat()
-
-        # 4. Enforce freshness boundary BEFORE invoking authoritative trading decision generator
-        if not freshness["fresh"]:
-            candle_iso = freshness["candle_timestamp"] or now_iso
-            decision = ProductionDecision(
-                candidate_id=candidate.candidate_id,
-                evidence_id=candidate.evidence.evidence_id,
-                experiment_fingerprint=candidate.evidence.experiment_fingerprint,
-                symbol=self.symbol,
-                timeframe=self.interval,
-                decision_timestamp=now_iso,
-                market_timestamp=candle_iso,
-                direction=Direction.NO_TRADE,
-                reason=freshness["reason"],
-                entry_price=None,
-                invalidation_condition=None,
-                confidence=stability_score,
-                parameters=candidate.parameters,
-            )
-            signal = ProductionSignal.from_decision(decision)
-            risk = calculate_production_risk_levels(decision, candidate)
-
-            canonical_cld = create_canonical_live_decision(receipt, decision, signal, risk, actor="live_execution_runtime", timestamp_utc=now_iso)
-            canonical_cld = transition_live_decision(canonical_cld, LiveDecisionLifecycleState.EVALUATED, actor="live_execution_runtime", timestamp_utc=now_iso)
-            canonical_cld = transition_live_decision(canonical_cld, LiveDecisionLifecycleState.RISK_VALIDATED, actor="live_execution_runtime", timestamp_utc=now_iso)
-            canonical_cld = transition_live_decision(canonical_cld, LiveDecisionLifecycleState.PRESENTABLE, actor="live_execution_runtime", timestamp_utc=now_iso)
-
-            if persist:
-                canonical_cld = persist_canonical_live_decision(canonical_cld, self.store_path, actor="live_execution_runtime", timestamp_utc=now_iso)
-
-            display = {
-                "symbol": self.symbol,
-                "interval": self.interval,
-                "decision": "NO TRADE",
-                "reason": freshness["reason"],
-                "stable_strategy": str(stable_strategy),
-                "stability_score": stability_score,
-                "strategy_supported": str(stable_strategy) == "momentum",
-                "signal": 0,
-                "signal_label": "NO TRADE",
-                "trend": "NEUTRAL",
-                "momentum": None,
-                "entry_price": None,
-                "stop_loss": None,
-                "tp1": None,
-                "tp2": None,
-                "tp3": None,
-                "take_profit": None,
-                "risk_distance": None,
-                "risk_reward_ratio": None,
-                "risk_reward_tp1": None,
-                "risk_reward_tp2": None,
-                "risk_reward_tp3": None,
-                "stop_loss_pct": None,
-                "take_profit_pct": None,
-                "tp1_multiplier": None,
-                "tp2_multiplier": None,
-                "tp3_multiplier": None,
-                "momentum_window": None,
-                "fast_window": None,
-                "slow_window": None,
-                "timestamp": candle_iso,
-                "quote_stale": True,
-                "quote_age_seconds": freshness["age_seconds"],
-            }
-
-            # ROUTE STALE PATH THROUGH CANONICAL PUBLICATION BOUNDARY
-            pub_result = None
-            if publish:
-                pub_store_path = self.store_path.parent / "publication_history.json"
-                published_cld, publication_obj, pub_result = publish_canonical_live_decision(
-                    canonical_decision=canonical_cld,
-                    publisher=self.publisher,
-                    candidate=candidate,
-                    path=pub_store_path,
-                    skip_if_no_trade=skip_if_no_trade,
-                    actor="live_execution_runtime",
-                    timestamp_utc=now_iso,
-                )
-                canonical_cld = published_cld
-            else:
-                publication_obj = ProductionIntelligencePublication.from_artifacts(
-                    decision=decision,
-                    signal=signal,
-                    risk=risk,
-                    candidate=candidate,
-                    authorization=receipt,
-                    confidence=stability_score,
-                )
-
-            record = build_live_decision_record(display)
-            record["decision_id"] = decision.decision_id
-            record["signal_id"] = signal.signal_id
-            record["canonical_live_decision_fingerprint"] = canonical_cld.canonical_live_decision_fingerprint
-            record["current_lifecycle_state"] = canonical_cld.current_state.value
-            record["runtime_authorization_fingerprint"] = receipt.authorization_fingerprint
-            record["authorization_policy_version"] = receipt.authorization_policy_version
-            record["authorized_at_utc"] = receipt.authorized_at_utc
-            record["promoted_artifact_fingerprint"] = receipt.promoted_artifact_fingerprint
-            record["governance_decision_fingerprint"] = receipt.governance_decision_fingerprint
-            record["campaign_selection_decision_fingerprint"] = receipt.campaign_selection_decision_fingerprint
-            record["candidate_id"] = receipt.candidate_id
-            record["strategy_name"] = receipt.strategy_name
-            record["strategy_version"] = receipt.strategy_version
-            record["context_fingerprint"] = context.context_fingerprint
-
-            contract_payload = publication_obj.to_contract_v1_payload()
-
-            execution_result = {
-                "blocked": False,
-                "symbol": self.symbol,
-                "interval": self.interval,
-                "decision": display["decision"],
-                "strategy": display["stable_strategy"],
-                "stability_score": display["stability_score"],
-                "candidate_id": candidate.candidate_id,
-                "evidence_id": candidate.evidence.evidence_id,
-                "research_fingerprint": candidate.evidence.experiment_fingerprint,
-                "strategy_version": candidate.strategy_version,
-                "runtime_authorization": receipt.as_dict(),
-                "runtime_authorization_fingerprint": receipt.authorization_fingerprint,
-                "authorization_policy_version": receipt.authorization_policy_version,
-                "authorized_at_utc": receipt.authorized_at_utc,
-                "promoted_artifact_fingerprint": receipt.promoted_artifact_fingerprint,
-                "governance_decision_fingerprint": receipt.governance_decision_fingerprint,
-                "campaign_selection_decision_fingerprint": receipt.campaign_selection_decision_fingerprint,
-                "context_fingerprint": context.context_fingerprint,
-                "current_lifecycle_state": canonical_cld.current_state.value,
-                "delivery_status": pub_result.get("delivery_status") if pub_result else None,
-                "delivery_receipt_fingerprint": pub_result.get("delivery_receipt_fingerprint") if pub_result else None,
-                "record": record,
-                "publication": publication_obj.as_dict(),
-                "contract_payload": contract_payload,
-                "publish_result": pub_result,
-            }
-
-            if persist:
-                self.snapshot_path.parent.mkdir(parents=True, exist_ok=True)
-                self.snapshot_path.write_text(
-                    json.dumps(execution_result, ensure_ascii=False, indent=2),
-                    encoding="utf-8",
-                )
-
-            return execution_result
-
-        # Fresh market data: execute build_live_runtime passing the authorized_context
-        runtime_res = build_live_runtime(
-            data,
+        # 5. Delegate directly to the ONE canonical downstream evaluation boundary
+        runtime_res = evaluate_authorized_live_runtime(
+            data=data,
+            evaluation=evaluation,
+            context=context,
             stable_strategy=stable_strategy,
-            stability_score=stability_score if stability_score is not None else 1.0,
-            symbol=self.symbol,
-            interval=self.interval,
-            candidate_id=candidate.candidate_id,
-            research_dir=self.research_dir,
+            stability_score=stability_score,
+            min_stability_score=0.50,
             store_path=self.store_path,
             publisher=self.publisher,
             publish=publish,
             skip_if_no_trade=skip_if_no_trade,
             persist=persist,
-            authorized_context=context,
+            actor="live_execution_runtime",
         )
 
         canonical_cld = runtime_res.canonical_decision
@@ -785,6 +631,7 @@ class LiveExecutionRuntime:
         record["strategy_name"] = receipt.strategy_name
         record["strategy_version"] = receipt.strategy_version
         record["context_fingerprint"] = context.context_fingerprint
+        record["evaluation_fingerprint"] = evaluation.evaluation_fingerprint
 
         contract_payload = publication.to_contract_v1_payload()
 
@@ -809,6 +656,7 @@ class LiveExecutionRuntime:
             "governance_decision_fingerprint": receipt.governance_decision_fingerprint,
             "campaign_selection_decision_fingerprint": receipt.campaign_selection_decision_fingerprint,
             "context_fingerprint": context.context_fingerprint,
+            "evaluation_fingerprint": evaluation.evaluation_fingerprint,
             "current_lifecycle_state": canonical_cld.current_state.value,
             "delivery_status": pub_res.get("delivery_status") if pub_res else None,
             "delivery_receipt_fingerprint": pub_res.get("delivery_receipt_fingerprint") if pub_res else None,

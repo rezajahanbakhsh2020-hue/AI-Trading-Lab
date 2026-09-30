@@ -12,7 +12,7 @@ from src.evaluation.live_trade_display import (
 
 def _rising_data(rows: int = 80) -> pd.DataFrame:
     timestamps = pd.date_range(
-        "2026-01-01",
+        end=pd.Timestamp.now(tz="UTC"),
         periods=rows,
         freq="5min",
     )

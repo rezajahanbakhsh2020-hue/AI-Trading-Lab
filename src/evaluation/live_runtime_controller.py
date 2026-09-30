@@ -44,6 +44,7 @@ def build_live_runtime_controller(
     market_data_ready: bool = True,
     quote_ready: bool = True,
     timestamp_ready: bool = True,
+    store_path: Any | None = None,
 ) -> LiveRuntimeController:
     """
     Connect production runtime permission to the live runtime session.
@@ -139,6 +140,7 @@ def build_live_runtime_controller(
         market_data_ready=market_data_ready,
         quote_ready=quote_ready,
         timestamp_ready=timestamp_ready,
+        store_path=store_path,
     )
 
     return LiveRuntimeController(
@@ -166,6 +168,7 @@ def is_live_runtime_controller_ready(
     market_data_ready: bool = True,
     quote_ready: bool = True,
     timestamp_ready: bool = True,
+    store_path: Any | None = None,
 ) -> bool:
     """
     Return only the final live-runtime controller permission.
@@ -192,6 +195,7 @@ def is_live_runtime_controller_ready(
         market_data_ready=market_data_ready,
         quote_ready=quote_ready,
         timestamp_ready=timestamp_ready,
+        store_path=store_path,
     )
 
     return bool(controller.controller_ready)
@@ -213,6 +217,7 @@ def live_runtime_controller_message(
     market_data_ready: bool = True,
     quote_ready: bool = True,
     timestamp_ready: bool = True,
+    store_path: Any | None = None,
 ) -> str:
     """
     Return a concise human-readable controller status.
@@ -239,6 +244,7 @@ def live_runtime_controller_message(
         market_data_ready=market_data_ready,
         quote_ready=quote_ready,
         timestamp_ready=timestamp_ready,
+        store_path=store_path,
     )
 
     if controller.controller_ready:

@@ -68,11 +68,12 @@ def _market_data() -> pd.DataFrame:
     )
 
 
-def test_live_runtime_session_builds():
+def test_live_runtime_session_builds(tmp_path):
     session = build_live_runtime_session(
         _market_data(),
         stable_strategy="momentum",
         stability_score=0.90,
+        store_path=tmp_path / "store.json",
     )
 
     assert session.runtime is not None
@@ -83,12 +84,13 @@ def test_live_runtime_session_builds():
     )
 
 
-def test_live_runtime_session_blocks_bad_market_data():
+def test_live_runtime_session_blocks_bad_market_data(tmp_path):
     session = build_live_runtime_session(
         _market_data(),
         stable_strategy="momentum",
         stability_score=0.90,
         market_data_ready=False,
+        store_path=tmp_path / "store.json",
     )
 
     assert session.session_ready is False
@@ -97,12 +99,13 @@ def test_live_runtime_session_blocks_bad_market_data():
     ]
 
 
-def test_live_runtime_session_blocks_bad_quote():
+def test_live_runtime_session_blocks_bad_quote(tmp_path):
     session = build_live_runtime_session(
         _market_data(),
         stable_strategy="momentum",
         stability_score=0.90,
         quote_ready=False,
+        store_path=tmp_path / "store.json",
     )
 
     assert session.session_ready is False
@@ -111,12 +114,13 @@ def test_live_runtime_session_blocks_bad_quote():
     ]
 
 
-def test_live_runtime_session_blocks_bad_timestamp():
+def test_live_runtime_session_blocks_bad_timestamp(tmp_path):
     session = build_live_runtime_session(
         _market_data(),
         stable_strategy="momentum",
         stability_score=0.90,
         timestamp_ready=False,
+        store_path=tmp_path / "store.json",
     )
 
     assert session.session_ready is False
@@ -125,21 +129,23 @@ def test_live_runtime_session_blocks_bad_timestamp():
     ]
 
 
-def test_session_ready_returns_boolean():
+def test_session_ready_returns_boolean(tmp_path):
     result = is_live_runtime_session_ready(
         _market_data(),
         stable_strategy="momentum",
         stability_score=0.90,
+        store_path=tmp_path / "store.json",
     )
 
     assert isinstance(result, bool)
 
 
-def test_session_message_contains_strategy():
+def test_session_message_contains_strategy(tmp_path):
     message = live_runtime_session_message(
         _market_data(),
         stable_strategy="momentum",
         stability_score=0.90,
+        store_path=tmp_path / "store.json",
     )
 
     assert "momentum" in message
@@ -148,12 +154,13 @@ def test_session_message_contains_strategy():
     )
 
 
-def test_session_message_reports_failed_preflight():
+def test_session_message_reports_failed_preflight(tmp_path):
     message = live_runtime_session_message(
         _market_data(),
         stable_strategy="momentum",
         stability_score=0.90,
         quote_ready=False,
+        store_path=tmp_path / "store.json",
     )
 
     assert message.startswith(

@@ -52,9 +52,13 @@ def test_production_end_to_end_uses_saved_selection(
         encoding="utf-8",
     )
 
+    data = _rising_data()
+    ref_now = pd.to_datetime(data["timestamp"], utc=True).iloc[-1].to_pydatetime()
+
     result = run_production_end_to_end(
-        _rising_data(),
+        data,
         results_dir=tmp_path,
+        store_path=tmp_path / "store.json",
     )
 
     assert result["end_to_end_ready"] is True
@@ -93,6 +97,7 @@ def test_production_end_to_end_rejects_low_saved_stability(
     result = run_production_end_to_end(
         _rising_data(),
         results_dir=tmp_path,
+        store_path=tmp_path / "store.json",
     )
 
     assert result["end_to_end_ready"] is False
@@ -121,6 +126,7 @@ def test_production_end_to_end_preserves_production_source(
         results_dir=tmp_path,
         symbol="XAUUSD",
         interval="1d",
+        store_path=tmp_path / "store.json",
     )
 
     source = result["production_selection"][
