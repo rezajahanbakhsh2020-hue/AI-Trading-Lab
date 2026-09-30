@@ -148,8 +148,8 @@ class LiveMarketEvaluation:
         if self.age_seconds is not None:
             import math
             age_flt = float(self.age_seconds)
-            if not math.isfinite(age_flt):
-                raise MarketEvaluationValidationError(f"age_seconds must be a finite float, got {self.age_seconds}")
+            if not math.isfinite(age_flt) or age_flt < 0:
+                raise MarketEvaluationValidationError(f"age_seconds must be a non-negative finite float, got {self.age_seconds}")
             object.__setattr__(self, "age_seconds", age_flt)
 
         if self.candle_timestamp_utc is None and self.freshness_status is True:
@@ -289,13 +289,16 @@ def create_live_market_evaluation(
         reference_now=ref_now,
     )
 
+    raw_age = freshness.get("age_seconds")
+    eff_age = float(raw_age) if (raw_age is not None and float(raw_age) >= 0) else None
+
     evaluation = LiveMarketEvaluation(
         symbol=context.symbol,
         timeframe=context.timeframe,
         candle_timestamp_utc=freshness.get("candle_timestamp"),
         freshness_status=bool(freshness.get("fresh", False)),
         freshness_reason=str(freshness.get("reason", "unknown")),
-        age_seconds=freshness.get("age_seconds"),
+        age_seconds=eff_age,
         reference_timestamp_utc=ref_now_iso,
         authorized_runtime_context_fingerprint=context.context_fingerprint,
         promoted_artifact_fingerprint=context.promoted_artifact_fingerprint,

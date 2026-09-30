@@ -291,8 +291,16 @@ def test_strict_utc_and_age_validation(tmp_path):
     with pytest.raises(MarketEvaluationValidationError, match="zero offset"):
         LiveMarketEvaluation(**dict(base_kwargs, candle_timestamp_utc="2025-01-01T07:00:00-05:00"))
 
-    # 6. NaN age rejected
-    with pytest.raises(MarketEvaluationValidationError, match="finite float"):
+    # 6. Negative age_seconds=-0.001 rejected
+    with pytest.raises(MarketEvaluationValidationError, match="non-negative"):
+        LiveMarketEvaluation(**dict(base_kwargs, age_seconds=-0.001))
+
+    # 7. Negative age_seconds=-100.0 rejected
+    with pytest.raises(MarketEvaluationValidationError, match="non-negative"):
+        LiveMarketEvaluation(**dict(base_kwargs, age_seconds=-100.0))
+
+    # 8. NaN age rejected
+    with pytest.raises(MarketEvaluationValidationError, match="non-negative"):
         LiveMarketEvaluation(**dict(base_kwargs, age_seconds=float("nan")))
 
     # 7. +inf age rejected

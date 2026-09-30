@@ -186,6 +186,7 @@ def test_ast_static_checks_live_execution_runtime():
         "persist_canonical_live_decision",
         "publish_canonical_live_decision",
         "publish",
+        "build_live_trade_display",
     }
 
     found_forbidden = forbidden_direct_calls.intersection(visitor.calls)

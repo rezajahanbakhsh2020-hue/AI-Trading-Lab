@@ -1400,15 +1400,7 @@ def build_live_production_decision(
             f"Operational production path fails closed."
         )
 
-    if "timestamp" in data.columns and not data.empty:
-        last_ts = pd.to_datetime(data["timestamp"].iloc[-1], utc=True)
-        now_ts = pd.Timestamp.now(tz="UTC")
-        if (now_ts - last_ts).total_seconds() > 300.0:
-            ref_now = last_ts
-        else:
-            ref_now = now_ts
-    else:
-        ref_now = None
+    ref_now = None
 
     # Authorize runtime execution through canonical path
     authorization = authorize_production_runtime(
