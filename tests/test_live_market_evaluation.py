@@ -176,9 +176,10 @@ def test_per_field_fingerprint_sensitivity(tmp_path):
 def test_context_evaluation_mismatch_fails_closed(tmp_path):
     """H. Context/evaluation mismatch checks fail closed."""
     context, ref_now = build_test_context(tmp_path)
-    df = make_dummy_df()
+    df = make_buy_market_data()
+    df_ts = pd.to_datetime(df["openTime"], utc=True).iloc[-1].to_pydatetime()
 
-    evaluation = create_live_market_evaluation(df, context, reference_now=ref_now)
+    evaluation = create_live_market_evaluation(df, context, reference_now=df_ts)
 
     # 1. Symbol mismatch
     bad_eval = LiveMarketEvaluation(
@@ -247,48 +248,70 @@ def test_context_evaluation_mismatch_fails_closed(tmp_path):
         validate_market_evaluation_context_lineage(bad_eval, context)
 
 
-def test_invalid_timestamps_and_age_seconds_fail_closed(tmp_path):
-    """Validation checks for unparseable timestamp or non-finite float age."""
+def test_strict_utc_and_age_validation(tmp_path):
+    """Part 3 & 4: Strict UTC parsing, naive timestamp rejection, non-zero offset rejection, and age bounds."""
     context, ref_now = build_test_context(tmp_path)
 
-    # Invalid reference timestamp
-    with pytest.raises(MarketEvaluationValidationError, match="reference_timestamp_utc"):
-        LiveMarketEvaluation(
-            symbol="XAUUSD",
-            timeframe="5m",
-            candle_timestamp_utc="2025-01-01T12:00:00Z",
-            freshness_status=True,
-            freshness_reason="fresh",
-            age_seconds=10.0,
-            reference_timestamp_utc="not-a-timestamp",
-            authorized_runtime_context_fingerprint=context.context_fingerprint,
-            promoted_artifact_fingerprint=context.promoted_artifact_fingerprint,
-            governance_decision_fingerprint=context.governance_decision_fingerprint,
-            campaign_selection_decision_fingerprint=context.campaign_selection_decision_fingerprint,
-            authorization_fingerprint=context.authorization_fingerprint,
-            authorization_policy_version=context.authorization_policy_version,
-            candidate_id=context.candidate_id,
-            strategy_id=context.strategy_id,
-            strategy_version=context.strategy_version,
-        )
+    base_kwargs = {
+        "symbol": "XAUUSD",
+        "timeframe": "5m",
+        "candle_timestamp_utc": "2025-01-01T12:00:00+00:00",
+        "freshness_status": True,
+        "freshness_reason": "fresh",
+        "age_seconds": 10.0,
+        "reference_timestamp_utc": "2025-01-01T12:00:10+00:00",
+        "authorized_runtime_context_fingerprint": context.context_fingerprint,
+        "promoted_artifact_fingerprint": context.promoted_artifact_fingerprint,
+        "governance_decision_fingerprint": context.governance_decision_fingerprint,
+        "campaign_selection_decision_fingerprint": context.campaign_selection_decision_fingerprint,
+        "authorization_fingerprint": context.authorization_fingerprint,
+        "authorization_policy_version": context.authorization_policy_version,
+        "candidate_id": context.candidate_id,
+        "strategy_id": context.strategy_id,
+        "strategy_version": context.strategy_version,
+    }
 
-    # Infinite age_seconds
-    with pytest.raises(MarketEvaluationValidationError, match="age_seconds"):
-        LiveMarketEvaluation(
-            symbol="XAUUSD",
-            timeframe="5m",
-            candle_timestamp_utc="2025-01-01T12:00:00Z",
-            freshness_status=True,
-            freshness_reason="fresh",
-            age_seconds=float("inf"),
-            reference_timestamp_utc="2025-01-01T12:00:10+00:00",
-            authorized_runtime_context_fingerprint=context.context_fingerprint,
-            promoted_artifact_fingerprint=context.promoted_artifact_fingerprint,
-            governance_decision_fingerprint=context.governance_decision_fingerprint,
-            campaign_selection_decision_fingerprint=context.campaign_selection_decision_fingerprint,
-            authorization_fingerprint=context.authorization_fingerprint,
-            authorization_policy_version=context.authorization_policy_version,
-            candidate_id=context.candidate_id,
-            strategy_id=context.strategy_id,
-            strategy_version=context.strategy_version,
-        )
+    # 1. Valid UTC ISO-8601 with Z
+    eval_z = LiveMarketEvaluation(**dict(base_kwargs, reference_timestamp_utc="2025-01-01T12:00:10Z", candle_timestamp_utc="2025-01-01T12:00:00Z"))
+    assert eval_z.reference_timestamp_utc == "2025-01-01T12:00:10Z"
+
+    # 2. Naive reference timestamp rejected
+    with pytest.raises(MarketEvaluationValidationError, match="zero offset"):
+        LiveMarketEvaluation(**dict(base_kwargs, reference_timestamp_utc="2025-01-01T12:00:10"))
+
+    # 3. Non-zero offset rejected
+    with pytest.raises(MarketEvaluationValidationError, match="zero offset"):
+        LiveMarketEvaluation(**dict(base_kwargs, reference_timestamp_utc="2025-01-01T13:00:10+01:00"))
+
+    # 4. Naive candle timestamp rejected
+    with pytest.raises(MarketEvaluationValidationError, match="zero offset"):
+        LiveMarketEvaluation(**dict(base_kwargs, candle_timestamp_utc="2025-01-01T12:00:00"))
+
+    # 5. Non-zero candle offset rejected
+    with pytest.raises(MarketEvaluationValidationError, match="zero offset"):
+        LiveMarketEvaluation(**dict(base_kwargs, candle_timestamp_utc="2025-01-01T07:00:00-05:00"))
+
+    # 6. NaN age rejected
+    with pytest.raises(MarketEvaluationValidationError, match="finite float"):
+        LiveMarketEvaluation(**dict(base_kwargs, age_seconds=float("nan")))
+
+    # 7. +inf age rejected
+    with pytest.raises(MarketEvaluationValidationError, match="finite float"):
+        LiveMarketEvaluation(**dict(base_kwargs, age_seconds=float("inf")))
+
+    # 8. -inf age rejected
+    with pytest.raises(MarketEvaluationValidationError, match="finite float"):
+        LiveMarketEvaluation(**dict(base_kwargs, age_seconds=float("-inf")))
+
+
+def test_missing_candle_timestamp_non_fabrication(tmp_path):
+    """Part 2 & 10: Missing candle timestamp remains None without substituting reference timestamp."""
+    context, ref_now = build_test_context(tmp_path)
+    df = make_dummy_df()
+    df_no_ts = df.drop(columns=["timestamp", "openTime"])
+
+    evaluation = create_live_market_evaluation(df_no_ts, context, reference_now=ref_now)
+
+    assert evaluation.fresh is False
+    assert evaluation.candle_timestamp_utc is None
+    assert evaluation.candle_timestamp_utc != evaluation.reference_timestamp_utc

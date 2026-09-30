@@ -118,8 +118,8 @@ class LiveMarketEvaluation:
 
         try:
             ref_parsed = datetime.datetime.fromisoformat(req_ref_ts.replace("Z", "+00:00"))
-            if ref_parsed.tzinfo is None:
-                raise MarketEvaluationValidationError("reference_timestamp_utc must be timezone-aware UTC ISO-8601 string.")
+            if ref_parsed.tzinfo is None or ref_parsed.utcoffset() != datetime.timedelta(0):
+                raise MarketEvaluationValidationError("reference_timestamp_utc must be timezone-aware UTC ISO-8601 string with zero offset.")
         except Exception as exc:
             if isinstance(exc, MarketEvaluationValidationError):
                 raise
@@ -131,8 +131,8 @@ class LiveMarketEvaluation:
                 raise MarketEvaluationValidationError("candle_timestamp_utc cannot be whitespace.")
             try:
                 c_parsed = datetime.datetime.fromisoformat(c_ts.replace("Z", "+00:00"))
-                if c_parsed.tzinfo is None:
-                    raise MarketEvaluationValidationError("candle_timestamp_utc must be timezone-aware UTC ISO-8601 string.")
+                if c_parsed.tzinfo is None or c_parsed.utcoffset() != datetime.timedelta(0):
+                    raise MarketEvaluationValidationError("candle_timestamp_utc must be timezone-aware UTC ISO-8601 string with zero offset.")
             except Exception as exc:
                 if isinstance(exc, MarketEvaluationValidationError):
                     raise

@@ -87,33 +87,75 @@ def test_single_candidate_resolution_and_authorization(tmp_path):
     df = make_buy_market_data()
     ref_now = pd.to_datetime(df["openTime"], utc=True).iloc[-1].to_pydatetime()
 
+    # Pre-build candidate, authorization, and receipt OUTSIDE patch blocks
+    from src.evaluation.live_production_decision import ProductionAuthorizationReceipt, authorize_production_runtime
+    pre_candidate = resolve_authoritative_promoted_candidate(config)
+    pre_auth = authorize_production_runtime(pre_candidate, symbol="XAUUSD", timeframe="5m", now=ref_now)
+    exact_receipt = ProductionAuthorizationReceipt.from_authorization(pre_auth)
+
     with (
         patch(
             "src.evaluation.live_execution_runtime.resolve_authoritative_promoted_candidate",
-            side_effect=resolve_authoritative_promoted_candidate,
+            return_value=pre_candidate,
         ) as mock_resolve,
-        patch("src.evaluation.live_execution_runtime.authorize_production_runtime") as mock_auth,
-        patch("src.evaluation.live_execution_runtime.load_live_market_data") as mock_data,
-        patch("src.evaluation.live_execution_runtime.evaluate_authorized_live_runtime") as mock_eval_downstream,
+        patch(
+            "src.evaluation.live_execution_runtime.authorize_production_runtime",
+            return_value=pre_auth,
+        ) as mock_auth,
+        patch(
+            "src.evaluation.live_execution_runtime.ProductionAuthorizationReceipt.from_authorization",
+            return_value=exact_receipt,
+        ) as mock_receipt,
+        patch("src.evaluation.live_execution_runtime.load_live_market_data", return_value=df),
+        patch(
+            "src.evaluation.live_execution_runtime.evaluate_authorized_live_runtime",
+            side_effect=evaluate_authorized_live_runtime,
+        ) as mock_eval_downstream,
     ):
-        mock_data.return_value = df
-        from src.evaluation.live_production_decision import authorize_production_runtime
-
-        promoted = resolve_authoritative_promoted_candidate(config)
-        auth = authorize_production_runtime(promoted, symbol="XAUUSD", timeframe="5m", now=ref_now)
-        mock_auth.return_value = auth
-
-        mock_eval_downstream.side_effect = evaluate_authorized_live_runtime
-
         runtime.run_once(publish=False, persist=True, reference_now=ref_now)
 
-        # Assert resolve and authorize were called exactly ONCE in run_once
+        # Assert resolve, authorize, receipt factory, and downstream evaluate called exactly ONCE during run_once()
         assert mock_resolve.call_count == 1
         assert mock_auth.call_count == 1
+        assert mock_receipt.call_count == 1
+        assert mock_eval_downstream.call_count == 1
 
-        # Check receipt identity passed to downstream
+        # Check EXACT RECEIPT OBJECT IDENTITY passed to downstream
         context_arg = mock_eval_downstream.call_args.kwargs["context"]
-        assert context_arg.authorization_receipt.authorization_fingerprint == auth.authorization_fingerprint
+        assert context_arg.authorization_receipt is exact_receipt
+
+
+def test_stale_path_bypasses_signal_and_trend_generators(tmp_path):
+    """Part 9: Stale evaluation path must NOT invoke fresh signal or trend snapshot generators."""
+    config = production_config_for(tmp_path)
+    runtime = LiveExecutionRuntime(
+        symbol="XAUUSD",
+        interval="5m",
+        store_path=tmp_path / "store.json",
+        snapshot_path=tmp_path / "snap.json",
+        research_dir=tmp_path,
+        production_config=config,
+    )
+
+    df = make_buy_market_data()
+    df_ts = pd.to_datetime(df["openTime"], utc=True).iloc[-1].to_pydatetime()
+    stale_ref_now = df_ts + datetime.timedelta(seconds=1000)
+
+    import live_signal
+    import live_trend
+
+    with (
+        patch("src.evaluation.live_execution_runtime.load_live_market_data", return_value=df),
+        patch.object(live_signal, "generate_live_signal") as mock_sig,
+        patch.object(live_trend, "build_live_trend_snapshot") as mock_trend,
+    ):
+        res = runtime.run_once(publish=False, persist=True, reference_now=stale_ref_now)
+
+        assert res["decision"] == "NO TRADE"
+        assert res["record"]["quote_stale"] is True
+        # Signal and trend generators MUST NOT BE CALLED for stale data
+        assert mock_sig.call_count == 0
+        assert mock_trend.call_count == 0
 
 
 def test_ast_static_checks_live_execution_runtime():

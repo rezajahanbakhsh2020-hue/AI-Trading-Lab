@@ -17,7 +17,7 @@ from src.visualization.live_trade_overlay import (
 
 def _realistic_rising_market(rows: int = 80) -> pd.DataFrame:
     timestamps = pd.date_range(
-        "2026-01-01",
+        pd.Timestamp.now(tz="UTC") - pd.Timedelta(days=rows),
         periods=rows,
         freq="1D",
     )
@@ -41,6 +41,7 @@ def _realistic_rising_market(rows: int = 80) -> pd.DataFrame:
 def test_end_to_end_live_proof():
     data = _realistic_rising_market()
 
+    ref_now = pd.to_datetime(data["timestamp"], utc=True).iloc[-1].to_pydatetime()
     decision = build_live_production_decision(
         data,
         stable_strategy="momentum",
@@ -62,6 +63,7 @@ def test_end_to_end_live_proof():
         stability_score=0.80,
         symbol="XAUUSD",
         interval="1d",
+        reference_now=ref_now,
     )
 
     display = build_live_trade_display(
@@ -111,6 +113,7 @@ def test_end_to_end_live_proof():
 
 def test_end_to_end_no_trade_proof():
     data = _realistic_rising_market()
+    ref_now = pd.to_datetime(data["timestamp"], utc=True).iloc[-1].to_pydatetime()
 
     runtime = build_live_runtime(
         data,
@@ -118,6 +121,7 @@ def test_end_to_end_no_trade_proof():
         stability_score=0.20,
         symbol="XAUUSD",
         interval="1d",
+        reference_now=ref_now,
     )
 
     assert runtime.decision["decision"] == "NO TRADE"
@@ -141,6 +145,7 @@ def test_end_to_end_no_trade_proof():
 
 def test_end_to_end_preserves_latest_market_timestamp():
     data = _realistic_rising_market()
+    ref_now = pd.to_datetime(data["timestamp"], utc=True).iloc[-1].to_pydatetime()
 
     runtime = build_live_runtime(
         data,
@@ -148,6 +153,7 @@ def test_end_to_end_preserves_latest_market_timestamp():
         stability_score=0.80,
         symbol="XAUUSD",
         interval="1d",
+        reference_now=ref_now,
     )
 
     overlay = build_live_trade_overlay(

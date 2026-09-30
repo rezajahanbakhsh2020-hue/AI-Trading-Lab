@@ -6,20 +6,19 @@ Connects promoted research candidates and evidence to the live execution decisio
 
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass, field
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from enum import Enum
 import hashlib
 import json
 import math
 from numbers import Real
-from typing import Any, Mapping, Optional, Sequence
+from typing import Any, Optional
 
 import pandas as pd
 
 from src.evaluation.research_constitution import (
     PromotionStatus,
-    RejectionReason,
     ResearchEvidence,
 )
 
@@ -622,7 +621,7 @@ class ProductionDecision:
     symbol: str
     timeframe: str
     decision_timestamp: str
-    market_timestamp: str
+    market_timestamp: str | None
     direction: Direction
     reason: str
     entry_price: Optional[float]
@@ -644,10 +643,16 @@ class ProductionDecision:
             raise ValueError("timeframe must be a non-empty string.")
         if not self.decision_timestamp or not self.decision_timestamp.strip():
             raise ValueError("decision_timestamp must be a non-empty string.")
-        if not self.market_timestamp or not self.market_timestamp.strip():
-            raise ValueError("market_timestamp must be a non-empty string.")
+        if self.market_timestamp is not None:
+            mts = str(self.market_timestamp).strip()
+            if not mts:
+                raise ValueError("market_timestamp cannot be whitespace if provided.")
+            object.__setattr__(self, "market_timestamp", mts)
+
         if not isinstance(self.direction, Direction):
             raise TypeError("direction must be a Direction enum member.")
+        if self.direction in (Direction.BUY, Direction.SELL) and self.market_timestamp is None:
+            raise ValueError("Executable decision requires a non-empty market_timestamp.")
 
         if self.direction in (Direction.BUY, Direction.SELL):
             if self.entry_price is None or not math.isfinite(self.entry_price) or self.entry_price <= 0:
@@ -790,7 +795,7 @@ class ProductionSignal:
     evidence_id: str
     symbol: str
     timeframe: str
-    market_timestamp: str
+    market_timestamp: str | None
     direction: Direction
     entry_price: Optional[float]
     signal_id: str = field(init=False)
@@ -806,10 +811,16 @@ class ProductionSignal:
             raise ValueError("symbol must be a non-empty string.")
         if not self.timeframe or not self.timeframe.strip():
             raise ValueError("timeframe must be a non-empty string.")
-        if not self.market_timestamp or not self.market_timestamp.strip():
-            raise ValueError("market_timestamp must be a non-empty string.")
+        if self.market_timestamp is not None:
+            mts = str(self.market_timestamp).strip()
+            if not mts:
+                raise ValueError("market_timestamp cannot be whitespace if provided.")
+            object.__setattr__(self, "market_timestamp", mts)
+
         if not isinstance(self.direction, Direction):
             raise TypeError("direction must be a Direction enum member.")
+        if self.direction in (Direction.BUY, Direction.SELL) and self.market_timestamp is None:
+            raise ValueError("Executable signal requires a non-empty market_timestamp.")
 
         payload = {
             "decision_id": self.decision_id,
@@ -1108,7 +1119,7 @@ class ProductionIntelligencePublication:
     symbol: str
     timeframe: str
     decision_timestamp: str
-    market_data_timestamp: str
+    market_data_timestamp: str | None
     decision: str
     confidence: Optional[float]
     entry: Optional[float]

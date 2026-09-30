@@ -41,11 +41,13 @@ from src.evaluation.live_runtime import build_live_runtime
 
 def test_chart_contains_candlestick_trace():
     data = _rising_data()
+    ref_now = pd.to_datetime(data["timestamp"], utc=True).iloc[-1].to_pydatetime()
 
     runtime_res = build_live_runtime(
         data,
         stable_strategy="momentum",
         stability_score=0.80,
+        reference_now=ref_now,
         persist=False,
     )
 
@@ -65,11 +67,13 @@ def test_chart_contains_candlestick_trace():
 
 def test_buy_chart_contains_five_trade_lines():
     data = _rising_data()
+    ref_now = pd.to_datetime(data["timestamp"], utc=True).iloc[-1].to_pydatetime()
 
     runtime_res = build_live_runtime(
         data,
         stable_strategy="momentum",
         stability_score=0.80,
+        reference_now=ref_now,
         persist=False,
     )
 
@@ -163,11 +167,13 @@ def test_load_data_has_valid_timestamps():
 
 def test_buy_chart_level_order_is_preserved():
     data = _rising_data()
+    ref_now = pd.to_datetime(data["timestamp"], utc=True).iloc[-1].to_pydatetime()
 
     runtime_res = build_live_runtime(
         data,
         stable_strategy="momentum",
         stability_score=0.80,
+        reference_now=ref_now,
         persist=False,
     )
 

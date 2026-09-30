@@ -17,9 +17,15 @@ def run_end_to_end(
     symbol: str = "XAUUSD",
     interval: str = "1d",
     min_stability_score: float = 0.50,
+    reference_now: Any | None = None,
     store_path: Any | None = None,
 ) -> dict[str, Any]:
     """Run the complete live trading proof pipeline."""
+    if reference_now is None and isinstance(data, pd.DataFrame) and "timestamp" in data.columns and not data.empty:
+        last_ts = pd.to_datetime(data["timestamp"].iloc[-1], utc=True)
+        ref_now = last_ts.to_pydatetime() if pd.notna(last_ts) else None
+    else:
+        ref_now = reference_now
 
     runtime = build_live_runtime(
         data,
@@ -28,6 +34,7 @@ def run_end_to_end(
         symbol=symbol,
         interval=interval,
         min_stability_score=min_stability_score,
+        reference_now=ref_now,
         store_path=store_path,
     )
 

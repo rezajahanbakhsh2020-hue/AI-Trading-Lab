@@ -35,11 +35,13 @@ from src.evaluation.live_runtime import build_live_runtime
 
 def test_buy_overlay_contains_all_trade_lines():
     data = _rising_data()
+    ref_now = pd.to_datetime(data["timestamp"], utc=True).iloc[-1].to_pydatetime()
 
     runtime_res = build_live_runtime(
         data,
         stable_strategy="momentum",
         stability_score=0.80,
+        reference_now=ref_now,
         persist=False,
     )
 
@@ -63,11 +65,13 @@ def test_buy_overlay_contains_all_trade_lines():
 
 def test_buy_overlay_has_five_visible_lines():
     data = _rising_data()
+    ref_now = pd.to_datetime(data["timestamp"], utc=True).iloc[-1].to_pydatetime()
 
     runtime_res = build_live_runtime(
         data,
         stable_strategy="momentum",
         stability_score=0.80,
+        reference_now=ref_now,
         persist=False,
     )
 
@@ -116,11 +120,13 @@ def test_no_trade_overlay_hides_all_trade_lines():
 
 def test_overlay_preserves_strategy_and_stability_metadata():
     data = _rising_data()
+    ref_now = pd.to_datetime(data["timestamp"], utc=True).iloc[-1].to_pydatetime()
 
     runtime_res = build_live_runtime(
         data,
         stable_strategy="momentum",
         stability_score=0.80,
+        reference_now=ref_now,
         persist=False,
     )
 

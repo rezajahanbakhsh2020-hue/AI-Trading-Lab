@@ -105,6 +105,7 @@ def _blocked_production_decision():
 
 def test_controller_builds_when_runtime_is_allowed(
     monkeypatch,
+    tmp_path,
 ):
     monkeypatch.setattr(
         controller_module,
@@ -117,6 +118,7 @@ def test_controller_builds_when_runtime_is_allowed(
     controller = build_live_runtime_controller(
         _market_data(),
         0.90,
+        store_path=tmp_path / "store.json",
     )
 
     assert controller.production_decision[
@@ -151,6 +153,7 @@ def test_controller_blocks_when_production_runtime_is_blocked(
 
 def test_controller_blocks_bad_market_data(
     monkeypatch,
+    tmp_path,
 ):
     monkeypatch.setattr(
         controller_module,
@@ -164,6 +167,7 @@ def test_controller_blocks_bad_market_data(
         _market_data(),
         0.90,
         market_data_ready=False,
+        store_path=tmp_path / "store.json",
     )
 
     assert controller.controller_ready is False
@@ -175,6 +179,7 @@ def test_controller_blocks_bad_market_data(
 
 def test_controller_blocks_bad_quote(
     monkeypatch,
+    tmp_path,
 ):
     monkeypatch.setattr(
         controller_module,
@@ -188,6 +193,7 @@ def test_controller_blocks_bad_quote(
         _market_data(),
         0.90,
         quote_ready=False,
+        store_path=tmp_path / "store.json",
     )
 
     assert controller.controller_ready is False
@@ -198,6 +204,7 @@ def test_controller_blocks_bad_quote(
 
 def test_controller_blocks_bad_timestamp(
     monkeypatch,
+    tmp_path,
 ):
     monkeypatch.setattr(
         controller_module,
@@ -211,6 +218,7 @@ def test_controller_blocks_bad_timestamp(
         _market_data(),
         0.90,
         timestamp_ready=False,
+        store_path=tmp_path / "store.json",
     )
 
     assert controller.controller_ready is False
@@ -221,6 +229,7 @@ def test_controller_blocks_bad_timestamp(
 
 def test_controller_ready_returns_boolean(
     monkeypatch,
+    tmp_path,
 ):
     monkeypatch.setattr(
         controller_module,
@@ -233,6 +242,7 @@ def test_controller_ready_returns_boolean(
     result = is_live_runtime_controller_ready(
         _market_data(),
         0.90,
+        store_path=tmp_path / "store.json",
     )
 
     assert isinstance(result, bool)
@@ -240,6 +250,7 @@ def test_controller_ready_returns_boolean(
 
 def test_controller_message_ready(
     monkeypatch,
+    tmp_path,
 ):
     monkeypatch.setattr(
         controller_module,
@@ -252,6 +263,7 @@ def test_controller_message_ready(
     message = live_runtime_controller_message(
         _market_data(),
         0.90,
+        store_path=tmp_path / "store.json",
     )
 
     assert message == (

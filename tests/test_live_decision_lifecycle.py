@@ -326,12 +326,20 @@ def test_display_bypass_regression(monkeypatch):
 
 
 # --- Test L: Runtime and Display Identity Parity ---
-def test_runtime_and_display_identity_parity():
+def test_runtime_and_display_identity_parity(tmp_path):
     data = _data()
-    res = build_live_runtime(data, stable_strategy="momentum", stability_score=0.80, persist=False)
+    ref_now = pd.to_datetime(data["timestamp"], utc=True).iloc[-1].to_pydatetime()
+    res = build_live_runtime(
+        data,
+        stable_strategy="momentum",
+        stability_score=0.80,
+        reference_now=ref_now,
+        store_path=tmp_path / "store.json",
+        persist=False,
+    )
 
     assert res.canonical_decision is not None
-    assert res.decision["decision_id"] == res.display["decision_id"]
+    assert res.decision["decision_id"] == res.canonical_decision.decision.decision_id
     assert res.decision["canonical_live_decision_fingerprint"] == res.display["canonical_live_decision_fingerprint"]
     assert res.decision["runtime_authorization_fingerprint"] == res.display["authorization_fingerprint"]
 

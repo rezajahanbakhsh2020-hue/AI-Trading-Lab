@@ -179,7 +179,7 @@ def evaluate_authorized_live_runtime(
             symbol=symbol,
             timeframe=interval,
             decision_timestamp=ts_now,
-            market_timestamp=evaluation.candle_timestamp_utc or ts_now,
+            market_timestamp=evaluation.candle_timestamp_utc,
             direction=Direction.NO_TRADE,
             reason=evaluation.freshness_reason,
             entry_price=None,
@@ -309,7 +309,7 @@ def evaluate_authorized_live_runtime(
             "momentum_window": None,
             "fast_window": None,
             "slow_window": None,
-            "timestamp": evaluation.candle_timestamp_utc or ts_now,
+            "timestamp": evaluation.candle_timestamp_utc,
             "quote_stale": True,
             "quote_age_seconds": evaluation.age_seconds,
         }
@@ -400,16 +400,6 @@ def build_live_runtime(
         ref_now = reference_now
         if ref_now.tzinfo is None:
             ref_now = ref_now.replace(tzinfo=timezone.utc)
-    elif "timestamp" in data.columns and not data.empty:
-        last_ts = pd.to_datetime(data["timestamp"].iloc[-1], utc=True)
-        if pd.notna(last_ts):
-            now_ts = pd.Timestamp.now(tz="UTC")
-            if (now_ts - last_ts).total_seconds() > 300.0:
-                ref_now = last_ts.to_pydatetime()
-            else:
-                ref_now = now_ts.to_pydatetime()
-        else:
-            ref_now = datetime.now(timezone.utc)
     else:
         ref_now = datetime.now(timezone.utc)
 
