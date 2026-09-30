@@ -179,3 +179,42 @@ def test_no_sell_decision_is_invented():
 
     assert result["decision"] in {"BUY", "NO TRADE"}
     assert result["decision"] != "SELL"
+
+
+def test_missing_canonical_decision_fails_closed_without_calling_runtime(monkeypatch):
+    data = _rising_data()
+
+    mock_build_runtime = pytest.fail
+    mock_build_prod_dec = pytest.fail
+    mock_authorize = pytest.fail
+    mock_resolve = pytest.fail
+
+    monkeypatch.setattr("src.evaluation.live_runtime.build_live_runtime", mock_build_runtime, raising=False)
+    monkeypatch.setattr("src.evaluation.live_production_decision.build_live_production_decision", mock_build_prod_dec, raising=False)
+    monkeypatch.setattr("src.evaluation.live_production_decision.authorize_production_runtime", mock_authorize, raising=False)
+    monkeypatch.setattr("src.evaluation.research_store.resolve_promoted_candidate", mock_resolve, raising=False)
+
+    result = build_live_trade_display(data, canonical_decision=None, stable_strategy="momentum", stability_score=0.80)
+
+    assert result["decision"] == "BLOCKED"
+    assert result["reason"] == "missing_canonical_live_decision"
+    assert result["entry_price"] is None
+    assert result["stop_loss"] is None
+    assert result["tp1"] is None
+
+
+def test_valid_canonical_decision_preserves_identities_without_runtime_calls(monkeypatch):
+    data = _rising_data()
+    cld = _get_canonical_decision(data, strategy="momentum", score=0.80)
+
+    monkeypatch.setattr("src.evaluation.live_runtime.build_live_runtime", pytest.fail, raising=False)
+    monkeypatch.setattr("src.evaluation.live_production_decision.build_live_production_decision", pytest.fail, raising=False)
+    monkeypatch.setattr("src.evaluation.live_production_decision.authorize_production_runtime", pytest.fail, raising=False)
+    monkeypatch.setattr("src.evaluation.research_store.resolve_promoted_candidate", pytest.fail, raising=False)
+
+    result = build_live_trade_display(data, canonical_decision=cld)
+
+    assert result["decision"] == "BUY"
+    assert result["decision_id"] == cld.decision.decision_id
+    assert result["canonical_live_decision_fingerprint"] == cld.canonical_live_decision_fingerprint
+    assert result["authorization_fingerprint"] == cld.authorization_receipt.authorization_fingerprint

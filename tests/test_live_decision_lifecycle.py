@@ -312,11 +312,17 @@ def test_runtime_bypass_regression():
 
 
 # --- Test K: Display Bypass Regression ---
-def test_display_bypass_regression():
+def test_display_bypass_regression(monkeypatch):
     data = _data()
-    # Direct display call without CanonicalLiveDecision for unpromoted strategy fails closed via build_live_runtime
-    with pytest.raises(ValueError, match="No authoritative promoted candidate resolved"):
-        build_live_trade_display(data, canonical_decision=None, stable_strategy="non_existent_strategy", stability_score=0.80)
+    # Prove build_live_trade_display does not call runtime or decision evaluation when canonical_decision is None
+    monkeypatch.setattr("src.evaluation.live_runtime.build_live_runtime", pytest.fail, raising=False)
+    monkeypatch.setattr("src.evaluation.live_production_decision.build_live_production_decision", pytest.fail, raising=False)
+    monkeypatch.setattr("src.evaluation.live_production_decision.authorize_production_runtime", pytest.fail, raising=False)
+    monkeypatch.setattr("src.evaluation.research_store.resolve_promoted_candidate", pytest.fail, raising=False)
+
+    display = build_live_trade_display(data, canonical_decision=None, stable_strategy="non_existent_strategy", stability_score=0.80)
+    assert display["decision"] == "BLOCKED"
+    assert display["reason"] == "missing_canonical_live_decision"
 
 
 # --- Test L: Runtime and Display Identity Parity ---
