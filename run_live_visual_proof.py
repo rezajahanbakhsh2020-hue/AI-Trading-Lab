@@ -8,7 +8,16 @@ from app_live import (
     fetch_xauusd_ohlc,
     fetch_xauusd_quote,
 )
+from src.evaluation.live_execution_runtime import (
+    ProductionBlocked,
+    ProductionRuntimeConfig,
+    resolve_authoritative_promoted_candidate,
+)
 from src.evaluation.live_explanation import build_live_explanation
+from src.evaluation.live_production_decision import (
+    ProductionRuntimeAuthorizationError,
+    authorize_production_runtime,
+)
 from src.evaluation.live_runtime import build_live_runtime
 from src.evaluation.production_live_bridge import (
     load_production_selection,
@@ -26,14 +35,7 @@ OUTPUT_PATH = Path(
 
 
 def _load_live_production_selection() -> dict:
-    try:
-        return load_production_selection()
-    except FileNotFoundError:
-        return {
-            "stable_strategy": "momentum",
-            "stability_score": 0.517268,
-            "source_path": "built-in production baseline",
-        }
+    return load_production_selection()
 
 
 def _build_runtime_snapshot(
@@ -107,6 +109,26 @@ def _build_runtime_snapshot(
 def run_live_visual_proof() -> dict:
     """Run the complete real XAU/USD visual proof."""
 
+    selection = _load_live_production_selection()
+
+    config = ProductionRuntimeConfig.from_runtime(
+        symbol="XAUUSD",
+        timeframe=DEFAULT_INTERVAL,
+        selection=selection,
+    )
+
+    resolved = resolve_authoritative_promoted_candidate(config)
+    if isinstance(resolved, ProductionBlocked):
+        raise ProductionRuntimeAuthorizationError(
+            f"Visual proof blocked due to missing or invalid promoted candidate: {resolved.detail}"
+        )
+
+    authorization = authorize_production_runtime(
+        resolved,
+        symbol="XAUUSD",
+        timeframe=DEFAULT_INTERVAL,
+    )
+
     data = fetch_xauusd_ohlc(
         interval=DEFAULT_INTERVAL,
         limit=DEFAULT_LIMIT,
@@ -114,25 +136,12 @@ def run_live_visual_proof() -> dict:
 
     quote = fetch_xauusd_quote()
 
-    selection = _load_live_production_selection()
-
-    stable_strategy = selection.get(
-        "stable_strategy"
-    )
-    stability_score = selection.get(
-        "stability_score"
-    )
-
-    if not stable_strategy:
-        raise ValueError(
-            "Production selection does not contain "
-            "a stable strategy."
-        )
+    stable_strategy = authorization.strategy_name
+    stability_score = selection.get("stability_score")
 
     if stability_score is None:
         raise ValueError(
-            "Production selection does not contain "
-            "a stability score."
+            "Production selection does not contain a stability score."
         )
 
     runtime = build_live_runtime(
@@ -227,6 +236,10 @@ def run_live_visual_proof() -> dict:
         "production_source": selection.get(
             "source_path"
         ),
+        "authorization_fingerprint": authorization.authorization_fingerprint,
+        "promoted_artifact_fingerprint": authorization.promoted_artifact_fingerprint,
+        "governance_decision_fingerprint": authorization.governance_decision_fingerprint,
+        "campaign_selection_decision_fingerprint": authorization.campaign_selection_decision_fingerprint,
         "human_text": explanation.get(
             "human_text"
         ),

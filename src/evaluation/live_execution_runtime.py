@@ -31,8 +31,11 @@ from src.evaluation.live_production_decision import (
     Direction,
     ProductionDecision,
     ProductionIntelligencePublication,
+    ProductionRuntimeAuthorization,
+    ProductionRuntimeAuthorizationError,
     ProductionSignal,
     PromotedCandidateArtifact,
+    authorize_production_runtime,
     calculate_production_risk_levels,
     evaluate_production_decision,
     validate_production_scope,
@@ -505,6 +508,30 @@ class LiveExecutionRuntime:
                 reference_now=ref_now,
             )
 
+        try:
+            authorization = authorize_production_runtime(
+                resolved,
+                symbol=self.symbol,
+                timeframe=self.interval,
+                now=ref_now,
+            )
+        except ProductionRuntimeAuthorizationError as exc:
+            blocked = ProductionBlocked(
+                reason="ProductionRuntimeAuthorizationError",
+                detail=str(exc),
+                candidate_id=resolved.candidate_id,
+                strategy_id=resolved.strategy_name,
+                symbol=self.symbol,
+                timeframe=self.interval,
+            )
+            return self._blocked_result(
+                blocked,
+                persist=persist,
+                publish=publish,
+                skip_if_no_trade=skip_if_no_trade,
+                reference_now=ref_now,
+            )
+
         candidate = resolved
         stable_strategy = candidate.strategy_name
         raw_score = selection.get("stability_score")
@@ -659,6 +686,13 @@ class LiveExecutionRuntime:
         record = build_live_decision_record(display)
         record["decision_id"] = decision.decision_id
         record["signal_id"] = signal.signal_id
+        record["runtime_authorization_fingerprint"] = authorization.authorization_fingerprint
+        record["promoted_artifact_fingerprint"] = authorization.promoted_artifact_fingerprint
+        record["governance_decision_fingerprint"] = authorization.governance_decision_fingerprint
+        record["campaign_selection_decision_fingerprint"] = authorization.campaign_selection_decision_fingerprint
+        record["candidate_id"] = authorization.candidate_id
+        record["strategy_name"] = authorization.strategy_name
+        record["strategy_version"] = authorization.strategy_version
 
         if persist:
             append_live_decision_to_store(record, self.store_path)
@@ -686,6 +720,10 @@ class LiveExecutionRuntime:
             "evidence_id": candidate.evidence.evidence_id,
             "research_fingerprint": candidate.evidence.experiment_fingerprint,
             "strategy_version": candidate.strategy_version,
+            "runtime_authorization_fingerprint": authorization.authorization_fingerprint,
+            "promoted_artifact_fingerprint": authorization.promoted_artifact_fingerprint,
+            "governance_decision_fingerprint": authorization.governance_decision_fingerprint,
+            "campaign_selection_decision_fingerprint": authorization.campaign_selection_decision_fingerprint,
             "record": record,
             "publication": publication.as_dict(),
             "contract_payload": contract_payload,
