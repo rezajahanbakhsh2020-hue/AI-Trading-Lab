@@ -316,7 +316,7 @@ def test_runtime_persistence_contains_complete_lineage(tmp_path):
     }])
 
     with patch("src.evaluation.live_execution_runtime.load_live_market_data", return_value=mock_df):
-        res = runtime.run_once(publish=False, persist=True, reference_now=now_dt)
+        res = runtime.run_once(publish=True, persist=True, reference_now=now_dt)
 
     assert res["blocked"] is False
 

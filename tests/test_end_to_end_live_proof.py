@@ -56,8 +56,17 @@ def test_end_to_end_live_proof():
     assert decision["stop_loss"] is not None
     assert decision["take_profit"] is not None
 
+    runtime = build_live_runtime(
+        data,
+        stable_strategy="momentum",
+        stability_score=0.80,
+        symbol="XAUUSD",
+        interval="1d",
+    )
+
     display = build_live_trade_display(
         data,
+        canonical_decision=runtime.canonical_decision,
         stable_strategy="momentum",
         stability_score=0.80,
         symbol="XAUUSD",
@@ -70,14 +79,6 @@ def test_end_to_end_live_proof():
     )
     assert display["stop_loss"] == pytest.approx(
         decision["stop_loss"]
-    )
-
-    runtime = build_live_runtime(
-        data,
-        stable_strategy="momentum",
-        stability_score=0.80,
-        symbol="XAUUSD",
-        interval="1d",
     )
 
     assert runtime.decision["decision"] == "BUY"

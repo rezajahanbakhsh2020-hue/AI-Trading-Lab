@@ -80,12 +80,12 @@ def build_live_trade_overlay(
 
     decision = display["decision"]
 
-    if decision not in {"BUY", "NO TRADE"}:
+    if decision not in {"BUY", "NO TRADE", "BLOCKED"}:
         raise ValueError(
-            "decision must be BUY or NO TRADE."
+            "decision must be BUY, NO TRADE, or BLOCKED."
         )
 
-    if decision == "NO TRADE":
+    if decision in {"NO TRADE", "BLOCKED"}:
         levels = {
             "entry": None,
             "stop_loss": None,

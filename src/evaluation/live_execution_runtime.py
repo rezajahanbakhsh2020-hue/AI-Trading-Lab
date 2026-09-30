@@ -25,8 +25,16 @@ from src.data.provider import (
     resolve_provider_for_symbol,
     resolve_requested_symbol,
 )
+from src.evaluation.live_decision_lifecycle import (
+    LiveDecisionLifecycleState,
+    create_canonical_live_decision,
+    transition_live_decision,
+)
 from src.evaluation.live_decision_record import build_live_decision_record
-from src.evaluation.live_decision_store import append_live_decision_to_store
+from src.evaluation.live_decision_store import (
+    append_live_decision_to_store,
+    persist_canonical_live_decision,
+)
 from src.evaluation.live_production_decision import (
     Direction,
     ProductionAuthorizationReceipt,
@@ -41,7 +49,10 @@ from src.evaluation.live_production_decision import (
     evaluate_production_decision,
     validate_production_scope,
 )
-from src.evaluation.live_publication_store import append_publication_record
+from src.evaluation.live_publication_store import (
+    append_publication_record,
+    publish_canonical_live_decision,
+)
 from src.evaluation.live_runtime import build_live_runtime
 from src.evaluation.production_live_bridge import load_production_selection
 from src.evaluation.research_store import (
@@ -600,6 +611,17 @@ class LiveExecutionRuntime:
                 confidence=stability_score,
                 parameters=candidate.parameters,
             )
+            signal = ProductionSignal.from_decision(decision)
+            risk = calculate_production_risk_levels(decision, candidate)
+
+            canonical_cld = create_canonical_live_decision(receipt, decision, signal, risk, actor="live_execution_runtime", timestamp_utc=now_iso)
+            canonical_cld = transition_live_decision(canonical_cld, LiveDecisionLifecycleState.EVALUATED, actor="live_execution_runtime", timestamp_utc=now_iso)
+            canonical_cld = transition_live_decision(canonical_cld, LiveDecisionLifecycleState.RISK_VALIDATED, actor="live_execution_runtime", timestamp_utc=now_iso)
+            canonical_cld = transition_live_decision(canonical_cld, LiveDecisionLifecycleState.PRESENTABLE, actor="live_execution_runtime", timestamp_utc=now_iso)
+
+            if persist:
+                canonical_cld = persist_canonical_live_decision(canonical_cld, self.store_path, actor="live_execution_runtime", timestamp_utc=now_iso)
+
             display = {
                 "symbol": self.symbol,
                 "interval": self.interval,
@@ -635,62 +657,106 @@ class LiveExecutionRuntime:
                 "quote_stale": True,
                 "quote_age_seconds": freshness["age_seconds"],
             }
-        else:
-            decision = evaluate_production_decision(
-                candidate=candidate,
-                data=data,
-                reference_now=ref_now,
-                max_age_seconds=max_age,
-            )
-            signal = ProductionSignal.from_decision(decision)
-            risk = calculate_production_risk_levels(decision, candidate)
 
-            display = {
+            publication = ProductionIntelligencePublication.from_artifacts(
+                decision=decision,
+                signal=signal,
+                risk=risk,
+                candidate=candidate,
+                authorization=receipt,
+                confidence=stability_score,
+            )
+
+            record = build_live_decision_record(display)
+            record["decision_id"] = decision.decision_id
+            record["signal_id"] = signal.signal_id
+            record["canonical_live_decision_fingerprint"] = canonical_cld.canonical_live_decision_fingerprint
+            record["current_lifecycle_state"] = canonical_cld.current_state.value
+            record["runtime_authorization_fingerprint"] = receipt.authorization_fingerprint
+            record["authorization_policy_version"] = receipt.authorization_policy_version
+            record["authorized_at_utc"] = receipt.authorized_at_utc
+            record["promoted_artifact_fingerprint"] = receipt.promoted_artifact_fingerprint
+            record["governance_decision_fingerprint"] = receipt.governance_decision_fingerprint
+            record["campaign_selection_decision_fingerprint"] = receipt.campaign_selection_decision_fingerprint
+            record["candidate_id"] = receipt.candidate_id
+            record["strategy_name"] = receipt.strategy_name
+            record["strategy_version"] = receipt.strategy_version
+
+            contract_payload = publication.to_contract_v1_payload()
+
+            publish_result = None
+            if publish:
+                publish_result = self.publisher.publish(
+                    publication,
+                    skip_if_no_trade=skip_if_no_trade,
+                )
+
+            execution_result = {
+                "blocked": False,
                 "symbol": self.symbol,
                 "interval": self.interval,
-                "decision": decision.direction.value,
-                "reason": decision.reason,
-                "stable_strategy": str(stable_strategy),
-                "stability_score": stability_score,
-                "strategy_supported": str(stable_strategy) == "momentum",
-                "signal": 1 if decision.direction == Direction.BUY else 0,
-                "signal_label": decision.direction.value,
-                "trend": "UP" if decision.direction == Direction.BUY else "NEUTRAL",
-                "momentum": float(data["close"].iloc[-1]) if "close" in data.columns and not data.empty else None,
-                "entry_price": risk.entry_price,
-                "stop_loss": risk.stop_loss,
-                "tp1": risk.tp1,
-                "tp2": risk.tp2,
-                "tp3": risk.tp3,
-                "take_profit": risk.tp2 if risk.tp2 is not None else risk.tp1,
-                "risk_distance": (risk.entry_price - risk.stop_loss) if (risk.entry_price is not None and risk.stop_loss is not None) else None,
-                "risk_reward_ratio": risk.risk_reward_ratio,
-                "stop_loss_pct": candidate.parameters.get("stop_loss_pct"),
-                "take_profit_pct": candidate.parameters.get("take_profit_pct"),
-                "momentum_window": candidate.parameters.get("momentum_window", candidate.parameters.get("window")),
-                "timestamp": decision.market_timestamp,
-                "quote_stale": False,
-                "quote_age_seconds": freshness["age_seconds"],
+                "decision": display["decision"],
+                "strategy": display["stable_strategy"],
+                "stability_score": display["stability_score"],
+                "candidate_id": candidate.candidate_id,
+                "evidence_id": candidate.evidence.evidence_id,
+                "research_fingerprint": candidate.evidence.experiment_fingerprint,
+                "strategy_version": candidate.strategy_version,
+                "runtime_authorization": receipt.as_dict(),
+                "runtime_authorization_fingerprint": receipt.authorization_fingerprint,
+                "authorization_policy_version": receipt.authorization_policy_version,
+                "authorized_at_utc": receipt.authorized_at_utc,
+                "promoted_artifact_fingerprint": receipt.promoted_artifact_fingerprint,
+                "governance_decision_fingerprint": receipt.governance_decision_fingerprint,
+                "campaign_selection_decision_fingerprint": receipt.campaign_selection_decision_fingerprint,
+                "record": record,
+                "publication": publication.as_dict(),
+                "contract_payload": contract_payload,
+                "publish_result": publish_result,
             }
 
-        if 'signal' not in locals():
-            signal = ProductionSignal.from_decision(decision)
-            risk = calculate_production_risk_levels(decision, candidate)
+            if persist:
+                self.snapshot_path.parent.mkdir(parents=True, exist_ok=True)
+                self.snapshot_path.write_text(
+                    json.dumps(execution_result, ensure_ascii=False, indent=2),
+                    encoding="utf-8",
+                )
 
-        # Derive canonical ProductionIntelligencePublication
+            return execution_result
+
+        # Fresh market data: execute build_live_runtime
+        runtime_res = build_live_runtime(
+            data,
+            stable_strategy=stable_strategy,
+            stability_score=stability_score if stability_score is not None else 1.0,
+            symbol=self.symbol,
+            interval=self.interval,
+            candidate_id=candidate.candidate_id,
+            research_dir=self.research_dir,
+            store_path=self.store_path,
+            publisher=self.publisher,
+            publish=publish,
+            skip_if_no_trade=skip_if_no_trade,
+            persist=persist,
+        )
+
+        canonical_cld = runtime_res.canonical_decision
+        display = runtime_res.display
+
         publication = ProductionIntelligencePublication.from_artifacts(
-            decision=decision,
-            signal=signal,
-            risk=risk,
+            decision=canonical_cld.decision,
+            signal=canonical_cld.signal,
+            risk=canonical_cld.risk_levels,
             candidate=candidate,
             authorization=receipt,
             confidence=stability_score,
         )
 
-        # 6. Construct decision record & persist to store if enabled
         record = build_live_decision_record(display)
-        record["decision_id"] = decision.decision_id
-        record["signal_id"] = signal.signal_id
+        record["decision_id"] = canonical_cld.decision.decision_id
+        record["signal_id"] = canonical_cld.signal.signal_id
+        record["canonical_live_decision_fingerprint"] = canonical_cld.canonical_live_decision_fingerprint
+        record["current_lifecycle_state"] = canonical_cld.current_state.value
         record["runtime_authorization_fingerprint"] = receipt.authorization_fingerprint
         record["authorization_policy_version"] = receipt.authorization_policy_version
         record["authorized_at_utc"] = receipt.authorized_at_utc
@@ -701,20 +767,7 @@ class LiveExecutionRuntime:
         record["strategy_name"] = receipt.strategy_name
         record["strategy_version"] = receipt.strategy_version
 
-        if persist:
-            append_live_decision_to_store(record, self.store_path)
-            pub_store_path = self.store_path.parent / "publication_history.json"
-            append_publication_record(publication.as_dict(), pub_store_path)
-
         contract_payload = publication.to_contract_v1_payload()
-
-        # 7. Publish if enabled
-        publish_result = None
-        if publish:
-            publish_result = self.publisher.publish(
-                publication,
-                skip_if_no_trade=skip_if_no_trade,
-            )
 
         execution_result = {
             "blocked": False,
@@ -737,10 +790,9 @@ class LiveExecutionRuntime:
             "record": record,
             "publication": publication.as_dict(),
             "contract_payload": contract_payload,
-            "publish_result": publish_result,
+            "publish_result": runtime_res.decision.get("publish_result"),
         }
 
-        # 7. Write latest snapshot state file
         if persist:
             self.snapshot_path.parent.mkdir(parents=True, exist_ok=True)
             self.snapshot_path.write_text(

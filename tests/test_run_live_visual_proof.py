@@ -78,6 +78,10 @@ def test_live_visual_proof_creates_real_html(monkeypatch, tmp_path):
         "run_live_visual_proof.OUTPUT_PATH",
         test_out,
     )
+    monkeypatch.setattr(
+        "src.evaluation.live_runtime.DEFAULT_STORE_PATH",
+        tmp_path / "decision_history.json",
+    )
 
     result = run_live_visual_proof.run_live_visual_proof()
 
@@ -186,6 +190,10 @@ def test_live_visual_proof_uses_production_selection(monkeypatch, tmp_path):
     monkeypatch.setattr(
         "run_live_visual_proof.OUTPUT_PATH",
         test_out,
+    )
+    monkeypatch.setattr(
+        "src.evaluation.live_runtime.DEFAULT_STORE_PATH",
+        tmp_path / "decision_history.json",
     )
 
     result = run_live_visual_proof.run_live_visual_proof()

@@ -36,18 +36,22 @@ def _rising_data(rows: int = 80) -> pd.DataFrame:
     )
 
 
+from src.evaluation.live_runtime import build_live_runtime
+
+
 def test_chart_contains_candlestick_trace():
     data = _rising_data()
 
-    display = build_live_trade_display(
+    runtime_res = build_live_runtime(
         data,
         stable_strategy="momentum",
         stability_score=0.80,
+        persist=False,
     )
 
     overlay = build_live_trade_overlay(
         data,
-        display,
+        runtime_res.display,
     )
 
     figure = _build_chart(
@@ -62,15 +66,16 @@ def test_chart_contains_candlestick_trace():
 def test_buy_chart_contains_five_trade_lines():
     data = _rising_data()
 
-    display = build_live_trade_display(
+    runtime_res = build_live_runtime(
         data,
         stable_strategy="momentum",
         stability_score=0.80,
+        persist=False,
     )
 
     overlay = build_live_trade_overlay(
         data,
-        display,
+        runtime_res.display,
     )
 
     figure = _build_chart(
@@ -84,15 +89,16 @@ def test_buy_chart_contains_five_trade_lines():
 def test_no_trade_chart_has_no_trade_lines():
     data = _rising_data()
 
-    display = build_live_trade_display(
+    runtime_res = build_live_runtime(
         data,
         stable_strategy="momentum",
         stability_score=0.20,
+        persist=False,
     )
 
     overlay = build_live_trade_overlay(
         data,
-        display,
+        runtime_res.display,
     )
 
     figure = _build_chart(
@@ -106,15 +112,16 @@ def test_no_trade_chart_has_no_trade_lines():
 def test_chart_uses_latest_market_timestamp():
     data = _rising_data()
 
-    display = build_live_trade_display(
+    runtime_res = build_live_runtime(
         data,
         stable_strategy="momentum",
         stability_score=0.80,
+        persist=False,
     )
 
     overlay = build_live_trade_overlay(
         data,
-        display,
+        runtime_res.display,
     )
 
     assert overlay["timestamp"] == data["timestamp"].iloc[-1]
@@ -157,15 +164,16 @@ def test_load_data_has_valid_timestamps():
 def test_buy_chart_level_order_is_preserved():
     data = _rising_data()
 
-    display = build_live_trade_display(
+    runtime_res = build_live_runtime(
         data,
         stable_strategy="momentum",
         stability_score=0.80,
+        persist=False,
     )
 
     overlay = build_live_trade_overlay(
         data,
-        display,
+        runtime_res.display,
     )
 
     levels = overlay["levels"]

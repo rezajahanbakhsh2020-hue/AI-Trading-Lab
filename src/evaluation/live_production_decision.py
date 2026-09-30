@@ -1216,6 +1216,14 @@ class ProductionIntelligencePublication:
                 "authorized_at_utc": receipt.authorized_at_utc,
             })
 
+        # Record canonical live decision lifecycle state and fingerprint if present on candidate or decision context
+        cld_fp = getattr(decision, "canonical_live_decision_fingerprint", None) or getattr(signal, "canonical_live_decision_fingerprint", None)
+        cld_state = getattr(decision, "current_lifecycle_state", None) or getattr(signal, "current_lifecycle_state", None)
+        if cld_fp:
+            provenance["canonical_live_decision_fingerprint"] = str(cld_fp)
+        if cld_state:
+            provenance["current_lifecycle_state"] = str(cld_state)
+
         return cls(
             schema_version=schema_version,
             publication_id=pub_id,
@@ -1391,6 +1399,15 @@ def build_live_production_decision(
     else:
         ref_now = None
 
+    # Authorize runtime execution through canonical path
+    authorization = authorize_production_runtime(
+        resolved_candidate,
+        symbol=symbol,
+        timeframe=interval,
+        now=ref_now,
+    )
+    receipt = ProductionAuthorizationReceipt.from_authorization(authorization)
+
     # Authoritative evaluation through promoted candidate
     decision_obj = evaluate_production_decision(
         candidate=resolved_candidate,
@@ -1481,4 +1498,10 @@ def build_live_production_decision(
         "candidate_id": resolved_candidate.candidate_id,
         "evidence_id": resolved_candidate.evidence.evidence_id,
         "experiment_fingerprint": resolved_candidate.evidence.experiment_fingerprint,
+        "runtime_authorization_fingerprint": receipt.authorization_fingerprint,
+        "authorization_policy_version": receipt.authorization_policy_version,
+        "authorized_at_utc": receipt.authorized_at_utc,
+        "promoted_artifact_fingerprint": receipt.promoted_artifact_fingerprint,
+        "governance_decision_fingerprint": receipt.governance_decision_fingerprint,
+        "campaign_selection_decision_fingerprint": receipt.campaign_selection_decision_fingerprint,
     }

@@ -11,5 +11,6 @@
     "slow_window": 50,
     "stop_loss_pct": 0.01,
     "take_profit_pct": 0.02
-  }
+  },
+  "governance_decision_fingerprint": "gov_dec_cand_moving_average_1d_v1"
 }

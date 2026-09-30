@@ -30,16 +30,20 @@ def _rising_data(rows: int = 80) -> pd.DataFrame:
     )
 
 
+from src.evaluation.live_runtime import build_live_runtime
+
+
 def test_buy_overlay_contains_all_trade_lines():
     data = _rising_data()
 
-    display = build_live_trade_display(
+    runtime_res = build_live_runtime(
         data,
         stable_strategy="momentum",
         stability_score=0.80,
+        persist=False,
     )
 
-    overlay = build_live_trade_overlay(data, display)
+    overlay = build_live_trade_overlay(data, runtime_res.display)
 
     assert overlay["decision"] == "BUY"
 
@@ -60,13 +64,14 @@ def test_buy_overlay_contains_all_trade_lines():
 def test_buy_overlay_has_five_visible_lines():
     data = _rising_data()
 
-    display = build_live_trade_display(
+    runtime_res = build_live_runtime(
         data,
         stable_strategy="momentum",
         stability_score=0.80,
+        persist=False,
     )
 
-    overlay = build_live_trade_overlay(data, display)
+    overlay = build_live_trade_overlay(data, runtime_res.display)
 
     assert len(overlay["lines"]) == 5
     assert all(line["visible"] for line in overlay["lines"])
@@ -83,13 +88,14 @@ def test_buy_overlay_has_five_visible_lines():
 def test_no_trade_overlay_hides_all_trade_lines():
     data = _rising_data()
 
-    display = build_live_trade_display(
+    runtime_res = build_live_runtime(
         data,
         stable_strategy="momentum",
         stability_score=0.20,
+        persist=False,
     )
 
-    overlay = build_live_trade_overlay(data, display)
+    overlay = build_live_trade_overlay(data, runtime_res.display)
 
     assert overlay["decision"] == "NO TRADE"
 
@@ -111,13 +117,14 @@ def test_no_trade_overlay_hides_all_trade_lines():
 def test_overlay_preserves_strategy_and_stability_metadata():
     data = _rising_data()
 
-    display = build_live_trade_display(
+    runtime_res = build_live_runtime(
         data,
         stable_strategy="momentum",
         stability_score=0.80,
+        persist=False,
     )
 
-    overlay = build_live_trade_overlay(data, display)
+    overlay = build_live_trade_overlay(data, runtime_res.display)
 
     assert overlay["stable_strategy"] == "momentum"
     assert overlay["stability_score"] == pytest.approx(0.80)
@@ -128,13 +135,14 @@ def test_overlay_preserves_strategy_and_stability_metadata():
 def test_overlay_uses_latest_data_timestamp():
     data = _rising_data()
 
-    display = build_live_trade_display(
+    runtime_res = build_live_runtime(
         data,
         stable_strategy="momentum",
         stability_score=0.80,
+        persist=False,
     )
 
-    overlay = build_live_trade_overlay(data, display)
+    overlay = build_live_trade_overlay(data, runtime_res.display)
 
     assert overlay["timestamp"] == data["timestamp"].iloc[-1]
 
@@ -142,17 +150,19 @@ def test_overlay_uses_latest_data_timestamp():
 def test_invalid_decision_is_rejected():
     data = _rising_data()
 
-    display = build_live_trade_display(
+    runtime_res = build_live_runtime(
         data,
         stable_strategy="momentum",
         stability_score=0.80,
+        persist=False,
     )
+    display = dict(runtime_res.display)
 
     display["decision"] = "SELL"
 
     with pytest.raises(
         ValueError,
-        match="decision must be BUY or NO TRADE",
+        match="decision must be",
     ):
         build_live_trade_overlay(data, display)
 
@@ -160,11 +170,13 @@ def test_invalid_decision_is_rejected():
 def test_missing_timestamp_is_rejected():
     data = _rising_data().drop(columns=["timestamp"])
 
-    display = build_live_trade_display(
+    runtime_res = build_live_runtime(
         _rising_data(),
         stable_strategy="momentum",
         stability_score=0.80,
+        persist=False,
     )
+    display = runtime_res.display
 
     with pytest.raises(
         ValueError,

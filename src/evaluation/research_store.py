@@ -7,6 +7,7 @@ Fail-closed on corrupted, missing, or conflicting research evidence objects.
 from __future__ import annotations
 
 from enum import Enum
+import hashlib
 import json
 from datetime import datetime, timezone
 from pathlib import Path

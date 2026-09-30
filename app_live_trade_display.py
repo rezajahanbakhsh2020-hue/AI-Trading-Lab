@@ -113,11 +113,14 @@ def main() -> None:
     try:
         data = _load_data()
 
-        display = build_live_trade_display(
+        from src.evaluation.live_runtime import build_live_runtime
+        runtime_res = build_live_runtime(
             data,
             stable_strategy="momentum",
             stability_score=0.517268,
+            persist=False,
         )
+        display = runtime_res.display
 
         overlay = build_live_trade_overlay(
             data,

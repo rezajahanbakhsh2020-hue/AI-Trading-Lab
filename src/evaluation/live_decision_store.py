@@ -5,9 +5,22 @@ from collections.abc import Iterable, Mapping
 from pathlib import Path
 from typing import Any
 
+from typing import Optional
+
+from src.evaluation.live_decision_lifecycle import (
+    CanonicalLiveDecision,
+    LiveDecisionLifecycleError,
+    LiveDecisionLifecycleState,
+    transition_live_decision,
+    validate_live_decision_lifecycle,
+)
 from src.evaluation.live_decision_record import (
+    build_live_decision_record,
     validate_live_decision_record,
 )
+from src.evaluation.live_production_decision import Direction
+
+DEFAULT_STORE_PATH = Path("results/live/decision_history.json")
 
 
 def save_live_decision_history(
@@ -142,6 +155,25 @@ def append_live_decision_to_store(
                         f"runtime_authorization_fingerprint mismatch ('{ext_auth_fp}' vs '{new_auth_fp}')."
                     )
 
+                # Compare canonical live decision fingerprint explicitly for conflict detection
+                new_cld_fp = new_record.get("canonical_live_decision_fingerprint")
+                ext_cld_fp = existing.get("canonical_live_decision_fingerprint")
+
+                new_cld_str = str(new_cld_fp).strip() if new_cld_fp is not None and str(new_cld_fp).strip() != "" else None
+                ext_cld_str = str(ext_cld_fp).strip() if ext_cld_fp is not None and str(ext_cld_fp).strip() != "" else None
+
+                if (ext_cld_str is not None) != (new_cld_str is not None):
+                    raise ValueError(
+                        f"Conflicting replay detected for decision/signal identity '{new_dec_id or new_sig_id}': "
+                        "canonical_live_decision_fingerprint presence mismatch."
+                    )
+
+                if ext_cld_str is not None and new_cld_str is not None and ext_cld_str != new_cld_str:
+                    raise ValueError(
+                        f"Conflicting replay detected for decision/signal identity '{new_dec_id or new_sig_id}': "
+                        f"canonical_live_decision_fingerprint mismatch ('{ext_cld_str}' vs '{new_cld_str}')."
+                    )
+
                 # Compare canonical content
                 # Exclude runtime volatile timestamps if present
                 keys_to_compare = [k for k in new_record if k not in ("recorded_at", "created_at")]
@@ -165,3 +197,89 @@ def append_live_decision_to_store(
     save_live_decision_history(history, target)
 
     return history
+
+
+def persist_canonical_live_decision(
+    canonical_decision: CanonicalLiveDecision,
+    path: str | Path,
+    enforce_idempotency: bool = True,
+    actor: str = "live_decision_store",
+    timestamp_utc: Optional[str] = None,
+) -> CanonicalLiveDecision:
+    """Enforced persistence lifecycle boundary for a CanonicalLiveDecision.
+
+    Requires current state PRESENTABLE (or PERSISTED for identical replay).
+    Transitions artifact to PERSISTED, validates, appends to store, and returns the canonical PERSISTED artifact.
+    """
+    if not isinstance(canonical_decision, CanonicalLiveDecision):
+        raise TypeError(f"canonical_decision must be a CanonicalLiveDecision, got {type(canonical_decision).__name__}")
+
+    validate_live_decision_lifecycle(canonical_decision)
+
+    if canonical_decision.current_state == LiveDecisionLifecycleState.PERSISTED:
+        target = Path(path)
+        if target.exists():
+            history = load_live_decision_history(target)
+            for existing in history:
+                if existing.get("canonical_live_decision_fingerprint") == canonical_decision.canonical_live_decision_fingerprint:
+                    return canonical_decision
+                if existing.get("decision_id") == canonical_decision.decision_id:
+                    raise ValueError(
+                        f"Conflicting replay detected for decision_id '{canonical_decision.decision_id}': "
+                        f"canonical_live_decision_fingerprint mismatch."
+                    )
+        raise LiveDecisionLifecycleError("Canonical decision is marked PERSISTED but missing from persistence store.")
+
+    if canonical_decision.current_state != LiveDecisionLifecycleState.PRESENTABLE:
+        raise LiveDecisionLifecycleError(
+            f"Cannot persist canonical live decision in state '{canonical_decision.current_state.value}': expected state 'PRESENTABLE'."
+        )
+
+    # Execute transition PRESENTABLE -> PERSISTED
+    persisted_decision = transition_live_decision(
+        canonical_decision,
+        LiveDecisionLifecycleState.PERSISTED,
+        actor=actor,
+        timestamp_utc=timestamp_utc,
+        reason="canonical_persistence_boundary",
+    )
+
+    validate_live_decision_lifecycle(persisted_decision)
+
+    receipt = persisted_decision.authorization_receipt
+    dec = persisted_decision.decision
+    signal = persisted_decision.signal
+    risk = persisted_decision.risk_levels
+
+    record = build_live_decision_record({
+        "timestamp": dec.market_timestamp,
+        "symbol": receipt.symbol,
+        "interval": receipt.timeframe,
+        "signal": 1 if dec.direction == Direction.BUY else 0,
+        "signal_label": dec.direction.value,
+        "trend": "UP" if dec.direction == Direction.BUY else "NEUTRAL",
+        "strategy": receipt.strategy_name,
+        "entry_price": risk.entry_price,
+        "stop_loss": risk.stop_loss,
+        "take_profit": risk.tp2 if risk.tp2 is not None else risk.tp1,
+        "risk_reward_ratio": risk.risk_reward_ratio,
+        "stability_score": dec.confidence,
+        "decision_id": dec.decision_id,
+        "signal_id": signal.signal_id,
+        "canonical_live_decision_fingerprint": persisted_decision.canonical_live_decision_fingerprint,
+        "current_lifecycle_state": persisted_decision.current_state.value,
+        "transition_history": [tr.as_dict() for tr in persisted_decision.transition_history],
+        "runtime_authorization_fingerprint": receipt.authorization_fingerprint,
+        "authorization_policy_version": receipt.authorization_policy_version,
+        "authorized_at_utc": receipt.authorized_at_utc,
+        "promoted_artifact_fingerprint": receipt.promoted_artifact_fingerprint,
+        "governance_decision_fingerprint": receipt.governance_decision_fingerprint,
+        "campaign_selection_decision_fingerprint": receipt.campaign_selection_decision_fingerprint,
+        "candidate_id": receipt.candidate_id,
+        "strategy_name": receipt.strategy_name,
+        "strategy_version": receipt.strategy_version,
+    })
+
+    append_live_decision_to_store(record, path, enforce_idempotency=enforce_idempotency)
+
+    return persisted_decision
