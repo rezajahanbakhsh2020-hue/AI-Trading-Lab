@@ -17,6 +17,9 @@ from src.evaluation.live_execution_runtime import (
     ProductionRuntimeConfig,
     load_live_market_data,
 )
+from src.evaluation.live_runtime import (
+    evaluate_authorized_live_runtime,
+)
 from src.evaluation.research_constitution import (
     CodeProvenance,
     DatasetScope,
@@ -438,16 +441,16 @@ def test_live_execution_runtime_buy_signal_field_propagation(
     assert "produced_at" in prov
 
 
-@patch("src.evaluation.live_execution_runtime.build_live_runtime")
+@patch("src.evaluation.live_execution_runtime.evaluate_authorized_live_runtime")
 @patch("src.evaluation.live_execution_runtime.load_production_selection")
 @patch("src.evaluation.live_execution_runtime.load_live_market_data")
 def test_live_execution_runtime_stale_data_blocked(
     mock_load_data,
     mock_load_selection,
-    mock_build_runtime,
+    mock_evaluate_runtime,
     tmp_path,
 ) -> None:
-    """Verify that stale market data fails closed: build_live_runtime is NOT called, decision is set to NO TRADE with reason stale_market_data and quote_stale=True."""
+    """Verify that stale market data delegates to evaluate_authorized_live_runtime with a stale LiveMarketEvaluation."""
     df = make_buy_market_data()
     mock_load_data.return_value = df
     mock_load_selection.return_value = {
@@ -456,12 +459,6 @@ def test_live_execution_runtime_stale_data_blocked(
     }
 
     mock_publisher = MagicMock()
-    mock_publisher.publish.return_value = {
-        "status": "SKIPPED_NO_TRADE",
-        "published": False,
-        "reason": "Decision is NO TRADE and skip_if_no_trade=True",
-    }
-
     store_path = tmp_path / "decision_history.json"
     snapshot_path = tmp_path / "latest_execution.json"
 
@@ -479,10 +476,15 @@ def test_live_execution_runtime_stale_data_blocked(
     df_ts = pd.to_datetime(df["openTime"], utc=True, errors="coerce").iloc[-1].to_pydatetime()
     stale_ref_now = df_ts + pd.Timedelta(seconds=1000)
 
+    # Let evaluate_authorized_live_runtime run for real or mock it
+    mock_evaluate_runtime.side_effect = evaluate_authorized_live_runtime
+
     result = runtime.run_once(publish=True, skip_if_no_trade=True, persist=True, reference_now=stale_ref_now)
 
-    # CRITICAL INVARIANT: build_live_runtime MUST NOT BE CALLED FOR STALE DATA
-    assert not mock_build_runtime.called, "build_live_runtime was called for stale market data!"
+    assert mock_evaluate_runtime.called
+    eval_arg = mock_evaluate_runtime.call_args.kwargs["evaluation"]
+    assert eval_arg.fresh is False
+    assert eval_arg.freshness_reason == "stale_market_data"
 
     # Signal must fail closed to NO TRADE with rejection reason
     assert result["decision"] == "NO TRADE"
@@ -493,9 +495,6 @@ def test_live_execution_runtime_stale_data_blocked(
     # Contract payload must reflect NO TRADE
     assert result["contract_payload"]["signal"]["decision"] == "NO TRADE"
     assert result["contract_payload"]["signal"]["signal_label"] == "NO TRADE"
-
-    # Publisher was called with NO TRADE payload, skipping publication
-    assert mock_publisher.publish.called
 
 
 @patch("src.evaluation.live_execution_runtime.load_production_selection")

@@ -236,7 +236,7 @@ def test_stale_no_trade_path_uses_same_canonical_publication_boundary(tmp_path):
     )
 
     with patch("src.evaluation.live_execution_runtime.load_live_market_data", return_value=df):
-        with patch("src.evaluation.live_execution_runtime.publish_canonical_live_decision") as mock_pub_boundary:
+        with patch("src.evaluation.live_runtime.publish_canonical_live_decision") as mock_pub_boundary:
             mock_pub_boundary.side_effect = publish_canonical_live_decision
 
             ref_stale = timestamps[-1].to_pydatetime() + pd.Timedelta(seconds=1000)
@@ -559,16 +559,14 @@ def test_fresh_and_stale_paths_both_reach_same_canonical_publication_function(tm
 
     with patch("src.evaluation.live_execution_runtime.load_live_market_data", return_value=df):
         with patch("src.evaluation.live_runtime.publish_canonical_live_decision") as mock_runtime_pub:
-            with patch("src.evaluation.live_execution_runtime.publish_canonical_live_decision") as mock_exec_pub:
-                mock_runtime_pub.side_effect = publish_canonical_live_decision
-                mock_exec_pub.side_effect = publish_canonical_live_decision
+            mock_runtime_pub.side_effect = publish_canonical_live_decision
 
-                # 1. Fresh path
-                ref_fresh = timestamps[-1].to_pydatetime()
-                runtime.run_once(publish=True, reference_now=ref_fresh)
-                assert mock_runtime_pub.call_count == 1
+            # 1. Fresh path
+            ref_fresh = timestamps[-1].to_pydatetime()
+            runtime.run_once(publish=True, reference_now=ref_fresh)
+            assert mock_runtime_pub.call_count == 1
 
-                # 2. Stale path
-                ref_stale = timestamps[-1].to_pydatetime() + pd.Timedelta(seconds=1000)
-                runtime.run_once(publish=True, reference_now=ref_stale)
-                assert mock_exec_pub.call_count == 1
+            # 2. Stale path
+            ref_stale = timestamps[-1].to_pydatetime() + pd.Timedelta(seconds=1000)
+            runtime.run_once(publish=True, reference_now=ref_stale)
+            assert mock_runtime_pub.call_count == 2
