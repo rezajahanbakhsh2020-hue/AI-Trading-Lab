@@ -147,7 +147,11 @@ def build_live_runtime(
             now=ref_now,
         )
         receipt = ProductionAuthorizationReceipt.from_authorization(authorization)
-        authorized_context = create_authorized_runtime_context(resolved_candidate, authorization)
+        authorized_context = create_authorized_runtime_context(
+            candidate=resolved_candidate,
+            authorization=authorization,
+            authorization_receipt=receipt,
+        )
 
     # 2. Evaluate strategy decision
     decision_obj = evaluate_production_decision(

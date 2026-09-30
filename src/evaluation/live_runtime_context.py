@@ -235,13 +235,17 @@ class AuthorizedProductionRuntimeContext:
 def create_authorized_runtime_context(
     candidate: PromotedCandidateArtifact,
     authorization: ProductionRuntimeAuthorization,
+    authorization_receipt: ProductionAuthorizationReceipt,
 ) -> AuthorizedProductionRuntimeContext:
-    """Factory creating an immutable AuthorizedProductionRuntimeContext from candidate and authorization artifacts."""
-    receipt = ProductionAuthorizationReceipt.from_authorization(authorization)
+    """Factory creating an immutable AuthorizedProductionRuntimeContext from candidate, authorization, and receipt artifacts."""
+    if not isinstance(authorization_receipt, ProductionAuthorizationReceipt):
+        raise RuntimeContextValidationError(
+            f"authorization_receipt must be a ProductionAuthorizationReceipt, got {type(authorization_receipt).__name__}"
+        )
     return AuthorizedProductionRuntimeContext(
         candidate=candidate,
         authorization=authorization,
-        authorization_receipt=receipt,
+        authorization_receipt=authorization_receipt,
         symbol=authorization.symbol,
         timeframe=authorization.timeframe,
         candidate_id=authorization.candidate_id,

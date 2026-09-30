@@ -96,8 +96,10 @@ def test_runtime_context_creation_and_immutability():
     cand = _make_dummy_candidate()
     ref_now = datetime.datetime(2025, 1, 1, 12, 0, 0, tzinfo=datetime.timezone.utc)
     auth = authorize_production_runtime(cand, symbol="XAUUSD", timeframe="5m", now=ref_now)
-    ctx = create_authorized_runtime_context(cand, auth)
+    receipt = ProductionAuthorizationReceipt.from_authorization(auth)
+    ctx = create_authorized_runtime_context(cand, auth, receipt)
 
+    assert ctx.authorization_receipt is receipt
     assert ctx.candidate_id == "cand_test"
     assert ctx.symbol == "XAUUSD"
     assert ctx.timeframe == "5m"
@@ -118,17 +120,20 @@ def test_context_fingerprint_determinism_and_sensitivity():
     cand = _make_dummy_candidate()
     ref_now = datetime.datetime(2025, 1, 1, 12, 0, 0, tzinfo=datetime.timezone.utc)
     auth1 = authorize_production_runtime(cand, symbol="XAUUSD", timeframe="5m", now=ref_now)
-    ctx1 = create_authorized_runtime_context(cand, auth1)
+    receipt1 = ProductionAuthorizationReceipt.from_authorization(auth1)
+    ctx1 = create_authorized_runtime_context(cand, auth1, receipt1)
 
     auth2 = authorize_production_runtime(cand, symbol="XAUUSD", timeframe="5m", now=ref_now)
-    ctx2 = create_authorized_runtime_context(cand, auth2)
+    receipt2 = ProductionAuthorizationReceipt.from_authorization(auth2)
+    ctx2 = create_authorized_runtime_context(cand, auth2, receipt2)
 
     assert ctx1.context_fingerprint == ctx2.context_fingerprint
 
     # Material candidate change alters context fingerprint
     cand_alt = _make_dummy_candidate(candidate_id="cand_test_alt")
     auth_alt = authorize_production_runtime(cand_alt, symbol="XAUUSD", timeframe="5m", now=ref_now)
-    ctx_alt = create_authorized_runtime_context(cand_alt, auth_alt)
+    receipt_alt = ProductionAuthorizationReceipt.from_authorization(auth_alt)
+    ctx_alt = create_authorized_runtime_context(cand_alt, auth_alt, receipt_alt)
 
     assert ctx_alt.context_fingerprint != ctx1.context_fingerprint
 

@@ -531,6 +531,7 @@ class LiveExecutionRuntime:
             context = create_authorized_runtime_context(
                 candidate=resolved,
                 authorization=authorization,
+                authorization_receipt=receipt,
             )
         except ProductionRuntimeAuthorizationError as exc:
             blocked = ProductionBlocked(
@@ -550,6 +551,7 @@ class LiveExecutionRuntime:
             )
 
         candidate = context.candidate
+        receipt = context.authorization_receipt
         stable_strategy = candidate.strategy_name
         raw_score = selection.get("stability_score")
         if raw_score is None:

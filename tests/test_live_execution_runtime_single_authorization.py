@@ -17,6 +17,7 @@ from src.evaluation.live_execution_runtime import (
     ProductionRuntimeConfig,
 )
 from src.evaluation.live_production_decision import (
+    ProductionAuthorizationReceipt,
     PromotedCandidateArtifact,
 )
 from src.evaluation.live_runtime import build_live_runtime
@@ -108,8 +109,10 @@ def test_fresh_execution_calls_resolution_and_authorization_exactly_once(monkeyp
 
     resolve_count = 0
     auth_count = 0
+    created_context = None
 
     orig_auth = ler_module.authorize_production_runtime
+    orig_ctx_factory = ler_module.create_authorized_runtime_context
 
     def mock_resolve(config):
         nonlocal resolve_count
@@ -121,9 +124,17 @@ def test_fresh_execution_calls_resolution_and_authorization_exactly_once(monkeyp
         auth_count += 1
         return orig_auth(promoted_candidate, symbol=symbol, timeframe=timeframe, now=now, authorization_policy_version=authorization_policy_version)
 
+    def mock_create_ctx(candidate, authorization, authorization_receipt):
+        nonlocal created_context
+        ctx = orig_ctx_factory(candidate, authorization, authorization_receipt)
+        created_context = ctx
+        assert ctx.authorization_receipt is authorization_receipt
+        return ctx
+
     monkeypatch.setattr(ler_module, "resolve_authoritative_promoted_candidate", mock_resolve)
     monkeypatch.setattr(ler_module, "authorize_production_runtime", mock_auth)
     monkeypatch.setattr(lr_module, "authorize_production_runtime", mock_auth)
+    monkeypatch.setattr(ler_module, "create_authorized_runtime_context", mock_create_ctx)
     monkeypatch.setattr(ler_module, "load_live_market_data", lambda **kw: market_df)
 
     p_config = ProductionRuntimeConfig(
@@ -147,8 +158,9 @@ def test_fresh_execution_calls_resolution_and_authorization_exactly_once(monkeyp
     assert not res.get("blocked")
     assert resolve_count == 1, f"Expected resolve_authoritative_promoted_candidate == 1, got {resolve_count}"
     assert auth_count == 1, f"Expected authorize_production_runtime == 1, got {auth_count}"
+    assert created_context is not None
     assert "context_fingerprint" in res
-    assert res["context_fingerprint"] is not None
+    assert res["context_fingerprint"] == created_context.context_fingerprint
 
 
 def test_stale_execution_calls_resolution_and_authorization_exactly_once(monkeypatch, tmp_path):
@@ -158,8 +170,10 @@ def test_stale_execution_calls_resolution_and_authorization_exactly_once(monkeyp
 
     resolve_count = 0
     auth_count = 0
+    created_context = None
 
     orig_auth = ler_module.authorize_production_runtime
+    orig_ctx_factory = ler_module.create_authorized_runtime_context
 
     def mock_resolve(config):
         nonlocal resolve_count
@@ -171,9 +185,17 @@ def test_stale_execution_calls_resolution_and_authorization_exactly_once(monkeyp
         auth_count += 1
         return orig_auth(promoted_candidate, symbol=symbol, timeframe=timeframe, now=now, authorization_policy_version=authorization_policy_version)
 
+    def mock_create_ctx(candidate, authorization, authorization_receipt):
+        nonlocal created_context
+        ctx = orig_ctx_factory(candidate, authorization, authorization_receipt)
+        created_context = ctx
+        assert ctx.authorization_receipt is authorization_receipt
+        return ctx
+
     monkeypatch.setattr(ler_module, "resolve_authoritative_promoted_candidate", mock_resolve)
     monkeypatch.setattr(ler_module, "authorize_production_runtime", mock_auth)
     monkeypatch.setattr(lr_module, "authorize_production_runtime", mock_auth)
+    monkeypatch.setattr(ler_module, "create_authorized_runtime_context", mock_create_ctx)
     monkeypatch.setattr(ler_module, "load_live_market_data", lambda **kw: stale_df)
 
     p_config = ProductionRuntimeConfig(
@@ -198,8 +220,9 @@ def test_stale_execution_calls_resolution_and_authorization_exactly_once(monkeyp
     assert res["decision"] == "NO TRADE"
     assert resolve_count == 1, f"Expected resolve_authoritative_promoted_candidate == 1, got {resolve_count}"
     assert auth_count == 1, f"Expected authorize_production_runtime == 1, got {auth_count}"
+    assert created_context is not None
     assert "context_fingerprint" in res
-    assert res["context_fingerprint"] is not None
+    assert res["context_fingerprint"] == created_context.context_fingerprint
 
 
 def test_build_live_runtime_bypasses_resolution_and_authorization_when_authorized_context_supplied(monkeypatch):
@@ -208,7 +231,10 @@ def test_build_live_runtime_bypasses_resolution_and_authorization_when_authorize
     market_df = _make_market_data(ref_now, stale=False)
 
     auth = ler_module.authorize_production_runtime(cand, symbol="XAUUSD", timeframe="5m", now=ref_now)
-    ctx = ler_module.create_authorized_runtime_context(cand, auth)
+    receipt = ProductionAuthorizationReceipt.from_authorization(auth)
+    ctx = ler_module.create_authorized_runtime_context(cand, auth, receipt)
+
+    assert ctx.authorization_receipt is receipt
 
     monkeypatch.setattr(lr_module, "resolve_promoted_candidate", pytest.fail)
     monkeypatch.setattr(lr_module, "authorize_production_runtime", pytest.fail)
