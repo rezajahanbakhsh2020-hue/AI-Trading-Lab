@@ -67,6 +67,17 @@ def append_publication_record(
         for existing in history:
             ext_pub_id = existing.get("publication_id") or existing.get("event_id")
             if ext_pub_id == pub_id:
+                # Compare authorization fingerprint in provenance explicitly for conflict detection
+                new_prov = new_record.get("provenance", {})
+                ext_prov = existing.get("provenance", {})
+                new_auth_fp = new_prov.get("runtime_authorization_fingerprint")
+                ext_auth_fp = ext_prov.get("runtime_authorization_fingerprint")
+                if new_auth_fp is not None and ext_auth_fp is not None and new_auth_fp != ext_auth_fp:
+                    raise PublicationIntegrityError(
+                        f"Conflicting publication replay detected for publication_id '{pub_id}': "
+                        f"runtime_authorization_fingerprint mismatch ('{ext_auth_fp}' vs '{new_auth_fp}')."
+                    )
+
                 # Compare canonical publication content
                 payload_keys = ("publication_id", "signal_id", "decision_id", "symbol", "timeframe", "decision", "entry", "stop_loss", "tp1")
                 match_all = True
@@ -75,7 +86,7 @@ def append_publication_record(
                         match_all = False
                         break
 
-                if match_all:
+                if match_all and new_prov == ext_prov:
                     # Identical replay: safe no-op
                     return history
                 else:

@@ -37,6 +37,104 @@ class Direction(str, Enum):
 
 
 @dataclass(frozen=True)
+class ProductionAuthorizationReceipt:
+    """Canonical immutable projection of ProductionRuntimeAuthorization for durable execution lineage."""
+
+    candidate_id: str
+    strategy_name: str
+    strategy_version: str
+    symbol: str
+    timeframe: str
+    promoted_artifact_fingerprint: str
+    governance_decision_fingerprint: str
+    campaign_selection_decision_fingerprint: Optional[str]
+    authorization_policy_version: str
+    authorized_at_utc: str
+    authorization_fingerprint: str
+
+    def __post_init__(self) -> None:
+        if not self.candidate_id or not str(self.candidate_id).strip():
+            raise ProductionRuntimeAuthorizationError("candidate_id must be a non-empty string.")
+        if not self.strategy_name or not str(self.strategy_name).strip():
+            raise ProductionRuntimeAuthorizationError("strategy_name must be a non-empty string.")
+        if not self.strategy_version or not str(self.strategy_version).strip():
+            raise ProductionRuntimeAuthorizationError("strategy_version must be a non-empty string.")
+        if not self.symbol or not str(self.symbol).strip():
+            raise ProductionRuntimeAuthorizationError("symbol must be a non-empty string.")
+        if not self.timeframe or not str(self.timeframe).strip():
+            raise ProductionRuntimeAuthorizationError("timeframe must be a non-empty string.")
+
+        if not self.promoted_artifact_fingerprint or not str(self.promoted_artifact_fingerprint).strip():
+            raise ProductionRuntimeAuthorizationError("promoted_artifact_fingerprint must be a non-empty string.")
+        if not self.governance_decision_fingerprint or not str(self.governance_decision_fingerprint).strip():
+            raise ProductionRuntimeAuthorizationError("governance_decision_fingerprint must be a non-empty string.")
+
+        csdf = self.campaign_selection_decision_fingerprint
+        if csdf is not None:
+            csdf_str = str(csdf).strip()
+            if not csdf_str:
+                raise ProductionRuntimeAuthorizationError("campaign_selection_decision_fingerprint cannot be empty if provided.")
+            object.__setattr__(self, "campaign_selection_decision_fingerprint", csdf_str)
+
+        if not self.authorization_policy_version or not str(self.authorization_policy_version).strip():
+            raise ProductionRuntimeAuthorizationError("authorization_policy_version must be a non-empty string.")
+        if not self.authorized_at_utc or not str(self.authorized_at_utc).strip():
+            raise ProductionRuntimeAuthorizationError("authorized_at_utc must be a non-empty string.")
+        if not self.authorization_fingerprint or not str(self.authorization_fingerprint).strip():
+            raise ProductionRuntimeAuthorizationError("authorization_fingerprint must be a non-empty string.")
+
+        object.__setattr__(self, "candidate_id", str(self.candidate_id).strip())
+        object.__setattr__(self, "strategy_name", str(self.strategy_name).strip())
+        object.__setattr__(self, "strategy_version", str(self.strategy_version).strip())
+        object.__setattr__(self, "symbol", str(self.symbol).strip().upper())
+        object.__setattr__(self, "timeframe", str(self.timeframe).strip())
+        object.__setattr__(self, "promoted_artifact_fingerprint", str(self.promoted_artifact_fingerprint).strip())
+        object.__setattr__(self, "governance_decision_fingerprint", str(self.governance_decision_fingerprint).strip())
+        object.__setattr__(self, "authorization_policy_version", str(self.authorization_policy_version).strip())
+        object.__setattr__(self, "authorized_at_utc", str(self.authorized_at_utc).strip())
+        object.__setattr__(self, "authorization_fingerprint", str(self.authorization_fingerprint).strip())
+
+    @classmethod
+    def from_authorization(
+        cls, authorization: ProductionRuntimeAuthorization
+    ) -> ProductionAuthorizationReceipt:
+        """Construct a receipt projection from an authoritative ProductionRuntimeAuthorization."""
+        if not isinstance(authorization, ProductionRuntimeAuthorization):
+            raise ProductionRuntimeAuthorizationError(
+                f"authorization must be a ProductionRuntimeAuthorization, got {type(authorization).__name__}"
+            )
+
+        return cls(
+            candidate_id=authorization.candidate_id,
+            strategy_name=authorization.strategy_name,
+            strategy_version=authorization.strategy_version,
+            symbol=authorization.symbol,
+            timeframe=authorization.timeframe,
+            promoted_artifact_fingerprint=authorization.promoted_artifact_fingerprint,
+            governance_decision_fingerprint=authorization.governance_decision_fingerprint,
+            campaign_selection_decision_fingerprint=authorization.campaign_selection_decision_fingerprint,
+            authorization_policy_version=authorization.authorization_policy_version,
+            authorized_at_utc=authorization.authorized_at_utc,
+            authorization_fingerprint=authorization.authorization_fingerprint,
+        )
+
+    def as_dict(self) -> dict[str, Any]:
+        return {
+            "candidate_id": self.candidate_id,
+            "strategy_name": self.strategy_name,
+            "strategy_version": self.strategy_version,
+            "symbol": self.symbol,
+            "timeframe": self.timeframe,
+            "promoted_artifact_fingerprint": self.promoted_artifact_fingerprint,
+            "governance_decision_fingerprint": self.governance_decision_fingerprint,
+            "campaign_selection_decision_fingerprint": self.campaign_selection_decision_fingerprint,
+            "authorization_policy_version": self.authorization_policy_version,
+            "authorized_at_utc": self.authorized_at_utc,
+            "authorization_fingerprint": self.authorization_fingerprint,
+        }
+
+
+@dataclass(frozen=True)
 class ProductionRuntimeAuthorization:
     """Explicit, immutable authorization artifact required for live runtime execution."""
 
@@ -1050,6 +1148,7 @@ class ProductionIntelligencePublication:
         signal: ProductionSignal,
         risk: ProductionRiskLevels,
         candidate: PromotedCandidateArtifact,
+        authorization: Optional[ProductionRuntimeAuthorization | ProductionAuthorizationReceipt] = None,
         confidence: Optional[float] = None,
         schema_version: str = "1.0",
     ) -> ProductionIntelligencePublication:
@@ -1098,6 +1197,24 @@ class ProductionIntelligencePublication:
         }
 
         conf = confidence if confidence is not None else decision.confidence
+
+        if authorization is not None:
+            receipt = (
+                authorization
+                if isinstance(authorization, ProductionAuthorizationReceipt)
+                else ProductionAuthorizationReceipt.from_authorization(authorization)
+            )
+            provenance.update({
+                "candidate_id": receipt.candidate_id,
+                "strategy_name": receipt.strategy_name,
+                "strategy_version": receipt.strategy_version,
+                "runtime_authorization_fingerprint": receipt.authorization_fingerprint,
+                "promoted_artifact_fingerprint": receipt.promoted_artifact_fingerprint,
+                "governance_decision_fingerprint": receipt.governance_decision_fingerprint,
+                "campaign_selection_decision_fingerprint": receipt.campaign_selection_decision_fingerprint,
+                "authorization_policy_version": receipt.authorization_policy_version,
+                "authorized_at_utc": receipt.authorized_at_utc,
+            })
 
         return cls(
             schema_version=schema_version,

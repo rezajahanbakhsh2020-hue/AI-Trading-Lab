@@ -120,6 +120,15 @@ def append_live_decision_to_store(
 
             id_match = (new_dec_id and new_dec_id == ext_dec_id) or (new_sig_id and new_sig_id == ext_sig_id)
             if id_match:
+                # Compare authorization fingerprint explicitly for conflict detection
+                new_auth_fp = new_record.get("runtime_authorization_fingerprint")
+                ext_auth_fp = existing.get("runtime_authorization_fingerprint")
+                if new_auth_fp is not None and ext_auth_fp is not None and new_auth_fp != ext_auth_fp:
+                    raise ValueError(
+                        f"Conflicting replay detected for decision/signal identity '{new_dec_id or new_sig_id}': "
+                        f"runtime_authorization_fingerprint mismatch ('{ext_auth_fp}' vs '{new_auth_fp}')."
+                    )
+
                 # Compare canonical content
                 # Exclude runtime volatile timestamps if present
                 keys_to_compare = [k for k in new_record if k not in ("recorded_at", "created_at")]
