@@ -6,6 +6,7 @@ Fail-closed on corrupted, missing, or conflicting research evidence objects.
 
 from __future__ import annotations
 
+from enum import Enum
 import json
 from datetime import datetime, timezone
 from pathlib import Path
@@ -372,6 +373,7 @@ def persist_promoted_candidate_binding(
     policy: Any | None = None,
     robustness_assessment: Any | None = None,
     governance_decision: Any | None = None,
+    campaign_selection_decision: Any | None = None,
 ) -> Path:
     """Persist an identity binding from a research candidate to already-saved evidence.
 
@@ -386,14 +388,21 @@ def persist_promoted_candidate_binding(
     if not isinstance(evidence, ResearchEvidence):
         raise TypeError("evidence must be a ResearchEvidence instance.")
 
+    candidate_id = _require_non_empty_str(candidate_id, "candidate_id")
+
     if governance_decision is not None:
         if not getattr(governance_decision, "qualified", False):
-            reasons = [r.value for r in getattr(governance_decision, "rejection_reasons", ())]
+            reasons = [r.value if isinstance(r, Enum) else str(r) for r in getattr(governance_decision, "rejection_reasons", ())]
             raise PromotionEligibilityError(
                 f"Cannot bind candidate '{candidate_id}': governance decision failed qualification "
                 f"({getattr(governance_decision, 'qualification_notes', '')}). Rejection reasons: {reasons}"
             )
         gov_fp = getattr(governance_decision, "decision_fingerprint", None)
+        if not isinstance(gov_fp, str) or not gov_fp.strip():
+            raise PromotionIntegrityError(
+                f"Cannot bind candidate '{candidate_id}': governance decision missing valid decision_fingerprint."
+            )
+        gov_fp = gov_fp.strip()
     else:
         if robustness_assessment is None:
             try:
@@ -410,14 +419,45 @@ def persist_promoted_candidate_binding(
             robustness_assessment=robustness_assessment,
         )
         if not qualification.qualified:
-            reasons = [r.value for r in qualification.rejection_reasons]
+            reasons = [r.value if isinstance(r, Enum) else str(r) for r in qualification.rejection_reasons]
             raise PromotionEligibilityError(
                 f"Cannot bind candidate '{candidate_id}': evidence '{evidence.evidence_id}' "
                 f"failed qualification ({qualification.qualification_notes}). Rejection reasons: {reasons}"
             )
         gov_fp = qualification.decision_fingerprint
 
-    candidate_id = _require_non_empty_str(candidate_id, "candidate_id")
+    campaign_sel_fp: str | None = None
+    if campaign_selection_decision is not None:
+        camp_id = getattr(campaign_selection_decision, "campaign_id", None)
+        if not isinstance(camp_id, str) or not camp_id.strip():
+            raise PromotionIntegrityError(
+                f"Cannot bind candidate '{candidate_id}': campaign_selection_decision.campaign_id must be a non-empty string."
+            )
+
+        dec_status = getattr(campaign_selection_decision, "decision_status", None)
+        if isinstance(dec_status, Enum):
+            dec_status = dec_status.value
+        dec_status_str = str(dec_status).strip() if dec_status is not None else ""
+        if dec_status_str != "SELECTED":
+            raise PromotionEligibilityError(
+                f"Cannot bind candidate '{candidate_id}': campaign selection decision status "
+                f"is '{dec_status_str}', expected 'SELECTED'."
+            )
+
+        selected_ids = getattr(campaign_selection_decision, "selected_candidate_ids", ())
+        if candidate_id not in selected_ids:
+            raise PromotionEligibilityError(
+                f"Cannot bind candidate '{candidate_id}': candidate is not contained in "
+                f"campaign selection decision selected_candidate_ids ({selected_ids})."
+            )
+
+        cs_fp = getattr(campaign_selection_decision, "decision_fingerprint", None)
+        if not isinstance(cs_fp, str) or not cs_fp.strip():
+            raise PromotionIntegrityError(
+                f"Cannot bind candidate '{candidate_id}': campaign_selection_decision missing valid decision_fingerprint."
+            )
+        campaign_sel_fp = cs_fp.strip()
+
     spec = evidence.spec
     binding = {
         "candidate_id": candidate_id,
@@ -428,6 +468,8 @@ def persist_promoted_candidate_binding(
         "symbol": spec.dataset_scope.symbol,
         "timeframe": spec.dataset_scope.timeframe,
         "parameters": spec.parameters,
+        "governance_decision_fingerprint": gov_fp,
+        "campaign_selection_decision_fingerprint": campaign_sel_fp,
     }
 
     binding_path = _candidate_binding_path(candidate_id, base_dir)
@@ -438,8 +480,7 @@ def persist_promoted_candidate_binding(
         if existing != binding:
             raise FileExistsError(
                 f"Cannot overwrite existing promoted candidate binding at '{binding_path}' "
-                f"with conflicting identity (existing evidence_id: "
-                f"'{existing.get('evidence_id')}', new evidence_id: '{evidence.evidence_id}')."
+                f"with conflicting identity or lineage."
             )
         return binding_path
 
@@ -452,6 +493,8 @@ def save_research_candidate(
     candidate_id: str,
     evidence: ResearchEvidence,
     base_dir: str | Path = DEFAULT_RESEARCH_DIR,
+    governance_decision: Any | None = None,
+    campaign_selection_decision: Any | None = None,
 ) -> Path:
     """Persist research evidence and the candidate identity that produced it."""
     save_research_experiment(evidence, base_dir=base_dir)
@@ -459,6 +502,8 @@ def save_research_candidate(
         candidate_id=candidate_id,
         evidence=evidence,
         base_dir=base_dir,
+        governance_decision=governance_decision,
+        campaign_selection_decision=campaign_selection_decision,
     )
 
 
@@ -547,6 +592,7 @@ def _reconstitute_promoted_candidate_from_binding(
 
     reconstitution_policy = policy if policy is not None else ProductionPromotionPolicy()
     gov_fp = binding.get("governance_decision_fingerprint")
+    campaign_sel_fp = binding.get("campaign_selection_decision_fingerprint")
     try:
         validate_promotion_eligibility(evidence, policy=reconstitution_policy, governance_decision_fingerprint=gov_fp)
         return PromotedCandidateArtifact.from_persisted_research(
@@ -557,6 +603,7 @@ def _reconstitute_promoted_candidate_from_binding(
             parameters=dict(parameters),
             policy=reconstitution_policy,
             governance_decision_fingerprint=gov_fp,
+            campaign_selection_decision_fingerprint=campaign_sel_fp,
         )
     except PromotionEligibilityError:
         raise
