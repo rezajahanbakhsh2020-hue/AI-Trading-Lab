@@ -4,7 +4,7 @@ import pytest
 
 import json
 import pandas as pd
-from unittest.mock import patch
+from unittest.mock import patch, MagicMock
 
 from src.evaluation.live_production_decision import (
     PromotedCandidateArtifact,
@@ -287,11 +287,14 @@ def test_runtime_persistence_contains_complete_lineage(tmp_path):
 
     store_p = tmp_path / "decision_history.json"
     snapshot_p = tmp_path / "latest_execution.json"
-    pub_p = tmp_path / "publication_history.json"
+
+    mock_publisher = MagicMock()
+    mock_publisher.publish.return_value = {"status": "PUBLISHED", "published": True, "http_code": 200, "event_id": "evt_p1"}
 
     runtime = LiveExecutionRuntime(
         symbol="XAUUSD",
         interval="5m",
+        publisher=mock_publisher,
         store_path=store_p,
         snapshot_path=snapshot_p,
         research_dir=tmp_path,
@@ -339,6 +342,7 @@ def test_runtime_persistence_contains_complete_lineage(tmp_path):
     assert auth_dict["authorization_fingerprint"] == res["runtime_authorization_fingerprint"]
 
     # Check publication_history.json
+    pub_p = store_p.parent / "publication_history.json"
     pub_hist = load_publication_history(pub_p)
     assert len(pub_hist) == 1
     pub = pub_hist[0]

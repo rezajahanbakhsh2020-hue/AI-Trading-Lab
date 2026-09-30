@@ -658,14 +658,29 @@ class LiveExecutionRuntime:
                 "quote_age_seconds": freshness["age_seconds"],
             }
 
-            publication = ProductionIntelligencePublication.from_artifacts(
-                decision=decision,
-                signal=signal,
-                risk=risk,
-                candidate=candidate,
-                authorization=receipt,
-                confidence=stability_score,
-            )
+            # ROUTE STALE PATH THROUGH CANONICAL PUBLICATION BOUNDARY
+            pub_result = None
+            if publish:
+                pub_store_path = self.store_path.parent / "publication_history.json"
+                published_cld, publication_obj, pub_result = publish_canonical_live_decision(
+                    canonical_decision=canonical_cld,
+                    publisher=self.publisher,
+                    candidate=candidate,
+                    path=pub_store_path,
+                    skip_if_no_trade=skip_if_no_trade,
+                    actor="live_execution_runtime",
+                    timestamp_utc=now_iso,
+                )
+                canonical_cld = published_cld
+            else:
+                publication_obj = ProductionIntelligencePublication.from_artifacts(
+                    decision=decision,
+                    signal=signal,
+                    risk=risk,
+                    candidate=candidate,
+                    authorization=receipt,
+                    confidence=stability_score,
+                )
 
             record = build_live_decision_record(display)
             record["decision_id"] = decision.decision_id
@@ -682,14 +697,7 @@ class LiveExecutionRuntime:
             record["strategy_name"] = receipt.strategy_name
             record["strategy_version"] = receipt.strategy_version
 
-            contract_payload = publication.to_contract_v1_payload()
-
-            publish_result = None
-            if publish:
-                publish_result = self.publisher.publish(
-                    publication,
-                    skip_if_no_trade=skip_if_no_trade,
-                )
+            contract_payload = publication_obj.to_contract_v1_payload()
 
             execution_result = {
                 "blocked": False,
@@ -709,10 +717,13 @@ class LiveExecutionRuntime:
                 "promoted_artifact_fingerprint": receipt.promoted_artifact_fingerprint,
                 "governance_decision_fingerprint": receipt.governance_decision_fingerprint,
                 "campaign_selection_decision_fingerprint": receipt.campaign_selection_decision_fingerprint,
+                "current_lifecycle_state": canonical_cld.current_state.value,
+                "delivery_status": pub_result.get("delivery_status") if pub_result else None,
+                "delivery_receipt_fingerprint": pub_result.get("delivery_receipt_fingerprint") if pub_result else None,
                 "record": record,
-                "publication": publication.as_dict(),
+                "publication": publication_obj.as_dict(),
                 "contract_payload": contract_payload,
-                "publish_result": publish_result,
+                "publish_result": pub_result,
             }
 
             if persist:
@@ -769,6 +780,8 @@ class LiveExecutionRuntime:
 
         contract_payload = publication.to_contract_v1_payload()
 
+        pub_res = runtime_res.decision.get("publish_result")
+
         execution_result = {
             "blocked": False,
             "symbol": self.symbol,
@@ -787,10 +800,13 @@ class LiveExecutionRuntime:
             "promoted_artifact_fingerprint": receipt.promoted_artifact_fingerprint,
             "governance_decision_fingerprint": receipt.governance_decision_fingerprint,
             "campaign_selection_decision_fingerprint": receipt.campaign_selection_decision_fingerprint,
+            "current_lifecycle_state": canonical_cld.current_state.value,
+            "delivery_status": pub_res.get("delivery_status") if pub_res else None,
+            "delivery_receipt_fingerprint": pub_res.get("delivery_receipt_fingerprint") if pub_res else None,
             "record": record,
             "publication": publication.as_dict(),
             "contract_payload": contract_payload,
-            "publish_result": runtime_res.decision.get("publish_result"),
+            "publish_result": pub_res,
         }
 
         if persist:
