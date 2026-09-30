@@ -6,16 +6,15 @@ import datetime
 import json
 import logging
 import sys
-from pathlib import Path
 from dataclasses import dataclass
-from typing import Any, Dict, Optional
+from pathlib import Path
+from typing import Any
 
 import pandas as pd
 
 from app_live import (
     DEFAULT_INTERVAL,
     DEFAULT_LIMIT,
-    fetch_xauusd_ohlc,
 )
 from src.data.provider import (
     BiQuoteProvider,
@@ -32,7 +31,6 @@ from src.evaluation.live_decision_lifecycle import (
 )
 from src.evaluation.live_decision_record import build_live_decision_record
 from src.evaluation.live_decision_store import (
-    append_live_decision_to_store,
     persist_canonical_live_decision,
 )
 from src.evaluation.live_production_decision import (
@@ -40,20 +38,20 @@ from src.evaluation.live_production_decision import (
     ProductionAuthorizationReceipt,
     ProductionDecision,
     ProductionIntelligencePublication,
-    ProductionRuntimeAuthorization,
     ProductionRuntimeAuthorizationError,
     ProductionSignal,
     PromotedCandidateArtifact,
     authorize_production_runtime,
     calculate_production_risk_levels,
-    evaluate_production_decision,
     validate_production_scope,
 )
 from src.evaluation.live_publication_store import (
-    append_publication_record,
     publish_canonical_live_decision,
 )
 from src.evaluation.live_runtime import build_live_runtime
+from src.evaluation.live_runtime_context import (
+    create_authorized_runtime_context,
+)
 from src.evaluation.production_live_bridge import load_production_selection
 from src.evaluation.research_store import (
     DEFAULT_RESEARCH_DIR,
@@ -78,9 +76,9 @@ class ProductionRuntimeConfig:
 
     symbol: str
     timeframe: str
-    candidate_id: Optional[str] = None
-    strategy_id: Optional[str] = None
-    strategy_version: Optional[str] = None
+    candidate_id: str | None = None
+    strategy_id: str | None = None
+    strategy_version: str | None = None
     research_dir: Path = DEFAULT_RESEARCH_DIR
 
     def __post_init__(self) -> None:
@@ -107,9 +105,9 @@ class ProductionRuntimeConfig:
         *,
         symbol: str,
         timeframe: str,
-        selection: Optional[Dict[str, Any]] = None,
+        selection: dict[str, Any] | None = None,
         research_dir: Path | str = DEFAULT_RESEARCH_DIR,
-    ) -> "ProductionRuntimeConfig":
+    ) -> ProductionRuntimeConfig:
         selection = selection or {}
         return cls(
             symbol=symbol,
@@ -127,10 +125,10 @@ class ProductionBlocked:
 
     reason: str
     detail: str
-    candidate_id: Optional[str] = None
-    strategy_id: Optional[str] = None
-    symbol: Optional[str] = None
-    timeframe: Optional[str] = None
+    candidate_id: str | None = None
+    strategy_id: str | None = None
+    symbol: str | None = None
+    timeframe: str | None = None
 
     def as_dict(self) -> dict[str, Any]:
         return {
@@ -145,7 +143,7 @@ class ProductionBlocked:
 
 
 # Provider capability registry mapping canonical instrument symbols to live market data adapters/providers
-LIVE_DATA_PROVIDERS: Dict[str, Any] = {
+LIVE_DATA_PROVIDERS: dict[str, Any] = {
     "XAUUSD": BiQuoteProvider(supported_symbols=("XAUUSD",)),
 }
 
@@ -315,8 +313,8 @@ def resolve_authoritative_promoted_candidate(
 def validate_market_data_freshness(
     data: pd.DataFrame,
     max_age_seconds: float = 300.0,
-    reference_now: Optional[datetime.datetime] = None,
-) -> Dict[str, Any]:
+    reference_now: datetime.datetime | None = None,
+) -> dict[str, Any]:
     """Validate event-time provenance and freshness of live market data."""
     if reference_now is None:
         now_dt = datetime.datetime.now(datetime.timezone.utc)
@@ -412,12 +410,12 @@ class LiveExecutionRuntime:
         symbol: str = "XAUUSD",
         interval: str = DEFAULT_INTERVAL,
         limit: int = DEFAULT_LIMIT,
-        publisher: Optional[Project2Publisher] = None,
+        publisher: Project2Publisher | None = None,
         store_path: Path | str = DEFAULT_STORE_PATH,
         snapshot_path: Path | str = DEFAULT_SNAPSHOT_PATH,
         max_age_seconds: float = 300.0,
         research_dir: Path | str = DEFAULT_RESEARCH_DIR,
-        production_config: Optional[ProductionRuntimeConfig] = None,
+        production_config: ProductionRuntimeConfig | None = None,
     ) -> None:
         self.symbol = symbol.upper()
         self.interval = interval
@@ -437,7 +435,7 @@ class LiveExecutionRuntime:
         publish: bool,
         skip_if_no_trade: bool,
         reference_now: datetime.datetime,
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         """Return an explicit production-blocked result without manufacturing lineage."""
         now_iso = reference_now.isoformat()
         execution_result = {
@@ -478,9 +476,9 @@ class LiveExecutionRuntime:
         publish: bool = True,
         skip_if_no_trade: bool = False,
         persist: bool = True,
-        reference_now: Optional[datetime.datetime] = None,
-        max_age_seconds: Optional[float] = None,
-    ) -> Dict[str, Any]:
+        reference_now: datetime.datetime | None = None,
+        max_age_seconds: float | None = None,
+    ) -> dict[str, Any]:
         """Execute one full cycle: resolve persisted promotion -> market data -> decision -> persist -> publish."""
         max_age = max_age_seconds if max_age_seconds is not None else self.max_age_seconds
         ref_now = reference_now if reference_now is not None else datetime.datetime.now(datetime.timezone.utc)
@@ -489,7 +487,7 @@ class LiveExecutionRuntime:
 
         if self.production_config is not None:
             config = self.production_config
-            selection: Dict[str, Any] = {
+            selection: dict[str, Any] = {
                 "candidate_id": config.candidate_id,
                 "strategy_id": config.strategy_id,
                 "stable_strategy": config.strategy_id,
@@ -530,6 +528,11 @@ class LiveExecutionRuntime:
             receipt = ProductionAuthorizationReceipt.from_authorization(
                 authorization
             )
+            context = create_authorized_runtime_context(
+                candidate=resolved,
+                authorization=authorization,
+                authorization_receipt=receipt,
+            )
         except ProductionRuntimeAuthorizationError as exc:
             blocked = ProductionBlocked(
                 reason="ProductionRuntimeAuthorizationError",
@@ -547,7 +550,8 @@ class LiveExecutionRuntime:
                 reference_now=ref_now,
             )
 
-        candidate = resolved
+        candidate = context.candidate
+        receipt = context.authorization_receipt
         stable_strategy = candidate.strategy_name
         raw_score = selection.get("stability_score")
         if raw_score is None:
@@ -696,6 +700,7 @@ class LiveExecutionRuntime:
             record["candidate_id"] = receipt.candidate_id
             record["strategy_name"] = receipt.strategy_name
             record["strategy_version"] = receipt.strategy_version
+            record["context_fingerprint"] = context.context_fingerprint
 
             contract_payload = publication_obj.to_contract_v1_payload()
 
@@ -717,6 +722,7 @@ class LiveExecutionRuntime:
                 "promoted_artifact_fingerprint": receipt.promoted_artifact_fingerprint,
                 "governance_decision_fingerprint": receipt.governance_decision_fingerprint,
                 "campaign_selection_decision_fingerprint": receipt.campaign_selection_decision_fingerprint,
+                "context_fingerprint": context.context_fingerprint,
                 "current_lifecycle_state": canonical_cld.current_state.value,
                 "delivery_status": pub_result.get("delivery_status") if pub_result else None,
                 "delivery_receipt_fingerprint": pub_result.get("delivery_receipt_fingerprint") if pub_result else None,
@@ -735,7 +741,7 @@ class LiveExecutionRuntime:
 
             return execution_result
 
-        # Fresh market data: execute build_live_runtime
+        # Fresh market data: execute build_live_runtime passing the authorized_context
         runtime_res = build_live_runtime(
             data,
             stable_strategy=stable_strategy,
@@ -749,6 +755,7 @@ class LiveExecutionRuntime:
             publish=publish,
             skip_if_no_trade=skip_if_no_trade,
             persist=persist,
+            authorized_context=context,
         )
 
         canonical_cld = runtime_res.canonical_decision
@@ -777,6 +784,7 @@ class LiveExecutionRuntime:
         record["candidate_id"] = receipt.candidate_id
         record["strategy_name"] = receipt.strategy_name
         record["strategy_version"] = receipt.strategy_version
+        record["context_fingerprint"] = context.context_fingerprint
 
         contract_payload = publication.to_contract_v1_payload()
 
@@ -800,6 +808,7 @@ class LiveExecutionRuntime:
             "promoted_artifact_fingerprint": receipt.promoted_artifact_fingerprint,
             "governance_decision_fingerprint": receipt.governance_decision_fingerprint,
             "campaign_selection_decision_fingerprint": receipt.campaign_selection_decision_fingerprint,
+            "context_fingerprint": context.context_fingerprint,
             "current_lifecycle_state": canonical_cld.current_state.value,
             "delivery_status": pub_res.get("delivery_status") if pub_res else None,
             "delivery_receipt_fingerprint": pub_res.get("delivery_receipt_fingerprint") if pub_res else None,
