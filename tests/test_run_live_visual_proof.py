@@ -1,13 +1,15 @@
 from pathlib import Path
-from unittest.mock import patch
 
 import pandas as pd
 import pytest
 
-from run_live_visual_proof import (
-    OUTPUT_PATH,
-    run_live_visual_proof,
+import run_live_visual_proof
+from src.evaluation.live_production_decision import (
+    PromotedCandidateArtifact,
+    ProductionRuntimeAuthorizationError,
+    PromotionStatus,
 )
+from tests.test_production_decision_integrity import make_promoted_evidence
 
 
 def _make_mock_ohlc() -> pd.DataFrame:
@@ -38,20 +40,46 @@ def _make_mock_quote() -> dict:
     }
 
 
-def _safe_run_live_visual_proof() -> dict:
-    try:
-        return run_live_visual_proof()
-    except Exception as exc:
-        err_msg = str(exc).lower()
-        if "unable to reach biquote" in err_msg or "timed out" in err_msg or "http error" in err_msg or "biquote" in err_msg:
-            with patch("run_live_visual_proof.fetch_xauusd_ohlc", side_effect=lambda **kwargs: _make_mock_ohlc()), \
-                 patch("run_live_visual_proof.fetch_xauusd_quote", side_effect=lambda **kwargs: _make_mock_quote()):
-                return run_live_visual_proof()
-        raise
+def test_live_visual_proof_creates_real_html(monkeypatch, tmp_path):
+    ev = make_promoted_evidence(PromotionStatus.PROMOTABLE)
+    promoted = PromotedCandidateArtifact(
+        candidate_id="cand_vp_01",
+        strategy_name="momentum",
+        strategy_version="1.0",
+        evidence=ev,
+        symbol="XAUUSD",
+        timeframe="5m",
+        governance_decision_fingerprint="gov_fp_vp_01",
+    )
 
+    monkeypatch.setattr(
+        "run_live_visual_proof.resolve_authoritative_promoted_candidate",
+        lambda config: promoted,
+    )
+    monkeypatch.setattr(
+        "run_live_visual_proof.fetch_xauusd_ohlc",
+        lambda **kwargs: _make_mock_ohlc(),
+    )
+    monkeypatch.setattr(
+        "run_live_visual_proof.fetch_xauusd_quote",
+        lambda **kwargs: _make_mock_quote(),
+    )
+    monkeypatch.setattr(
+        "run_live_visual_proof._load_live_production_selection",
+        lambda: {
+            "candidate_id": "cand_vp_01",
+            "stable_strategy": "momentum",
+            "stability_score": 0.85,
+            "source_path": "results/production/latest.json",
+        },
+    )
+    test_out = tmp_path / "live_proof_visual.html"
+    monkeypatch.setattr(
+        "run_live_visual_proof.OUTPUT_PATH",
+        test_out,
+    )
 
-def test_live_visual_proof_creates_real_html():
-    result = _safe_run_live_visual_proof()
+    result = run_live_visual_proof.run_live_visual_proof()
 
     assert result["symbol"] == "XAUUSD"
     assert result["interval"] == "5m"
@@ -72,14 +100,17 @@ def test_live_visual_proof_creates_real_html():
         "UP",
         "DOWN",
         "INSUFFICIENT DATA",
+        "NEUTRAL",
     }
 
-    assert result["stable_strategy"]
+    assert result["stable_strategy"] == "momentum"
     assert 0.0 <= result["stability_score"] <= 1.0
 
     assert result["candle_count"] > 0
     assert result["timestamp"]
     assert result["market_state"]
+    assert result["authorization_fingerprint"] is not None
+    assert result["governance_decision_fingerprint"] == "gov_fp_vp_01"
 
     assert isinstance(
         result["quote_stale"],
@@ -91,7 +122,7 @@ def test_live_visual_proof_creates_real_html():
         bool,
     )
 
-    assert result["production_source"]
+    assert result["production_source"] == "results/production/latest.json"
 
     assert result["human_text"]
 
@@ -104,12 +135,12 @@ def test_live_visual_proof_creates_real_html():
 
 
 def test_live_visual_proof_html_contains_visual_elements():
-    if not OUTPUT_PATH.exists():
+    if not run_live_visual_proof.OUTPUT_PATH.exists():
         pytest.skip(
             "Live visual proof HTML does not exist yet."
         )
 
-    html = OUTPUT_PATH.read_text(
+    html = run_live_visual_proof.OUTPUT_PATH.read_text(
         encoding="utf-8"
     )
 
@@ -118,10 +149,67 @@ def test_live_visual_proof_html_contains_visual_elements():
     assert "Fast MA" in html or "fast ma" in html.lower() or "close" in html.lower()
 
 
-def test_live_visual_proof_uses_production_selection():
-    result = _safe_run_live_visual_proof()
+def test_live_visual_proof_uses_production_selection(monkeypatch, tmp_path):
+    ev = make_promoted_evidence(PromotionStatus.PROMOTABLE)
+    promoted = PromotedCandidateArtifact(
+        candidate_id="cand_vp_02",
+        strategy_name="momentum",
+        strategy_version="1.0",
+        evidence=ev,
+        symbol="XAUUSD",
+        timeframe="5m",
+        governance_decision_fingerprint="gov_fp_vp_02",
+    )
 
-    assert result["stable_strategy"]
-    assert result["production_source"]
-    assert result["stability_score"] >= 0.0
-    assert result["stability_score"] <= 1.0
+    monkeypatch.setattr(
+        "run_live_visual_proof.resolve_authoritative_promoted_candidate",
+        lambda config: promoted,
+    )
+    monkeypatch.setattr(
+        "run_live_visual_proof.fetch_xauusd_ohlc",
+        lambda **kwargs: _make_mock_ohlc(),
+    )
+    monkeypatch.setattr(
+        "run_live_visual_proof.fetch_xauusd_quote",
+        lambda **kwargs: _make_mock_quote(),
+    )
+    monkeypatch.setattr(
+        "run_live_visual_proof._load_live_production_selection",
+        lambda: {
+            "candidate_id": "cand_vp_02",
+            "stable_strategy": "momentum",
+            "stability_score": 0.85,
+            "source_path": "results/production/latest.json",
+        },
+    )
+    test_out = tmp_path / "live_proof_visual.html"
+    monkeypatch.setattr(
+        "run_live_visual_proof.OUTPUT_PATH",
+        test_out,
+    )
+
+    result = run_live_visual_proof.run_live_visual_proof()
+
+    assert result["stable_strategy"] == "momentum"
+    assert result["production_source"] == "results/production/latest.json"
+    assert result["stability_score"] == 0.85
+
+
+def test_live_visual_proof_fails_when_production_selection_missing():
+    with pytest.raises(FileNotFoundError):
+        run_live_visual_proof.run_live_visual_proof()
+
+
+def test_live_visual_proof_fails_when_unauthorized(monkeypatch):
+    monkeypatch.setattr(
+        "run_live_visual_proof._load_live_production_selection",
+        lambda: {
+            "candidate_id": "cand_unauth",
+            "stable_strategy": "momentum",
+            "stability_score": 0.85,
+            "source_path": "results/production/latest.json",
+        },
+    )
+
+    with pytest.raises(ProductionRuntimeAuthorizationError):
+        run_live_visual_proof.run_live_visual_proof()
