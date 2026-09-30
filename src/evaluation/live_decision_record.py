@@ -24,6 +24,18 @@ DECISION_RECORD_FIELDS = (
     "candle_count",
 )
 
+AUTHORIZATION_RECORD_FIELDS = (
+    "runtime_authorization_fingerprint",
+    "authorization_policy_version",
+    "authorized_at_utc",
+    "promoted_artifact_fingerprint",
+    "governance_decision_fingerprint",
+    "campaign_selection_decision_fingerprint",
+    "candidate_id",
+    "strategy_name",
+    "strategy_version",
+)
+
 
 def build_live_decision_record(
     snapshot: Mapping[str, Any],
@@ -48,7 +60,7 @@ def build_live_decision_record(
     if signal_label is None and isinstance(signal, str):
         signal_label = signal
 
-    return {
+    res = {
         "timestamp": timestamp,
         "symbol": snapshot.get("symbol"),
         "interval": snapshot.get("interval"),
@@ -70,6 +82,13 @@ def build_live_decision_record(
         "candle_count": snapshot.get("candle_count"),
     }
 
+    # Include authorization fields if present in snapshot
+    for auth_field in AUTHORIZATION_RECORD_FIELDS:
+        if auth_field in snapshot:
+            res[auth_field] = snapshot.get(auth_field)
+
+    return res
+
 
 def validate_live_decision_record(
     record: Mapping[str, Any],
@@ -78,7 +97,8 @@ def validate_live_decision_record(
     Validate the structural integrity of a live decision record.
 
     Required fields must exist and core identity fields must not be empty.
-    Trading values are not recalculated or inferred.
+    When authorization lineage is present, all mandatory authorization fields
+    must be non-empty strings without missing/fabricated values.
     """
     if not isinstance(record, Mapping):
         raise TypeError("record must be a mapping")
@@ -99,6 +119,39 @@ def validate_live_decision_record(
         if value is None or value == "":
             raise ValueError(
                 f"record field '{field}' must not be empty"
+            )
+
+    # If runtime authorization fingerprint is present or any authorization field is set,
+    # validate that all mandatory authorization fields are present and non-empty.
+    has_auth = any(f in record for f in AUTHORIZATION_RECORD_FIELDS)
+    if has_auth:
+        mandatory_auth_fields = (
+            "runtime_authorization_fingerprint",
+            "authorization_policy_version",
+            "authorized_at_utc",
+            "promoted_artifact_fingerprint",
+            "governance_decision_fingerprint",
+            "candidate_id",
+            "strategy_name",
+            "strategy_version",
+        )
+        for auth_field in mandatory_auth_fields:
+            if auth_field not in record:
+                raise ValueError(
+                    f"Production live decision record missing mandatory authorization field '{auth_field}'."
+                )
+            val = record.get(auth_field)
+            if val is None or not str(val).strip():
+                raise ValueError(
+                    f"Production live decision record field '{auth_field}' must be a non-empty string."
+                )
+
+        # campaign_selection_decision_fingerprint may be None only if legitimately absent,
+        # but if provided, must be a non-empty string.
+        csdf = record.get("campaign_selection_decision_fingerprint")
+        if csdf is not None and not str(csdf).strip():
+            raise ValueError(
+                "Production live decision record field 'campaign_selection_decision_fingerprint' cannot be empty if provided."
             )
 
     return True

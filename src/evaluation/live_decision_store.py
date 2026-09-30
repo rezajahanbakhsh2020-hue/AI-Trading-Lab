@@ -120,6 +120,28 @@ def append_live_decision_to_store(
 
             id_match = (new_dec_id and new_dec_id == ext_dec_id) or (new_sig_id and new_sig_id == ext_sig_id)
             if id_match:
+                # Compare authorization fingerprint explicitly for conflict detection
+                new_raw_auth = new_record.get("runtime_authorization_fingerprint")
+                ext_raw_auth = existing.get("runtime_authorization_fingerprint")
+
+                new_auth_fp = str(new_raw_auth).strip() if new_raw_auth is not None and str(new_raw_auth).strip() != "" else None
+                ext_auth_fp = str(ext_raw_auth).strip() if ext_raw_auth is not None and str(ext_raw_auth).strip() != "" else None
+
+                existing_has_auth = ext_auth_fp is not None
+                new_has_auth = new_auth_fp is not None
+
+                if existing_has_auth != new_has_auth:
+                    raise ValueError(
+                        f"Conflicting replay detected for decision/signal identity '{new_dec_id or new_sig_id}': "
+                        "authorization lineage presence mismatch."
+                    )
+
+                if existing_has_auth and new_has_auth and ext_auth_fp != new_auth_fp:
+                    raise ValueError(
+                        f"Conflicting replay detected for decision/signal identity '{new_dec_id or new_sig_id}': "
+                        f"runtime_authorization_fingerprint mismatch ('{ext_auth_fp}' vs '{new_auth_fp}')."
+                    )
+
                 # Compare canonical content
                 # Exclude runtime volatile timestamps if present
                 keys_to_compare = [k for k in new_record if k not in ("recorded_at", "created_at")]
