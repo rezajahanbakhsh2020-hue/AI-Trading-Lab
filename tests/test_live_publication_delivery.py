@@ -523,7 +523,8 @@ def test_lifecycle_truthfulness_publisher_call_does_not_equal_published(tmp_path
 
 # M. No alternate publication path: Monkeypatch publisher and verify fresh and stale execution paths reach same boundary
 def test_fresh_and_stale_paths_both_reach_same_canonical_publication_function(tmp_path):
-    candidate, auth_receipt = create_test_candidate_and_receipt(tmp_path)
+    candidate_fresh, _ = create_test_candidate_and_receipt(tmp_path, candidate_id="cand_fresh")
+    candidate_stale, _ = create_test_candidate_and_receipt(tmp_path, candidate_id="cand_stale")
 
     timestamps = pd.date_range("2025-01-01 10:00", periods=100, freq="5min", tz="UTC")
     prices = [2000.0 + (i * 2.0) for i in range(100)]
@@ -539,34 +540,51 @@ def test_fresh_and_stale_paths_both_reach_same_canonical_publication_function(tm
     mock_publisher = MagicMock()
     mock_publisher.publish.return_value = {"status": "PUBLISHED", "published": True, "http_code": 200, "event_id": "evt"}
 
-    config = ProductionRuntimeConfig(
+    config_fresh = ProductionRuntimeConfig(
         symbol="XAUUSD",
         timeframe="5m",
-        candidate_id=candidate.candidate_id,
+        candidate_id=candidate_fresh.candidate_id,
+        strategy_id="momentum",
+        research_dir=tmp_path,
+    )
+    config_stale = ProductionRuntimeConfig(
+        symbol="XAUUSD",
+        timeframe="5m",
+        candidate_id=candidate_stale.candidate_id,
         strategy_id="momentum",
         research_dir=tmp_path,
     )
 
-    runtime = LiveExecutionRuntime(
+    # 1. Fresh path
+    runtime_fresh = LiveExecutionRuntime(
         symbol="XAUUSD",
         interval="5m",
         publisher=mock_publisher,
-        store_path=tmp_path / "live" / "store.json",
-        snapshot_path=tmp_path / "live" / "snap.json",
+        store_path=tmp_path / "live" / "store_fresh.json",
+        snapshot_path=tmp_path / "live" / "snap_fresh.json",
         research_dir=tmp_path,
-        production_config=config,
+        production_config=config_fresh,
+    )
+
+    # 2. Stale path
+    runtime_stale = LiveExecutionRuntime(
+        symbol="XAUUSD",
+        interval="5m",
+        publisher=mock_publisher,
+        store_path=tmp_path / "live" / "store_stale.json",
+        snapshot_path=tmp_path / "live" / "snap_stale.json",
+        research_dir=tmp_path,
+        production_config=config_stale,
     )
 
     with patch("src.evaluation.live_execution_runtime.load_live_market_data", return_value=df):
         with patch("src.evaluation.live_runtime.publish_canonical_live_decision") as mock_runtime_pub:
             mock_runtime_pub.side_effect = publish_canonical_live_decision
 
-            # 1. Fresh path
             ref_fresh = timestamps[-1].to_pydatetime()
-            runtime.run_once(publish=True, reference_now=ref_fresh)
+            runtime_fresh.run_once(publish=True, reference_now=ref_fresh)
             assert mock_runtime_pub.call_count == 1
 
-            # 2. Stale path
-            ref_stale = timestamps[-1].to_pydatetime() + pd.Timedelta(seconds=1000)
-            runtime.run_once(publish=True, reference_now=ref_stale)
+            ref_stale = timestamps[-1].to_pydatetime() + pd.Timedelta(seconds=1200)
+            runtime_stale.run_once(publish=True, reference_now=ref_stale)
             assert mock_runtime_pub.call_count == 2

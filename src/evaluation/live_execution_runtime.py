@@ -548,7 +548,7 @@ class LiveExecutionRuntime:
         raw_score = selection.get("stability_score")
         if raw_score is None:
             raw_score = selection.get("confidence")
-        stability_score = float(raw_score) if raw_score is not None else 1.0
+        stability_score = float(raw_score) if raw_score is not None else None
 
         # 3. Fetch market data
         try:

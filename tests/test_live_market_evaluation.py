@@ -80,21 +80,97 @@ def test_stale_market_evaluation_creation(tmp_path):
     assert evaluation.authorized_runtime_context_fingerprint == context.context_fingerprint
 
 
-def test_fingerprint_determinism_and_sensitivity(tmp_path):
-    """I. Fingerprint determinism and material input sensitivity."""
+def test_per_field_fingerprint_sensitivity(tmp_path):
+    """Prove that changing each material input field independently changes evaluation_fingerprint."""
     context, ref_now = build_test_context(tmp_path)
     df = make_buy_market_data()
     df_ts = pd.to_datetime(df["openTime"], utc=True).iloc[-1].to_pydatetime()
 
-    eval1 = create_live_market_evaluation(df, context, reference_now=df_ts)
-    eval2 = create_live_market_evaluation(df, context, reference_now=df_ts)
+    base_eval = create_live_market_evaluation(df, context, reference_now=df_ts)
+    base_fp = base_eval.evaluation_fingerprint
 
-    # Same semantic inputs -> same fingerprint
-    assert eval1.evaluation_fingerprint == eval2.evaluation_fingerprint
+    base_kwargs = {
+        "symbol": base_eval.symbol,
+        "timeframe": base_eval.timeframe,
+        "candle_timestamp_utc": base_eval.candle_timestamp_utc,
+        "freshness_status": base_eval.freshness_status,
+        "freshness_reason": base_eval.freshness_reason,
+        "age_seconds": base_eval.age_seconds,
+        "reference_timestamp_utc": base_eval.reference_timestamp_utc,
+        "authorized_runtime_context_fingerprint": base_eval.authorized_runtime_context_fingerprint,
+        "promoted_artifact_fingerprint": base_eval.promoted_artifact_fingerprint,
+        "governance_decision_fingerprint": base_eval.governance_decision_fingerprint,
+        "campaign_selection_decision_fingerprint": base_eval.campaign_selection_decision_fingerprint,
+        "authorization_fingerprint": base_eval.authorization_fingerprint,
+        "authorization_policy_version": base_eval.authorization_policy_version,
+        "candidate_id": base_eval.candidate_id,
+        "strategy_id": base_eval.strategy_id,
+        "strategy_version": base_eval.strategy_version,
+    }
 
-    # Material change -> different fingerprint
-    eval_stale = create_live_market_evaluation(df, context, reference_now=df_ts + datetime.timedelta(seconds=1000))
-    assert eval_stale.evaluation_fingerprint != eval1.evaluation_fingerprint
+    # 1. symbol
+    k1 = dict(base_kwargs, symbol="EURUSD")
+    assert LiveMarketEvaluation(**k1).evaluation_fingerprint != base_fp
+
+    # 2. timeframe
+    k2 = dict(base_kwargs, timeframe="1h")
+    assert LiveMarketEvaluation(**k2).evaluation_fingerprint != base_fp
+
+    # 3. candle_timestamp_utc
+    k3 = dict(base_kwargs, candle_timestamp_utc="2025-01-01T11:59:00+00:00")
+    assert LiveMarketEvaluation(**k3).evaluation_fingerprint != base_fp
+
+    # 4. freshness_status & reason
+    k4 = dict(base_kwargs, freshness_status=False, freshness_reason="stale_market_data", candle_timestamp_utc=None)
+    assert LiveMarketEvaluation(**k4).evaluation_fingerprint != base_fp
+
+    # 5. freshness_reason
+    k5 = dict(base_kwargs, freshness_reason="custom_reason")
+    assert LiveMarketEvaluation(**k5).evaluation_fingerprint != base_fp
+
+    # 6. age_seconds
+    k6 = dict(base_kwargs, age_seconds=99.0)
+    assert LiveMarketEvaluation(**k6).evaluation_fingerprint != base_fp
+
+    # 7. reference_timestamp_utc
+    k7 = dict(base_kwargs, reference_timestamp_utc="2025-01-01T12:05:00+00:00")
+    assert LiveMarketEvaluation(**k7).evaluation_fingerprint != base_fp
+
+    # 8. authorized_runtime_context_fingerprint
+    k8 = dict(base_kwargs, authorized_runtime_context_fingerprint="ctx_fp_diff")
+    assert LiveMarketEvaluation(**k8).evaluation_fingerprint != base_fp
+
+    # 9. promoted_artifact_fingerprint
+    k9 = dict(base_kwargs, promoted_artifact_fingerprint="art_fp_diff")
+    assert LiveMarketEvaluation(**k9).evaluation_fingerprint != base_fp
+
+    # 10. governance_decision_fingerprint
+    k10 = dict(base_kwargs, governance_decision_fingerprint="gov_fp_diff")
+    assert LiveMarketEvaluation(**k10).evaluation_fingerprint != base_fp
+
+    # 11. campaign_selection_decision_fingerprint
+    k11 = dict(base_kwargs, campaign_selection_decision_fingerprint="camp_fp_diff")
+    assert LiveMarketEvaluation(**k11).evaluation_fingerprint != base_fp
+
+    # 12. authorization_fingerprint
+    k12 = dict(base_kwargs, authorization_fingerprint="auth_fp_diff")
+    assert LiveMarketEvaluation(**k12).evaluation_fingerprint != base_fp
+
+    # 13. authorization_policy_version
+    k13 = dict(base_kwargs, authorization_policy_version="v2.0")
+    assert LiveMarketEvaluation(**k13).evaluation_fingerprint != base_fp
+
+    # 14. candidate_id
+    k14 = dict(base_kwargs, candidate_id="cand_diff")
+    assert LiveMarketEvaluation(**k14).evaluation_fingerprint != base_fp
+
+    # 15. strategy_id
+    k15 = dict(base_kwargs, strategy_id="strat_diff")
+    assert LiveMarketEvaluation(**k15).evaluation_fingerprint != base_fp
+
+    # 16. strategy_version
+    k16 = dict(base_kwargs, strategy_version="2.0")
+    assert LiveMarketEvaluation(**k16).evaluation_fingerprint != base_fp
 
 
 def test_context_evaluation_mismatch_fails_closed(tmp_path):
@@ -169,3 +245,50 @@ def test_context_evaluation_mismatch_fails_closed(tmp_path):
     )
     with pytest.raises(MarketEvaluationValidationError, match="authorized_runtime_context_fingerprint"):
         validate_market_evaluation_context_lineage(bad_eval, context)
+
+
+def test_invalid_timestamps_and_age_seconds_fail_closed(tmp_path):
+    """Validation checks for unparseable timestamp or non-finite float age."""
+    context, ref_now = build_test_context(tmp_path)
+
+    # Invalid reference timestamp
+    with pytest.raises(MarketEvaluationValidationError, match="reference_timestamp_utc"):
+        LiveMarketEvaluation(
+            symbol="XAUUSD",
+            timeframe="5m",
+            candle_timestamp_utc="2025-01-01T12:00:00Z",
+            freshness_status=True,
+            freshness_reason="fresh",
+            age_seconds=10.0,
+            reference_timestamp_utc="not-a-timestamp",
+            authorized_runtime_context_fingerprint=context.context_fingerprint,
+            promoted_artifact_fingerprint=context.promoted_artifact_fingerprint,
+            governance_decision_fingerprint=context.governance_decision_fingerprint,
+            campaign_selection_decision_fingerprint=context.campaign_selection_decision_fingerprint,
+            authorization_fingerprint=context.authorization_fingerprint,
+            authorization_policy_version=context.authorization_policy_version,
+            candidate_id=context.candidate_id,
+            strategy_id=context.strategy_id,
+            strategy_version=context.strategy_version,
+        )
+
+    # Infinite age_seconds
+    with pytest.raises(MarketEvaluationValidationError, match="age_seconds"):
+        LiveMarketEvaluation(
+            symbol="XAUUSD",
+            timeframe="5m",
+            candle_timestamp_utc="2025-01-01T12:00:00Z",
+            freshness_status=True,
+            freshness_reason="fresh",
+            age_seconds=float("inf"),
+            reference_timestamp_utc="2025-01-01T12:00:10+00:00",
+            authorized_runtime_context_fingerprint=context.context_fingerprint,
+            promoted_artifact_fingerprint=context.promoted_artifact_fingerprint,
+            governance_decision_fingerprint=context.governance_decision_fingerprint,
+            campaign_selection_decision_fingerprint=context.campaign_selection_decision_fingerprint,
+            authorization_fingerprint=context.authorization_fingerprint,
+            authorization_policy_version=context.authorization_policy_version,
+            candidate_id=context.candidate_id,
+            strategy_id=context.strategy_id,
+            strategy_version=context.strategy_version,
+        )

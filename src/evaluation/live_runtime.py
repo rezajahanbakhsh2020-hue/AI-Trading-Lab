@@ -63,7 +63,7 @@ def evaluate_authorized_live_runtime(
     evaluation: LiveMarketEvaluation,
     context: AuthorizedProductionRuntimeContext,
     stable_strategy: str,
-    stability_score: float,
+    stability_score: float | None = None,
     min_stability_score: float = 0.50,
     store_path: Path | str | None = None,
     publisher: Any | None = None,
@@ -125,7 +125,10 @@ def evaluate_authorized_live_runtime(
         trend_val = trend_snap["trend"]
 
         # Operational gating criteria
-        if stability_score < min_stability_score:
+        if stability_score is None:
+            reason = "missing_stability_score"
+            final_direction = Direction.NO_TRADE
+        elif stability_score < min_stability_score:
             reason = "stability_score_below_threshold"
             final_direction = Direction.NO_TRADE
         elif stable_strategy != "momentum":
@@ -161,8 +164,7 @@ def evaluate_authorized_live_runtime(
             parameters=resolved_candidate.parameters,
         )
     else:
-        # STALE/UNSAFE DATA PATH: Create NO_TRADE decision with evaluation's authoritative reason
-        candle_iso = evaluation.candle_timestamp_utc or ts_now
+        # STALE/UNSAFE DATA PATH: Create NO_TRADE decision with evaluation's authoritative reason without fabricating market timestamp
         sig_val = 0
         trend_val = "NEUTRAL"
         eff_window = resolved_candidate.parameters.get(
@@ -177,7 +179,7 @@ def evaluate_authorized_live_runtime(
             symbol=symbol,
             timeframe=interval,
             decision_timestamp=ts_now,
-            market_timestamp=candle_iso,
+            market_timestamp=evaluation.candle_timestamp_utc or ts_now,
             direction=Direction.NO_TRADE,
             reason=evaluation.freshness_reason,
             entry_price=None,
@@ -243,6 +245,13 @@ def evaluate_authorized_live_runtime(
     pub_result = None
     if publish and publisher is not None:
         pub_store_path = st_path.parent / "publication_history.json"
+        pub_ts_now = ts_now
+        try:
+            cld_last_ts = final_cld.transition_history[-1].timestamp_utc
+            if cld_last_ts > pub_ts_now:
+                pub_ts_now = cld_last_ts
+        except Exception:
+            pass
         published_dec, _, pub_res = publish_canonical_live_decision(
             final_cld,
             publisher=publisher,
@@ -250,7 +259,7 @@ def evaluate_authorized_live_runtime(
             path=pub_store_path,
             skip_if_no_trade=skip_if_no_trade,
             actor=actor,
-            timestamp_utc=ts_now,
+            timestamp_utc=pub_ts_now,
         )
         final_cld = published_dec
         pub_result = pub_res
@@ -362,7 +371,7 @@ def build_live_runtime(
     data: pd.DataFrame,
     *,
     stable_strategy: str,
-    stability_score: float,
+    stability_score: float | None = None,
     symbol: str = "XAUUSD",
     interval: str = "5m",
     min_stability_score: float = 0.50,
@@ -373,6 +382,7 @@ def build_live_runtime(
     publish: bool = False,
     skip_if_no_trade: bool = False,
     persist: bool = True,
+    reference_now: datetime | None = None,
     authorized_context: AuthorizedProductionRuntimeContext | None = None,
 ) -> LiveRuntimeResult:
     """Thin wrapper around evaluate_authorized_live_runtime for legacy direct callers.
@@ -386,15 +396,22 @@ def build_live_runtime(
     if data.empty:
         raise ValueError("data must not be empty.")
 
-    if "timestamp" in data.columns and not data.empty:
+    if reference_now is not None:
+        ref_now = reference_now
+        if ref_now.tzinfo is None:
+            ref_now = ref_now.replace(tzinfo=timezone.utc)
+    elif "timestamp" in data.columns and not data.empty:
         last_ts = pd.to_datetime(data["timestamp"].iloc[-1], utc=True)
-        now_ts = pd.Timestamp.now(tz="UTC")
-        if (now_ts - last_ts).total_seconds() > 300.0:
-            ref_now = last_ts.to_pydatetime()
+        if pd.notna(last_ts):
+            now_ts = pd.Timestamp.now(tz="UTC")
+            if (now_ts - last_ts).total_seconds() > 300.0:
+                ref_now = last_ts.to_pydatetime()
+            else:
+                ref_now = now_ts.to_pydatetime()
         else:
-            ref_now = now_ts.to_pydatetime()
+            ref_now = datetime.now(timezone.utc)
     else:
-        ref_now = None
+        ref_now = datetime.now(timezone.utc)
 
     if authorized_context is not None:
         if not isinstance(authorized_context, AuthorizedProductionRuntimeContext):

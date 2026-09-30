@@ -116,10 +116,27 @@ class LiveMarketEvaluation:
         object.__setattr__(self, "strategy_id", req_strat_id)
         object.__setattr__(self, "strategy_version", req_strat_ver)
 
+        try:
+            ref_parsed = datetime.datetime.fromisoformat(req_ref_ts.replace("Z", "+00:00"))
+            if ref_parsed.tzinfo is None:
+                raise MarketEvaluationValidationError("reference_timestamp_utc must be timezone-aware UTC ISO-8601 string.")
+        except Exception as exc:
+            if isinstance(exc, MarketEvaluationValidationError):
+                raise
+            raise MarketEvaluationValidationError(f"Invalid reference_timestamp_utc '{req_ref_ts}': {exc}") from exc
+
         if self.candle_timestamp_utc is not None:
             c_ts = str(self.candle_timestamp_utc).strip()
             if not c_ts:
                 raise MarketEvaluationValidationError("candle_timestamp_utc cannot be whitespace.")
+            try:
+                c_parsed = datetime.datetime.fromisoformat(c_ts.replace("Z", "+00:00"))
+                if c_parsed.tzinfo is None:
+                    raise MarketEvaluationValidationError("candle_timestamp_utc must be timezone-aware UTC ISO-8601 string.")
+            except Exception as exc:
+                if isinstance(exc, MarketEvaluationValidationError):
+                    raise
+                raise MarketEvaluationValidationError(f"Invalid candle_timestamp_utc '{c_ts}': {exc}") from exc
             object.__setattr__(self, "candle_timestamp_utc", c_ts)
 
         if self.campaign_selection_decision_fingerprint is not None:
@@ -129,7 +146,14 @@ class LiveMarketEvaluation:
             object.__setattr__(self, "campaign_selection_decision_fingerprint", csdf)
 
         if self.age_seconds is not None:
-            object.__setattr__(self, "age_seconds", float(self.age_seconds))
+            import math
+            age_flt = float(self.age_seconds)
+            if not math.isfinite(age_flt):
+                raise MarketEvaluationValidationError(f"age_seconds must be a finite float, got {self.age_seconds}")
+            object.__setattr__(self, "age_seconds", age_flt)
+
+        if self.candle_timestamp_utc is None and self.freshness_status is True:
+            raise MarketEvaluationValidationError("Fresh LiveMarketEvaluation must carry a valid candle_timestamp_utc.")
 
         # Calculate deterministic evaluation fingerprint
         payload = {

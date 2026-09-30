@@ -28,11 +28,12 @@ def _rising_data(rows: int = 80) -> pd.DataFrame:
     )
 
 
-def test_end_to_end_runner_produces_complete_buy_result():
+def test_end_to_end_runner_produces_complete_buy_result(tmp_path):
     result = run_end_to_end(
         _rising_data(),
         stable_strategy="momentum",
         stability_score=0.80,
+        store_path=tmp_path / "store.json",
     )
 
     assert result["end_to_end_ready"] is True
@@ -42,11 +43,12 @@ def test_end_to_end_runner_produces_complete_buy_result():
     assert result["release_gate"]["release_ready"] is True
 
 
-def test_end_to_end_runner_contains_trade_levels():
+def test_end_to_end_runner_contains_trade_levels(tmp_path):
     result = run_end_to_end(
         _rising_data(),
         stable_strategy="momentum",
         stability_score=0.80,
+        store_path=tmp_path / "store.json",
     )
 
     levels = result["overlay"]["levels"]
@@ -63,24 +65,26 @@ def test_end_to_end_runner_contains_trade_levels():
     assert levels["tp2"] < levels["tp3"]
 
 
-def test_end_to_end_runner_rejects_low_stability_for_release():
+def test_end_to_end_runner_rejects_low_stability_for_release(tmp_path):
     result = run_end_to_end(
         _rising_data(),
         stable_strategy="momentum",
         stability_score=0.20,
+        store_path=tmp_path / "store.json",
     )
 
     assert result["end_to_end_ready"] is False
     assert result["release_gate"]["release_ready"] is False
 
 
-def test_end_to_end_runner_preserves_symbol_and_interval():
+def test_end_to_end_runner_preserves_symbol_and_interval(tmp_path):
     result = run_end_to_end(
         _rising_data(),
         stable_strategy="momentum",
         stability_score=0.80,
         symbol="XAUUSD",
         interval="1d",
+        store_path=tmp_path / "store.json",
     )
 
     assert result["decision"]["symbol"] == "XAUUSD"
@@ -91,11 +95,12 @@ def test_end_to_end_runner_preserves_symbol_and_interval():
     assert result["overlay"]["interval"] == "1d"
 
 
-def test_end_to_end_runner_exposes_all_pipeline_layers():
+def test_end_to_end_runner_exposes_all_pipeline_layers(tmp_path):
     result = run_end_to_end(
         _rising_data(),
         stable_strategy="momentum",
         stability_score=0.80,
+        store_path=tmp_path / "store.json",
     )
 
     assert set(result) == {

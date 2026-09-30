@@ -17,6 +17,7 @@ def run_end_to_end(
     symbol: str = "XAUUSD",
     interval: str = "1d",
     min_stability_score: float = 0.50,
+    store_path: Any | None = None,
 ) -> dict[str, Any]:
     """Run the complete live trading proof pipeline."""
 
@@ -27,6 +28,7 @@ def run_end_to_end(
         symbol=symbol,
         interval=interval,
         min_stability_score=min_stability_score,
+        store_path=store_path,
     )
 
     overlay = build_live_trade_overlay(

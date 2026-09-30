@@ -23,27 +23,47 @@ from tests.test_live_execution_runtime import (
 def test_exact_convergence_fresh_and_stale(tmp_path):
     """C & J. Fresh and stale market data converge through exact same downstream lifecycle functions."""
     config = production_config_for(tmp_path)
-    runtime = LiveExecutionRuntime(
-        symbol="XAUUSD",
-        interval="5m",
-        store_path=tmp_path / "store.json",
-        snapshot_path=tmp_path / "snap.json",
-        research_dir=tmp_path,
-        production_config=config,
-    )
 
     df = make_buy_market_data()
     df_ts = pd.to_datetime(df["openTime"], utc=True).iloc[-1].to_pydatetime()
 
     # 1. Fresh execution
-    with patch("src.evaluation.live_execution_runtime.load_live_market_data", return_value=df):
-        res_fresh = runtime.run_once(publish=False, persist=True, reference_now=df_ts)
-    assert res_fresh["decision"] == "BUY"
-    assert res_fresh["current_lifecycle_state"] == LiveDecisionLifecycleState.PERSISTED.value
+    runtime_fresh = LiveExecutionRuntime(
+        symbol="XAUUSD",
+        interval="5m",
+        store_path=tmp_path / "store_fresh.json",
+        snapshot_path=tmp_path / "snap_fresh.json",
+        research_dir=tmp_path,
+        production_config=config,
+    )
+    with (
+        patch("src.evaluation.live_execution_runtime.load_live_market_data", return_value=df),
+        patch(
+            "src.evaluation.live_execution_runtime.load_production_selection",
+            return_value={"stability_score": 0.85, "stable_strategy": "momentum"},
+        ),
+    ):
+        res_buy = runtime_fresh.run_once(publish=False, persist=True, reference_now=df_ts)
+    assert res_buy["decision"] == "BUY"
+    assert res_buy["current_lifecycle_state"] == LiveDecisionLifecycleState.PERSISTED.value
 
     # 2. Stale execution
-    with patch("src.evaluation.live_execution_runtime.load_live_market_data", return_value=df):
-        res_stale = runtime.run_once(
+    runtime_stale = LiveExecutionRuntime(
+        symbol="XAUUSD",
+        interval="5m",
+        store_path=tmp_path / "store_stale.json",
+        snapshot_path=tmp_path / "snap_stale.json",
+        research_dir=tmp_path,
+        production_config=config,
+    )
+    with (
+        patch("src.evaluation.live_execution_runtime.load_live_market_data", return_value=df),
+        patch(
+            "src.evaluation.live_execution_runtime.load_production_selection",
+            return_value={"stability_score": 0.85, "stable_strategy": "momentum"},
+        ),
+    ):
+        res_stale = runtime_stale.run_once(
             publish=False, persist=True, reference_now=df_ts + datetime.timedelta(seconds=1000)
         )
     assert res_stale["decision"] == "NO TRADE"
@@ -116,10 +136,14 @@ def test_ast_static_checks_live_execution_runtime():
     visitor.visit(tree)
 
     forbidden_direct_calls = {
+        "ProductionDecision",
+        "ProductionSignal",
+        "calculate_production_risk_levels",
         "create_canonical_live_decision",
         "transition_live_decision",
         "persist_canonical_live_decision",
         "publish_canonical_live_decision",
+        "publish",
     }
 
     found_forbidden = forbidden_direct_calls.intersection(visitor.calls)
