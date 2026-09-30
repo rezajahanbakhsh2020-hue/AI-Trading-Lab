@@ -396,7 +396,42 @@ def test_replay_idempotency_and_conflict_safety(tmp_path):
     with pytest.raises(ValueError, match="Conflicting replay"):
         append_live_decision_to_store(conflicting_rec, store_p)
 
-    # 4. Publication store replay check
+    # 4. Asymmetric replay: existing authorized + replay missing authorization -> fail closed
+    rec1_no_auth = {k: v for k, v in rec1.items() if k not in ("runtime_authorization_fingerprint", "authorization_policy_version", "authorized_at_utc", "promoted_artifact_fingerprint", "governance_decision_fingerprint", "campaign_selection_decision_fingerprint", "candidate_id", "strategy_name", "strategy_version")}
+    with pytest.raises(ValueError, match="Conflicting replay"):
+        append_live_decision_to_store(rec1_no_auth, store_p)
+
+    # 5. Asymmetric replay: existing no-auth + replay authorized -> fail closed
+    store_unauth_p = tmp_path / "decision_history_unauth.json"
+    legacy_rec = {
+        "timestamp": "2026-01-01T12:00:00+00:00",
+        "symbol": "XAUUSD",
+        "interval": "5m",
+        "signal": 1,
+        "signal_label": "BUY",
+        "trend": "UP",
+        "strategy": "momentum",
+        "entry_price": 2000.0,
+        "stop_loss": 1980.0,
+        "take_profit": 2040.0,
+        "risk_reward_ratio": 2.0,
+        "stability_score": 0.85,
+        "market_state": "OPEN",
+        "quote_age_seconds": 10.0,
+        "quote_stale": False,
+        "candle_count": 100,
+        "decision_id": "dec_asym_01",
+        "signal_id": "sig_asym_01",
+    }
+    append_live_decision_to_store(legacy_rec, store_unauth_p)
+
+    legacy_replay_authorized = dict(rec1)
+    legacy_replay_authorized["decision_id"] = "dec_asym_01"
+    legacy_replay_authorized["signal_id"] = "sig_asym_01"
+    with pytest.raises(ValueError, match="Conflicting replay"):
+        append_live_decision_to_store(legacy_replay_authorized, store_unauth_p)
+
+    # 6. Publication store replay check
     pub_rec = {
         "publication_id": "pub_01",
         "signal_id": "sig_replay_01",

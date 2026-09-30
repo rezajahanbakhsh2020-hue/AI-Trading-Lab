@@ -70,9 +70,22 @@ def append_publication_record(
                 # Compare authorization fingerprint in provenance explicitly for conflict detection
                 new_prov = new_record.get("provenance", {})
                 ext_prov = existing.get("provenance", {})
-                new_auth_fp = new_prov.get("runtime_authorization_fingerprint")
-                ext_auth_fp = ext_prov.get("runtime_authorization_fingerprint")
-                if new_auth_fp is not None and ext_auth_fp is not None and new_auth_fp != ext_auth_fp:
+                new_raw_auth = new_prov.get("runtime_authorization_fingerprint")
+                ext_raw_auth = ext_prov.get("runtime_authorization_fingerprint")
+
+                new_auth_fp = str(new_raw_auth).strip() if new_raw_auth is not None and str(new_raw_auth).strip() != "" else None
+                ext_auth_fp = str(ext_raw_auth).strip() if ext_raw_auth is not None and str(ext_raw_auth).strip() != "" else None
+
+                existing_has_auth = ext_auth_fp is not None
+                new_has_auth = new_auth_fp is not None
+
+                if existing_has_auth != new_has_auth:
+                    raise PublicationIntegrityError(
+                        f"Conflicting publication replay detected for publication_id '{pub_id}': "
+                        "authorization lineage presence mismatch."
+                    )
+
+                if existing_has_auth and new_has_auth and ext_auth_fp != new_auth_fp:
                     raise PublicationIntegrityError(
                         f"Conflicting publication replay detected for publication_id '{pub_id}': "
                         f"runtime_authorization_fingerprint mismatch ('{ext_auth_fp}' vs '{new_auth_fp}')."
