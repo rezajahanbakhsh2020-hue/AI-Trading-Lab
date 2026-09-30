@@ -247,8 +247,11 @@ def test_xauusd_existing_runtime_path_remains_valid(tmp_path) -> None:
         assert res["symbol"] == "XAUUSD"
 
 
-def test_market_data_integrity_symbol_mismatch_prevented() -> None:
+@patch("app_live.fetch_xauusd_ohlc")
+def test_market_data_integrity_symbol_mismatch_prevented(mock_fetch) -> None:
     """Verify market data for symbol A can never be returned while runtime claims it belongs to symbol B."""
+    mock_fetch.return_value = make_dummy_df()
+
     result = load_live_market_data("XAUUSD", "5m", 100)
     assert not result.empty
 
