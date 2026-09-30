@@ -73,8 +73,8 @@ def build_live_trade_display(
     """
     Build final live trade display presentation purely from a CanonicalLiveDecision artifact.
 
-    The display layer does NOT independently construct production decisions or authorize execution.
-    If canonical_decision is absent, returns a BLOCKED presentation payload.
+    The display layer does NOT independently construct production decisions, resolve candidates, or authorize execution.
+    If canonical_decision is absent, returns a safe BLOCKED presentation payload.
     """
     if not isinstance(data, pd.DataFrame):
         raise ValueError("data must be a pandas DataFrame.")
@@ -89,21 +89,48 @@ def build_live_trade_display(
     if not tp1_multiplier < tp2_multiplier < tp3_multiplier:
         raise ValueError("TP multipliers must satisfy TP1 < TP2 < TP3.")
 
-    if canonical_decision is None:
-        from src.evaluation.live_runtime import build_live_runtime
-        runtime_res = build_live_runtime(
-            data,
-            stable_strategy=stable_strategy,
-            stability_score=stability_score,
-            min_stability_score=min_stability_score,
-            symbol=symbol,
-            interval=interval,
-            persist=False,
-        )
-        canonical_decision = runtime_res.canonical_decision
-
+    # Pure presentation consumer requirement: Display layer MUST require CanonicalLiveDecision.
+    # NEVER invoke build_live_runtime(), build_live_production_decision(), authorize_production_runtime(), or resolve_promoted_candidate().
     if canonical_decision is None or not isinstance(canonical_decision, CanonicalLiveDecision):
-        raise TypeError("canonical_decision must be a CanonicalLiveDecision instance.")
+        close_price = float(data["close"].iloc[-1]) if ("close" in data.columns and not data.empty) else None
+        ts = (
+            pd.to_datetime(data["timestamp"].iloc[-1], utc=True).isoformat()
+            if ("timestamp" in data.columns and not data.empty)
+            else None
+        )
+        return {
+            "symbol": str(symbol).upper() if symbol else DEFAULT_SYMBOL,
+            "interval": str(interval) if interval else DEFAULT_INTERVAL,
+            "decision": "BLOCKED",
+            "reason": "missing_canonical_live_decision",
+            "stable_strategy": str(stable_strategy),
+            "stability_score": float(stability_score) if stability_score is not None else 0.0,
+            "strategy_supported": str(stable_strategy).lower() == "momentum",
+            "signal": 0,
+            "signal_label": "BLOCKED",
+            "trend": "NEUTRAL",
+            "momentum": close_price,
+            "entry_price": None,
+            "stop_loss": None,
+            "tp1": None,
+            "tp2": None,
+            "tp3": None,
+            "take_profit": None,
+            "risk_distance": None,
+            "risk_reward_ratio": None,
+            "risk_reward_tp1": None,
+            "risk_reward_tp2": None,
+            "risk_reward_tp3": None,
+            "stop_loss_pct": stop_loss_pct,
+            "take_profit_pct": take_profit_pct,
+            "tp1_multiplier": tp1_multiplier,
+            "tp2_multiplier": tp2_multiplier,
+            "tp3_multiplier": tp3_multiplier,
+            "momentum_window": momentum_window,
+            "fast_window": fast_window,
+            "slow_window": slow_window,
+            "timestamp": ts,
+        }
 
     dec_obj = canonical_decision.decision
     risk_obj = canonical_decision.risk_levels

@@ -314,9 +314,13 @@ def test_runtime_bypass_regression():
 # --- Test K: Display Bypass Regression ---
 def test_display_bypass_regression():
     data = _data()
-    # Direct display call for unpromoted strategy must fail closed
-    with pytest.raises(ValueError, match="No authoritative promoted candidate resolved"):
-        build_live_trade_display(data, stable_strategy="non_existent_strategy", stability_score=0.80)
+    # Direct display call without CanonicalLiveDecision returns BLOCKED and does not manufacture a decision
+    display = build_live_trade_display(data, canonical_decision=None, stable_strategy="non_existent_strategy", stability_score=0.80)
+    assert display["decision"] == "BLOCKED"
+    assert display["reason"] == "missing_canonical_live_decision"
+    assert display["entry_price"] is None
+    assert display["stop_loss"] is None
+    assert display["take_profit"] is None
 
 
 # --- Test L: Runtime and Display Identity Parity ---

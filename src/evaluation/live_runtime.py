@@ -227,30 +227,21 @@ def build_live_runtime(
     # 6. Enforce persistence boundary if persist is True
     st_path = Path(store_path) if store_path is not None else DEFAULT_STORE_PATH
     if persist:
-        persisted_dec = persist_canonical_live_decision(
+        final_cld = persist_canonical_live_decision(
             canonical_dec,
             path=st_path,
             actor="live_runtime",
             timestamp_utc=ts_now,
         )
     else:
-        # If persistence disabled, create in-memory PERSISTED transition for consistency
-        persisted_dec = transition_live_decision(
-            canonical_dec,
-            LiveDecisionLifecycleState.PERSISTED,
-            actor="live_runtime",
-            timestamp_utc=ts_now,
-            reason="in_memory_persistence",
-        )
-
-    final_cld = persisted_dec
+        final_cld = canonical_dec
 
     # 7. Enforce publication boundary if publishing requested
     pub_result = None
     if publish and publisher is not None:
         pub_store_path = st_path.parent / "publication_history.json"
         published_dec, _, pub_res = publish_canonical_live_decision(
-            persisted_dec,
+            final_cld,
             publisher=publisher,
             candidate=resolved_candidate,
             path=pub_store_path,
