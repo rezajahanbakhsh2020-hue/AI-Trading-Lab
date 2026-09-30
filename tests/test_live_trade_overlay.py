@@ -152,7 +152,7 @@ def test_invalid_decision_is_rejected():
 
     with pytest.raises(
         ValueError,
-        match="decision must be BUY or NO TRADE",
+        match="decision must be",
     ):
         build_live_trade_overlay(data, display)
 

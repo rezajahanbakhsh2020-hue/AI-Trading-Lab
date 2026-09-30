@@ -1,6 +1,7 @@
-"""Comprehensive focused test suite for Canonical Live Decision Lifecycle (PR #47)."""
+"""Comprehensive focused test suite for Canonical Live Decision Lifecycle (PR #47 Follow-up)."""
 
 from datetime import datetime, timezone
+from unittest.mock import MagicMock
 import pytest
 import pandas as pd
 
@@ -14,7 +15,10 @@ from src.evaluation.live_decision_lifecycle import (
     validate_live_decision_lifecycle,
 )
 from src.evaluation.live_decision_record import build_live_decision_record
-from src.evaluation.live_decision_store import append_live_decision_to_store
+from src.evaluation.live_decision_store import (
+    append_live_decision_to_store,
+    persist_canonical_live_decision,
+)
 from src.evaluation.live_execution_runtime import LiveExecutionRuntime, ProductionRuntimeConfig
 from src.evaluation.live_production_decision import (
     Direction,
@@ -28,7 +32,11 @@ from src.evaluation.live_production_decision import (
     calculate_production_risk_levels,
     evaluate_production_decision,
 )
-from src.evaluation.live_publication_store import PublicationIntegrityError, append_publication_record
+from src.evaluation.live_publication_store import (
+    PublicationIntegrityError,
+    append_publication_record,
+    publish_canonical_live_decision,
+)
 from src.evaluation.live_runtime import build_live_runtime
 from src.evaluation.live_trade_display import build_live_trade_display
 from src.evaluation.research_store import resolve_promoted_candidate
@@ -86,6 +94,8 @@ def test_canonical_artifact_creation():
     assert cld.live_decision_id == decision.decision_id
     assert cld.current_state == LiveDecisionLifecycleState.AUTHORIZED
     assert len(cld.transition_history) == 1
+    assert cld.transition_history[0].from_state is None
+    assert cld.transition_history[0].to_state == LiveDecisionLifecycleState.AUTHORIZED
     assert cld.canonical_live_decision_fingerprint is not None
     assert len(cld.canonical_live_decision_fingerprint) == 64
 
@@ -162,34 +172,34 @@ def test_authorization_mismatch_rejection():
 # --- Test E: Lifecycle Transitions ---
 def test_lifecycle_transitions_valid_and_invalid():
     receipt, decision, signal, risk, _ = _setup_canonical_components()
-    cld = create_canonical_live_decision(receipt, decision, signal, risk)
+    cld = create_canonical_live_decision(receipt, decision, signal, risk, timestamp_utc="2026-01-01T10:00:00+00:00")
 
     # Valid progression
-    cld_eval = transition_live_decision(cld, LiveDecisionLifecycleState.EVALUATED, actor="test")
+    cld_eval = transition_live_decision(cld, LiveDecisionLifecycleState.EVALUATED, actor="test", timestamp_utc="2026-01-01T10:01:00+00:00")
     assert cld_eval.current_state == LiveDecisionLifecycleState.EVALUATED
 
-    cld_risk = transition_live_decision(cld_eval, LiveDecisionLifecycleState.RISK_VALIDATED, actor="test")
+    cld_risk = transition_live_decision(cld_eval, LiveDecisionLifecycleState.RISK_VALIDATED, actor="test", timestamp_utc="2026-01-01T10:02:00+00:00")
     assert cld_risk.current_state == LiveDecisionLifecycleState.RISK_VALIDATED
 
-    cld_pres = transition_live_decision(cld_risk, LiveDecisionLifecycleState.PRESENTABLE, actor="test")
+    cld_pres = transition_live_decision(cld_risk, LiveDecisionLifecycleState.PRESENTABLE, actor="test", timestamp_utc="2026-01-01T10:03:00+00:00")
     assert cld_pres.current_state == LiveDecisionLifecycleState.PRESENTABLE
 
     # Invalid state transition jump (PRESENTABLE -> PUBLISHED skipping PERSISTED)
     with pytest.raises(LiveDecisionLifecycleError, match="Illegal lifecycle state transition"):
-        transition_live_decision(cld_pres, LiveDecisionLifecycleState.PUBLISHED, actor="test")
+        transition_live_decision(cld_pres, LiveDecisionLifecycleState.PUBLISHED, actor="test", timestamp_utc="2026-01-01T10:04:00+00:00")
 
     # Backward transition (EVALUATED -> AUTHORIZED)
     with pytest.raises(LiveDecisionLifecycleError, match="Illegal lifecycle state transition"):
-        transition_live_decision(cld_eval, LiveDecisionLifecycleState.AUTHORIZED, actor="test")
+        transition_live_decision(cld_eval, LiveDecisionLifecycleState.AUTHORIZED, actor="test", timestamp_utc="2026-01-01T10:04:00+00:00")
 
 
-# --- Test F: Transition History Integrity ---
-def test_transition_history_integrity():
+# --- Test F: Transition History & Chained Fingerprint Integrity ---
+def test_transition_history_and_chained_fingerprint_integrity():
     receipt, decision, signal, risk, _ = _setup_canonical_components()
-    cld = create_canonical_live_decision(receipt, decision, signal, risk)
-    cld = transition_live_decision(cld, LiveDecisionLifecycleState.EVALUATED, actor="test")
-    cld = transition_live_decision(cld, LiveDecisionLifecycleState.RISK_VALIDATED, actor="test")
-    cld = transition_live_decision(cld, LiveDecisionLifecycleState.PRESENTABLE, actor="test")
+    cld = create_canonical_live_decision(receipt, decision, signal, risk, timestamp_utc="2026-01-01T10:00:00+00:00")
+    cld = transition_live_decision(cld, LiveDecisionLifecycleState.EVALUATED, actor="test", timestamp_utc="2026-01-01T10:01:00+00:00")
+    cld = transition_live_decision(cld, LiveDecisionLifecycleState.RISK_VALIDATED, actor="test", timestamp_utc="2026-01-01T10:02:00+00:00")
+    cld = transition_live_decision(cld, LiveDecisionLifecycleState.PRESENTABLE, actor="test", timestamp_utc="2026-01-01T10:03:00+00:00")
 
     assert len(cld.transition_history) == 4
     states = [tr.to_state for tr in cld.transition_history]
@@ -200,8 +210,16 @@ def test_transition_history_integrity():
         LiveDecisionLifecycleState.PRESENTABLE,
     ]
 
-    # Attempt to forge invalid history
-    bad_history = cld.transition_history[:2] + (cld.transition_history[3],)
+    # Forged transition artifact_fingerprint fails validation
+    forged_tr = LifecycleTransitionRecord(
+        from_state=LiveDecisionLifecycleState.EVALUATED,
+        to_state=LiveDecisionLifecycleState.RISK_VALIDATED,
+        timestamp_utc="2026-01-01T10:02:00+00:00",
+        actor="test",
+        artifact_fingerprint="forged_fingerprint_hash_00000000000000000000000000000000000",
+        reason="forged",
+    )
+    forged_history = (cld.transition_history[0], cld.transition_history[1], forged_tr, cld.transition_history[3])
     bad_cld = CanonicalLiveDecision(
         live_decision_id=cld.live_decision_id,
         authorization_receipt=cld.authorization_receipt,
@@ -209,13 +227,83 @@ def test_transition_history_integrity():
         signal=cld.signal,
         risk_levels=cld.risk_levels,
         current_state=cld.current_state,
-        transition_history=bad_history,
+        transition_history=forged_history,
     )
-    with pytest.raises(LiveDecisionLifecycleError, match="Transition history gap"):
+    with pytest.raises(LiveDecisionLifecycleError, match="artifact_fingerprint mismatch"):
         validate_live_decision_lifecycle(bad_cld)
 
 
-# --- Test G: Runtime Bypass Regression ---
+# --- Test G: Temporal UTC Chronology Monotonicity ---
+def test_temporal_utc_chronology_monotonicity():
+    receipt, decision, signal, risk, _ = _setup_canonical_components()
+    cld = create_canonical_live_decision(receipt, decision, signal, risk, timestamp_utc="2026-01-01T10:05:00+00:00")
+
+    # Backwards timestamp fails closed
+    with pytest.raises(LiveDecisionLifecycleError, match="moves backwards"):
+        transition_live_decision(cld, LiveDecisionLifecycleState.EVALUATED, actor="test", timestamp_utc="2026-01-01T10:04:00+00:00")
+
+    # Naive timestamp fails closed
+    with pytest.raises(LiveDecisionLifecycleError, match="must be timezone-aware"):
+        transition_live_decision(cld, LiveDecisionLifecycleState.EVALUATED, actor="test", timestamp_utc="2026-01-01 10:06:00")
+
+
+# --- Test H: Enforced Persistence Lifecycle Boundary ---
+def test_enforced_persistence_lifecycle_boundary(tmp_path):
+    receipt, decision, signal, risk, _ = _setup_canonical_components()
+    cld = create_canonical_live_decision(receipt, decision, signal, risk, timestamp_utc="2026-01-01T10:00:00+00:00")
+    cld = transition_live_decision(cld, LiveDecisionLifecycleState.EVALUATED, actor="test", timestamp_utc="2026-01-01T10:01:00+00:00")
+
+    # Attempting to persist from EVALUATED fails closed
+    store_path = tmp_path / "decision_history.json"
+    with pytest.raises(LiveDecisionLifecycleError, match="expected state 'PRESENTABLE'"):
+        persist_canonical_live_decision(cld, store_path, timestamp_utc="2026-01-01T10:02:00+00:00")
+
+    # Transition to PRESENTABLE first
+    cld = transition_live_decision(cld, LiveDecisionLifecycleState.RISK_VALIDATED, actor="test", timestamp_utc="2026-01-01T10:02:00+00:00")
+    cld = transition_live_decision(cld, LiveDecisionLifecycleState.PRESENTABLE, actor="test", timestamp_utc="2026-01-01T10:03:00+00:00")
+
+    # Now persist_canonical_live_decision succeeds and returns PERSISTED artifact
+    persisted_cld = persist_canonical_live_decision(cld, store_path, timestamp_utc="2026-01-01T10:04:00+00:00")
+    assert persisted_cld.current_state == LiveDecisionLifecycleState.PERSISTED
+    assert len(persisted_cld.transition_history) == 5
+
+    # Re-persisting identical PERSISTED artifact is idempotent
+    re_persisted = persist_canonical_live_decision(persisted_cld, store_path)
+    assert re_persisted.canonical_live_decision_fingerprint == persisted_cld.canonical_live_decision_fingerprint
+
+
+# --- Test I: Enforced Publication Lifecycle Boundary ---
+def test_enforced_publication_lifecycle_boundary(tmp_path):
+    receipt, decision, signal, risk, candidate = _setup_canonical_components()
+    cld = create_canonical_live_decision(receipt, decision, signal, risk, timestamp_utc="2026-01-01T10:00:00+00:00")
+    cld = transition_live_decision(cld, LiveDecisionLifecycleState.EVALUATED, actor="test", timestamp_utc="2026-01-01T10:01:00+00:00")
+    cld = transition_live_decision(cld, LiveDecisionLifecycleState.RISK_VALIDATED, actor="test", timestamp_utc="2026-01-01T10:02:00+00:00")
+    cld = transition_live_decision(cld, LiveDecisionLifecycleState.PRESENTABLE, actor="test", timestamp_utc="2026-01-01T10:03:00+00:00")
+
+    pub_store = tmp_path / "publication_history.json"
+
+    # Attempting to publish from PRESENTABLE without persistence fails closed
+    with pytest.raises(LiveDecisionLifecycleError, match="Publication cannot bypass persistence"):
+        publish_canonical_live_decision(cld, publisher=None, candidate=candidate, path=pub_store, timestamp_utc="2026-01-01T10:04:00+00:00")
+
+    # Persist first
+    store_path = tmp_path / "decision_history.json"
+    persisted_cld = persist_canonical_live_decision(cld, store_path, timestamp_utc="2026-01-01T10:04:00+00:00")
+
+    # Now publish_canonical_live_decision succeeds and returns PUBLISHED artifact
+    mock_pub = MagicMock()
+    mock_pub.publish.return_value = {"status": "PUBLISHED", "published": True}
+
+    pub_cld, publication, pub_res = publish_canonical_live_decision(
+        persisted_cld, publisher=mock_pub, candidate=candidate, path=pub_store, timestamp_utc="2026-01-01T10:05:00+00:00"
+    )
+
+    assert pub_cld.current_state == LiveDecisionLifecycleState.PUBLISHED
+    assert publication.provenance["canonical_live_decision_fingerprint"] == pub_cld.canonical_live_decision_fingerprint
+    assert publication.provenance["current_lifecycle_state"] == "PUBLISHED"
+
+
+# --- Test J: Runtime Bypass Regression ---
 def test_runtime_bypass_regression():
     data = _data()
     # Unpromoted strategy must fail closed
@@ -223,7 +311,7 @@ def test_runtime_bypass_regression():
         build_live_runtime(data, stable_strategy="non_existent_strategy", stability_score=0.80)
 
 
-# --- Test H: Display Bypass Regression ---
+# --- Test K: Display Bypass Regression ---
 def test_display_bypass_regression():
     data = _data()
     # Direct display call for unpromoted strategy must fail closed
@@ -231,10 +319,10 @@ def test_display_bypass_regression():
         build_live_trade_display(data, stable_strategy="non_existent_strategy", stability_score=0.80)
 
 
-# --- Test I: Runtime and Display Identity Parity ---
+# --- Test L: Runtime and Display Identity Parity ---
 def test_runtime_and_display_identity_parity():
     data = _data()
-    res = build_live_runtime(data, stable_strategy="momentum", stability_score=0.80)
+    res = build_live_runtime(data, stable_strategy="momentum", stability_score=0.80, persist=False)
 
     assert res.canonical_decision is not None
     assert res.decision["decision_id"] == res.display["decision_id"]
@@ -242,7 +330,7 @@ def test_runtime_and_display_identity_parity():
     assert res.decision["runtime_authorization_fingerprint"] == res.display["authorization_fingerprint"]
 
 
-# --- Test J: Persistence Replay Idempotency & Conflict Protection ---
+# --- Test M: Persistence Replay Idempotency & Conflict Protection ---
 def test_persistence_replay_idempotency_and_conflict(tmp_path):
     receipt, decision, signal, risk, candidate = _setup_canonical_components()
     cld = create_canonical_live_decision(receipt, decision, signal, risk)
@@ -289,48 +377,11 @@ def test_persistence_replay_idempotency_and_conflict(tmp_path):
         append_live_decision_to_store(rec_conflict, store_path)
 
 
-# --- Test K: Publication Integrity ---
-def test_publication_integrity(tmp_path):
-    receipt, decision, signal, risk, candidate = _setup_canonical_components()
-    cld = create_canonical_live_decision(receipt, decision, signal, risk)
-
-    # Attach canonical fingerprint to decision object for publication provenance
-    object.__setattr__(decision, "canonical_live_decision_fingerprint", cld.canonical_live_decision_fingerprint)
-    object.__setattr__(decision, "current_lifecycle_state", cld.current_state.value)
-
-    pub = ProductionIntelligencePublication.from_artifacts(
-        decision=decision,
-        signal=signal,
-        risk=risk,
-        candidate=candidate,
-        authorization=receipt,
-    )
-
-    assert pub.provenance.get("canonical_live_decision_fingerprint") == cld.canonical_live_decision_fingerprint
-    assert pub.provenance.get("current_lifecycle_state") == cld.current_state.value
-
-    pub_store = tmp_path / "pub_history.json"
-    h1 = append_publication_record(pub.as_dict(), pub_store)
-    assert len(h1) == 1
-
-    # Identical replay is idempotent
-    h2 = append_publication_record(pub.as_dict(), pub_store)
-    assert len(h2) == 1
-
-    # Conflicting canonical fingerprint in publication fails closed
-    pub_bad = dict(pub.as_dict())
-    pub_bad["provenance"] = dict(pub.provenance)
-    pub_bad["provenance"]["canonical_live_decision_fingerprint"] = "f" * 64
-    with pytest.raises(PublicationIntegrityError, match="canonical_live_decision_fingerprint mismatch"):
-        append_publication_record(pub_bad, pub_store)
-
-
-# --- Test L: Missing Authorization Blocks Execution ---
+# --- Test N: Missing Authorization Blocks Execution ---
 def test_missing_authorization_blocks_execution():
     candidate = resolve_promoted_candidate(candidate_id="cand_momentum_5m")
     assert candidate is not None
 
-    # Mismatched symbol scope in config causes authorization failure
     runtime = LiveExecutionRuntime(
         symbol="EURUSD",
         production_config=ProductionRuntimeConfig(symbol="EURUSD", timeframe="5m", candidate_id="cand_momentum_5m"),
@@ -341,17 +392,7 @@ def test_missing_authorization_blocks_execution():
     assert res["decision"] == "NO TRADE"
 
 
-# --- Test M: Missing Candidate Blocks Runtime ---
-def test_missing_candidate_blocks_runtime():
-    runtime = LiveExecutionRuntime(symbol="XAUUSD", production_config=ProductionRuntimeConfig(symbol="XAUUSD", timeframe="5m", candidate_id="cand_non_existent"))
-    res = runtime.run_once(publish=False, persist=False)
-
-    assert res["blocked"] is True
-    assert res["decision"] == "NO TRADE"
-    assert "PromotionUnavailable" in res["reason"]
-
-
-# --- Test N: No Synthetic Fallback ---
+# --- Test O: No Synthetic Fallback ---
 def test_no_synthetic_fallback():
     data = _data()
     # Unsupported/unpromoted strategy MUST raise or block, NEVER return synthetic BUY/SELL

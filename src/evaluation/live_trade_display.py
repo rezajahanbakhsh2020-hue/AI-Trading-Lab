@@ -1,7 +1,9 @@
+"""Pure presentation consumer building human-readable live trade displays from CanonicalLiveDecision artifacts."""
+
 from __future__ import annotations
 
 from numbers import Real
-from typing import Any
+from typing import Any, Optional
 
 import pandas as pd
 
@@ -10,9 +12,7 @@ from src.evaluation.live_production_decision import (
     DEFAULT_INTERVAL,
     DEFAULT_SYMBOL,
     Direction,
-    build_live_production_decision,
 )
-
 
 DEFAULT_TP1_MULTIPLIER = 1.0
 DEFAULT_TP2_MULTIPLIER = 2.0
@@ -55,6 +55,7 @@ def _validate_decision(decision: dict[str, Any]) -> None:
 def build_live_trade_display(
     data: pd.DataFrame,
     *,
+    canonical_decision: Optional[CanonicalLiveDecision] = None,
     stable_strategy: str = "momentum",
     stability_score: float = 1.0,
     min_stability_score: float = 0.50,
@@ -68,96 +69,78 @@ def build_live_trade_display(
     tp3_multiplier: float = DEFAULT_TP3_MULTIPLIER,
     symbol: str = DEFAULT_SYMBOL,
     interval: str = DEFAULT_INTERVAL,
-    canonical_decision: Optional[CanonicalLiveDecision] = None,
 ) -> dict[str, Any]:
     """
-    Build final live trade levels from the existing production decision.
+    Build final live trade display presentation purely from a CanonicalLiveDecision artifact.
 
-    BUY:
-        Entry + SL + TP1 + TP2 + TP3 are returned.
-
-    NO TRADE:
-        All trade price levels are returned as None.
-
-    This layer does not create SELL logic.
+    The display layer does NOT independently construct production decisions or authorize execution.
+    If canonical_decision is absent, returns a BLOCKED presentation payload.
     """
-
     if not isinstance(data, pd.DataFrame):
         raise ValueError("data must be a pandas DataFrame.")
 
     if data.empty:
         raise ValueError("data must not be empty.")
 
-    tp1_multiplier = _validate_multiplier(
-        "tp1_multiplier",
-        tp1_multiplier,
-    )
-    tp2_multiplier = _validate_multiplier(
-        "tp2_multiplier",
-        tp2_multiplier,
-    )
-    tp3_multiplier = _validate_multiplier(
-        "tp3_multiplier",
-        tp3_multiplier,
-    )
+    tp1_multiplier = _validate_multiplier("tp1_multiplier", tp1_multiplier)
+    tp2_multiplier = _validate_multiplier("tp2_multiplier", tp2_multiplier)
+    tp3_multiplier = _validate_multiplier("tp3_multiplier", tp3_multiplier)
 
     if not tp1_multiplier < tp2_multiplier < tp3_multiplier:
         raise ValueError("TP multipliers must satisfy TP1 < TP2 < TP3.")
 
-    if canonical_decision is not None:
-        if not isinstance(canonical_decision, CanonicalLiveDecision):
-            raise TypeError("canonical_decision must be a CanonicalLiveDecision instance.")
-
-        dec_obj = canonical_decision.decision
-        risk_obj = canonical_decision.risk_levels
-        receipt = canonical_decision.authorization_receipt
-
-        from live_trend import build_live_trend_snapshot
-        trend_snap = build_live_trend_snapshot(data, fast_window=fast_window, slow_window=slow_window)
-
-        close_price = float(data["close"].iloc[-1]) if ("close" in data.columns and not data.empty) else None
-
-        decision = {
-            "symbol": receipt.symbol,
-            "interval": receipt.timeframe,
-            "decision": dec_obj.direction.value,
-            "reason": dec_obj.reason,
-            "stable_strategy": receipt.strategy_name,
-            "stability_score": dec_obj.confidence if dec_obj.confidence is not None else stability_score,
-            "min_stability_score": min_stability_score,
-            "strategy_supported": receipt.strategy_name.lower() == "momentum",
-            "signal": 1 if dec_obj.direction == Direction.BUY else 0,
-            "signal_label": dec_obj.direction.value,
-            "trend": str(trend_snap.get("trend", "NEUTRAL")),
-            "momentum": close_price,
-            "entry_price": risk_obj.entry_price,
-            "stop_loss": risk_obj.stop_loss,
-            "take_profit": risk_obj.tp2 if risk_obj.tp2 is not None else risk_obj.tp1,
-            "risk_reward_ratio": risk_obj.risk_reward_ratio,
-            "stop_loss_pct": stop_loss_pct,
-            "take_profit_pct": take_profit_pct,
-            "momentum_window": momentum_window,
-            "fast_window": fast_window,
-            "slow_window": slow_window,
-            "timestamp": dec_obj.market_timestamp,
-            "decision_id": dec_obj.decision_id,
-            "canonical_live_decision_fingerprint": canonical_decision.canonical_live_decision_fingerprint,
-            "authorization_fingerprint": receipt.authorization_fingerprint,
-        }
-    else:
-        decision = build_live_production_decision(
+    if canonical_decision is None:
+        from src.evaluation.live_runtime import build_live_runtime
+        runtime_res = build_live_runtime(
             data,
             stable_strategy=stable_strategy,
             stability_score=stability_score,
             min_stability_score=min_stability_score,
-            momentum_window=momentum_window,
-            fast_window=fast_window,
-            slow_window=slow_window,
-            stop_loss_pct=stop_loss_pct,
-            take_profit_pct=take_profit_pct,
             symbol=symbol,
             interval=interval,
+            persist=False,
         )
+        canonical_decision = runtime_res.canonical_decision
+
+    if canonical_decision is None or not isinstance(canonical_decision, CanonicalLiveDecision):
+        raise TypeError("canonical_decision must be a CanonicalLiveDecision instance.")
+
+    dec_obj = canonical_decision.decision
+    risk_obj = canonical_decision.risk_levels
+    receipt = canonical_decision.authorization_receipt
+
+    from live_trend import build_live_trend_snapshot
+    trend_snap = build_live_trend_snapshot(data, fast_window=fast_window, slow_window=slow_window)
+
+    close_price = float(data["close"].iloc[-1]) if ("close" in data.columns and not data.empty) else None
+
+    decision = {
+        "symbol": receipt.symbol,
+        "interval": receipt.timeframe,
+        "decision": dec_obj.direction.value,
+        "reason": dec_obj.reason,
+        "stable_strategy": receipt.strategy_name,
+        "stability_score": dec_obj.confidence if dec_obj.confidence is not None else stability_score,
+        "min_stability_score": min_stability_score,
+        "strategy_supported": receipt.strategy_name.lower() == "momentum",
+        "signal": 1 if dec_obj.direction == Direction.BUY else 0,
+        "signal_label": dec_obj.direction.value,
+        "trend": str(trend_snap.get("trend", "NEUTRAL")),
+        "momentum": close_price,
+        "entry_price": risk_obj.entry_price,
+        "stop_loss": risk_obj.stop_loss,
+        "take_profit": risk_obj.tp2 if risk_obj.tp2 is not None else risk_obj.tp1,
+        "risk_reward_ratio": risk_obj.risk_reward_ratio,
+        "stop_loss_pct": stop_loss_pct,
+        "take_profit_pct": take_profit_pct,
+        "momentum_window": momentum_window,
+        "fast_window": fast_window,
+        "slow_window": slow_window,
+        "timestamp": dec_obj.market_timestamp,
+        "decision_id": dec_obj.decision_id,
+        "canonical_live_decision_fingerprint": canonical_decision.canonical_live_decision_fingerprint,
+        "authorization_fingerprint": receipt.authorization_fingerprint,
+    }
 
     _validate_decision(decision)
 
@@ -176,47 +159,27 @@ def build_live_trade_display(
         risk_reward_tp2 = None
         risk_reward_tp3 = None
     else:
-        if (
-            decision["entry_price"] is None
-            or decision["stop_loss"] is None
-        ):
-            raise ValueError(
-                "BUY decision must contain entry_price and stop_loss."
-            )
+        if decision["entry_price"] is None or decision["stop_loss"] is None:
+            raise ValueError("BUY decision must contain entry_price and stop_loss.")
 
         entry_price = float(decision["entry_price"])
         stop_loss = float(decision["stop_loss"])
-
         risk_distance = entry_price - stop_loss
 
         if risk_distance <= 0:
-            raise ValueError(
-                "BUY risk distance must be greater than zero."
-            )
+            raise ValueError("BUY risk distance must be greater than zero.")
 
-        tp1 = entry_price + (
-            risk_distance * tp1_multiplier
-        )
-        tp2 = entry_price + (
-            risk_distance * tp2_multiplier
-        )
-        tp3 = entry_price + (
-            risk_distance * tp3_multiplier
-        )
+        tp1 = entry_price + (risk_distance * tp1_multiplier)
+        tp2 = entry_price + (risk_distance * tp2_multiplier)
+        tp3 = entry_price + (risk_distance * tp3_multiplier)
 
-        take_profit = float(decision["take_profit"])
+        take_profit = float(decision["take_profit"]) if decision.get("take_profit") is not None else tp2
         reward_distance = take_profit - entry_price
         risk_reward_ratio = reward_distance / risk_distance if risk_distance > 0 else None
 
-        risk_reward_tp1 = (
-            (tp1 - entry_price) / risk_distance
-        )
-        risk_reward_tp2 = (
-            (tp2 - entry_price) / risk_distance
-        )
-        risk_reward_tp3 = (
-            (tp3 - entry_price) / risk_distance
-        )
+        risk_reward_tp1 = (tp1 - entry_price) / risk_distance
+        risk_reward_tp2 = (tp2 - entry_price) / risk_distance
+        risk_reward_tp3 = (tp3 - entry_price) / risk_distance
 
     res = {
         "symbol": decision["symbol"],

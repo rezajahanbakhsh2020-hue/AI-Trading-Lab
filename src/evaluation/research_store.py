@@ -594,15 +594,6 @@ def _reconstitute_promoted_candidate_from_binding(
     reconstitution_policy = policy if policy is not None else ProductionPromotionPolicy()
     gov_fp = binding.get("governance_decision_fingerprint")
     campaign_sel_fp = binding.get("campaign_selection_decision_fingerprint")
-
-    if not gov_fp or not str(gov_fp).strip():
-        gov_payload = {
-            "candidate_id": candidate_id,
-            "evidence_id": evidence.evidence_id,
-            "experiment_fingerprint": evidence.experiment_fingerprint,
-            "promotion_status": evidence.promotion_status.value,
-        }
-        gov_fp = hashlib.sha256(json.dumps(gov_payload, sort_keys=True, ensure_ascii=True).encode("utf-8")).hexdigest()
     try:
         validate_promotion_eligibility(evidence, policy=reconstitution_policy, governance_decision_fingerprint=gov_fp)
         return PromotedCandidateArtifact.from_persisted_research(

@@ -1,9 +1,10 @@
-"""Canonical Live Runtime Orchestrator enforcing authoritative candidate resolution, single runtime authorization, lifecycle state transitions, and presentation presentation."""
+"""Canonical Live Runtime Orchestrator enforcing authoritative candidate resolution, single runtime authorization, lifecycle state transitions, persistence boundary, and publication boundary."""
 
 from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any, Optional
 
 import pandas as pd
@@ -15,6 +16,10 @@ from src.evaluation.live_decision_lifecycle import (
     transition_live_decision,
     validate_live_decision_lifecycle,
 )
+from src.evaluation.live_decision_store import (
+    DEFAULT_STORE_PATH,
+    persist_canonical_live_decision,
+)
 from src.evaluation.live_production_decision import (
     Direction,
     ProductionAuthorizationReceipt,
@@ -24,6 +29,9 @@ from src.evaluation.live_production_decision import (
     authorize_production_runtime,
     calculate_production_risk_levels,
     evaluate_production_decision,
+)
+from src.evaluation.live_publication_store import (
+    publish_canonical_live_decision,
 )
 from src.evaluation.live_trade_display import (
     build_live_trade_display,
@@ -51,12 +59,19 @@ def build_live_runtime(
     min_stability_score: float = 0.50,
     candidate_id: Optional[str] = None,
     research_dir: Optional[Any] = None,
+    store_path: Optional[Path | str] = None,
+    publisher: Optional[Any] = None,
+    publish: bool = False,
+    skip_if_no_trade: bool = False,
+    persist: bool = True,
 ) -> LiveRuntimeResult:
-    """Build the canonical live decision and display payload.
+    """Build and execute the complete canonical live decision lifecycle.
 
     Enforces the single canonical runtime flow:
     resolve candidate -> authorize exactly once -> evaluate decision -> calculate risk ->
-    create CanonicalLiveDecision -> lifecycle transitions -> display adapter.
+    create CanonicalLiveDecision (AUTHORIZED) -> transition EVALUATED -> RISK_VALIDATED ->
+    PRESENTABLE -> persist_canonical_live_decision (PERSISTED) ->
+    if publish: publish_canonical_live_decision (PUBLISHED) -> presentation display.
     """
     if not isinstance(data, pd.DataFrame):
         raise TypeError("data must be a pandas DataFrame.")
@@ -141,6 +156,16 @@ def build_live_runtime(
     market_ts = decision_obj.market_timestamp
     close_price = float(data["close"].iloc[-1]) if "close" in data.columns else None
 
+    # Calculate quote age in seconds
+    quote_age = None
+    quote_stale = False
+    if "timestamp" in data.columns and not data.empty:
+        last_dt = pd.to_datetime(data["timestamp"].iloc[-1], utc=True)
+        now_dt = pd.Timestamp.now(tz="UTC") if ref_now is None else pd.to_datetime(ref_now, utc=True)
+        quote_age = (now_dt - last_dt).total_seconds()
+        if quote_age > 300.0:
+            quote_stale = True
+
     final_decision_obj = ProductionDecision(
         candidate_id=resolved_candidate.candidate_id,
         evidence_id=resolved_candidate.evidence.evidence_id,
@@ -176,7 +201,7 @@ def build_live_runtime(
         reason="runtime_authorization_and_evaluation",
     )
 
-    # 5. Lifecycle transitions
+    # 5. Lifecycle transitions to PRESENTABLE
     canonical_dec = transition_live_decision(
         canonical_dec,
         LiveDecisionLifecycleState.EVALUATED,
@@ -199,16 +224,55 @@ def build_live_runtime(
         reason="canonical_artifact_presentable",
     )
 
-    # 6. Presentation display consumer
+    # 6. Enforce persistence boundary if persist is True
+    st_path = Path(store_path) if store_path is not None else DEFAULT_STORE_PATH
+    if persist:
+        persisted_dec = persist_canonical_live_decision(
+            canonical_dec,
+            path=st_path,
+            actor="live_runtime",
+            timestamp_utc=ts_now,
+        )
+    else:
+        # If persistence disabled, create in-memory PERSISTED transition for consistency
+        persisted_dec = transition_live_decision(
+            canonical_dec,
+            LiveDecisionLifecycleState.PERSISTED,
+            actor="live_runtime",
+            timestamp_utc=ts_now,
+            reason="in_memory_persistence",
+        )
+
+    final_cld = persisted_dec
+
+    # 7. Enforce publication boundary if publishing requested
+    pub_result = None
+    if publish and publisher is not None:
+        pub_store_path = st_path.parent / "publication_history.json"
+        published_dec, _, pub_res = publish_canonical_live_decision(
+            persisted_dec,
+            publisher=publisher,
+            candidate=resolved_candidate,
+            path=pub_store_path,
+            skip_if_no_trade=skip_if_no_trade,
+            actor="live_runtime",
+            timestamp_utc=ts_now,
+        )
+        final_cld = published_dec
+        pub_result = pub_res
+
+    # 8. Presentation display consumer
     display = build_live_trade_display(
         data,
+        canonical_decision=final_cld,
         stable_strategy=stable_strategy,
         stability_score=stability_score,
         min_stability_score=min_stability_score,
         symbol=symbol,
         interval=interval,
-        canonical_decision=canonical_dec,
     )
+    display["quote_stale"] = quote_stale
+    display["quote_age_seconds"] = quote_age
 
     decision_dict = {
         "symbol": symbol,
@@ -233,12 +297,14 @@ def build_live_runtime(
         "fast_window": 20,
         "slow_window": 50,
         "timestamp": final_decision_obj.market_timestamp,
+        "quote_stale": quote_stale,
+        "quote_age_seconds": quote_age,
         "candidate_id": resolved_candidate.candidate_id,
         "evidence_id": resolved_candidate.evidence.evidence_id,
         "experiment_fingerprint": resolved_candidate.evidence.experiment_fingerprint,
         "decision_id": final_decision_obj.decision_id,
-        "canonical_live_decision_fingerprint": canonical_dec.canonical_live_decision_fingerprint,
-        "current_lifecycle_state": canonical_dec.current_state.value,
+        "canonical_live_decision_fingerprint": final_cld.canonical_live_decision_fingerprint,
+        "current_lifecycle_state": final_cld.current_state.value,
         "runtime_authorization_fingerprint": receipt.authorization_fingerprint,
         "authorization_policy_version": receipt.authorization_policy_version,
         "authorized_at_utc": receipt.authorized_at_utc,
@@ -246,6 +312,8 @@ def build_live_runtime(
         "governance_decision_fingerprint": receipt.governance_decision_fingerprint,
         "campaign_selection_decision_fingerprint": receipt.campaign_selection_decision_fingerprint,
     }
+    if pub_result:
+        decision_dict["publish_result"] = pub_result
 
     if display["decision"] != decision_dict["decision"]:
         raise ValueError("Live decision and live display decisions do not match.")
@@ -253,5 +321,5 @@ def build_live_runtime(
     return LiveRuntimeResult(
         decision=decision_dict,
         display=display,
-        canonical_decision=canonical_dec,
+        canonical_decision=final_cld,
     )

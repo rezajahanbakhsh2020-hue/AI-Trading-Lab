@@ -81,11 +81,27 @@ PERMITTED_TRANSITIONS: dict[
 }
 
 
+def _parse_utc_timestamp(timestamp_str: str) -> datetime:
+    """Parse and validate ISO-8601 string as timezone-aware UTC datetime."""
+    if not timestamp_str or not isinstance(timestamp_str, str) or not timestamp_str.strip():
+        raise LiveDecisionLifecycleError("Timestamp must be a non-empty string.")
+    try:
+        dt = datetime.fromisoformat(timestamp_str.strip().replace("Z", "+00:00"))
+    except Exception as exc:
+        raise LiveDecisionLifecycleError(f"Malformed ISO-8601 timestamp '{timestamp_str}': {exc}") from exc
+
+    if dt.tzinfo is None:
+        raise LiveDecisionLifecycleError(f"Timestamp '{timestamp_str}' must be timezone-aware.")
+
+    # Convert to UTC
+    return dt.astimezone(timezone.utc)
+
+
 @dataclass(frozen=True)
 class LifecycleTransitionRecord:
     """Immutable audit record of a single live decision state transition."""
 
-    from_state: LiveDecisionLifecycleState
+    from_state: Optional[LiveDecisionLifecycleState]
     to_state: LiveDecisionLifecycleState
     timestamp_utc: str
     actor: str
@@ -93,16 +109,18 @@ class LifecycleTransitionRecord:
     reason: Optional[str] = None
 
     def __post_init__(self) -> None:
-        if not isinstance(self.from_state, LiveDecisionLifecycleState):
+        if self.from_state is not None and not isinstance(self.from_state, LiveDecisionLifecycleState):
             raise LiveDecisionLifecycleError(
-                f"from_state must be a LiveDecisionLifecycleState, got {type(self.from_state).__name__}"
+                f"from_state must be Optional[LiveDecisionLifecycleState], got {type(self.from_state).__name__}"
             )
         if not isinstance(self.to_state, LiveDecisionLifecycleState):
             raise LiveDecisionLifecycleError(
                 f"to_state must be a LiveDecisionLifecycleState, got {type(self.to_state).__name__}"
             )
-        if not self.timestamp_utc or not str(self.timestamp_utc).strip():
-            raise LiveDecisionLifecycleError("timestamp_utc must be a non-empty string.")
+
+        # Validate timestamp structure
+        _parse_utc_timestamp(self.timestamp_utc)
+
         if not self.actor or not str(self.actor).strip():
             raise LiveDecisionLifecycleError("actor must be a non-empty string.")
         if not self.artifact_fingerprint or not str(self.artifact_fingerprint).strip():
@@ -117,7 +135,7 @@ class LifecycleTransitionRecord:
 
     def as_dict(self) -> dict[str, Any]:
         return {
-            "from_state": self.from_state.value,
+            "from_state": self.from_state.value if self.from_state is not None else None,
             "to_state": self.to_state.value,
             "timestamp_utc": self.timestamp_utc,
             "actor": self.actor,
@@ -129,8 +147,9 @@ class LifecycleTransitionRecord:
     def from_dict(cls, data: Mapping[str, Any]) -> LifecycleTransitionRecord:
         if not isinstance(data, Mapping):
             raise LiveDecisionLifecycleError("transition record data must be a mapping.")
+        from_val = data.get("from_state")
         return cls(
-            from_state=LiveDecisionLifecycleState(data["from_state"]),
+            from_state=LiveDecisionLifecycleState(from_val) if from_val is not None else None,
             to_state=LiveDecisionLifecycleState(data["to_state"]),
             timestamp_utc=str(data["timestamp_utc"]),
             actor=str(data["actor"]),
@@ -217,7 +236,7 @@ class CanonicalLiveDecision:
 
         object.__setattr__(self, "live_decision_id", str(self.live_decision_id).strip())
 
-        # Calculate canonical live decision fingerprint
+        # Calculate canonical live decision fingerprint from core canonical payload
         payload = {
             "live_decision_id": self.live_decision_id,
             "authorization_receipt": self.authorization_receipt.as_dict(),
@@ -331,26 +350,19 @@ def create_canonical_live_decision(
     else:
         ts = str(timestamp_utc).strip()
 
+    _parse_utc_timestamp(ts)
     live_dec_id = decision.decision_id
 
-    prov_payload = {
-        "live_decision_id": live_dec_id,
-        "authorization_fingerprint": authorization_receipt.authorization_fingerprint,
-        "decision_id": decision.decision_id,
-        "state": LiveDecisionLifecycleState.AUTHORIZED.value,
-    }
-    prov_fp = hashlib.sha256(json.dumps(prov_payload, sort_keys=True).encode("utf-8")).hexdigest()
-
     init_tr = LifecycleTransitionRecord(
-        from_state=LiveDecisionLifecycleState.AUTHORIZED,
+        from_state=None,
         to_state=LiveDecisionLifecycleState.AUTHORIZED,
         timestamp_utc=ts,
         actor=actor,
-        artifact_fingerprint=prov_fp,
+        artifact_fingerprint=authorization_receipt.authorization_fingerprint,
         reason=reason,
     )
 
-    return CanonicalLiveDecision(
+    cld = CanonicalLiveDecision(
         live_decision_id=live_dec_id,
         authorization_receipt=authorization_receipt,
         decision=decision,
@@ -359,6 +371,9 @@ def create_canonical_live_decision(
         current_state=LiveDecisionLifecycleState.AUTHORIZED,
         transition_history=(init_tr,),
     )
+
+    validate_live_decision_lifecycle(cld)
+    return cld
 
 
 def transition_live_decision(
@@ -395,7 +410,16 @@ def transition_live_decision(
     else:
         ts = str(timestamp_utc).strip()
 
-    # Record fingerprint of canonical decision before transition
+    # Enforce timestamp chronology against last transition
+    prev_dt = _parse_utc_timestamp(canonical_decision.transition_history[-1].timestamp_utc)
+    new_dt = _parse_utc_timestamp(ts)
+    if new_dt < prev_dt:
+        raise LiveDecisionLifecycleError(
+            f"Transition timestamp '{ts}' moves backwards relative to preceding transition timestamp "
+            f"'{canonical_decision.transition_history[-1].timestamp_utc}'."
+        )
+
+    # Record chained fingerprint of canonical decision before transition
     tr = LifecycleTransitionRecord(
         from_state=current_state,
         to_state=target_state,
@@ -426,7 +450,7 @@ def transition_live_decision(
 def validate_live_decision_lifecycle(
     canonical_decision: CanonicalLiveDecision,
 ) -> bool:
-    """Validate structural integrity, authorization, state transitions, history, and risk geometry of a CanonicalLiveDecision."""
+    """Validate structural integrity, authorization, state transitions, history chronology, chained fingerprints, and risk geometry."""
     if not isinstance(canonical_decision, CanonicalLiveDecision):
         raise LiveDecisionLifecycleError("canonical_decision must be a CanonicalLiveDecision instance.")
 
@@ -460,33 +484,82 @@ def validate_live_decision_lifecycle(
     if canonical_decision.risk_levels.decision_id != canonical_decision.decision.decision_id:
         raise LiveDecisionLifecycleError("Risk decision_id mismatch.")
 
-    # 3. State & History Legal Progression Check
+    # 3. State & History Legal Progression, Chronology, and Chained Fingerprint Check
     history = canonical_decision.transition_history
     if not history:
         raise LiveDecisionLifecycleError("Transition history must not be empty.")
 
-    # Check initial transition
+    # First transition: initial creation event
     first_tr = history[0]
-    if first_tr.from_state != LiveDecisionLifecycleState.AUTHORIZED or first_tr.to_state != LiveDecisionLifecycleState.AUTHORIZED:
-        raise LiveDecisionLifecycleError("First transition must start at AUTHORIZED -> AUTHORIZED.")
+    if first_tr.from_state is not None or first_tr.to_state != LiveDecisionLifecycleState.AUTHORIZED:
+        raise LiveDecisionLifecycleError("First transition record must be initial creation (from_state=None, to_state=AUTHORIZED).")
 
+    prev_dt = _parse_utc_timestamp(first_tr.timestamp_utc)
     prev_state = LiveDecisionLifecycleState.AUTHORIZED
-    for idx, tr in enumerate(history[1:], 1):
+
+    # Verify history chain step-by-step
+    recomputed_history = (first_tr,)
+    provisional_dec = CanonicalLiveDecision(
+        live_decision_id=canonical_decision.live_decision_id,
+        authorization_receipt=canonical_decision.authorization_receipt,
+        decision=canonical_decision.decision,
+        signal=canonical_decision.signal,
+        risk_levels=canonical_decision.risk_levels,
+        current_state=LiveDecisionLifecycleState.AUTHORIZED,
+        transition_history=recomputed_history,
+    )
+
+    for idx in range(1, len(history)):
+        tr = history[idx]
+
+        # Timestamp monotonicity check
+        curr_dt = _parse_utc_timestamp(tr.timestamp_utc)
+        if curr_dt < prev_dt:
+            raise LiveDecisionLifecycleError(
+                f"Transition history timestamp non-monotonic at step {idx}: '{tr.timestamp_utc}' < '{history[idx-1].timestamp_utc}'."
+            )
+        prev_dt = curr_dt
+
+        # State transition check
         if tr.from_state != prev_state:
             raise LiveDecisionLifecycleError(
-                f"Transition history gap at step {idx}: expected from_state '{prev_state.value}', got '{tr.from_state.value}'."
+                f"Transition history gap at step {idx}: expected from_state '{prev_state.value}', got '{tr.from_state.value if tr.from_state else 'None'}'."
             )
+
         allowed = PERMITTED_TRANSITIONS.get(prev_state, set())
         if tr.to_state not in allowed:
             raise LiveDecisionLifecycleError(
                 f"Illegal transition recorded in history at step {idx}: from '{prev_state.value}' to '{tr.to_state.value}'."
             )
+
+        # Chained artifact fingerprint verification
+        expected_fp = provisional_dec.canonical_live_decision_fingerprint
+        if tr.artifact_fingerprint != expected_fp:
+            raise LiveDecisionLifecycleError(
+                f"Transition history artifact_fingerprint mismatch at step {idx}: "
+                f"expected '{expected_fp}', got '{tr.artifact_fingerprint}'."
+            )
+
         prev_state = tr.to_state
+        recomputed_history = recomputed_history + (tr,)
+        provisional_dec = CanonicalLiveDecision(
+            live_decision_id=canonical_decision.live_decision_id,
+            authorization_receipt=canonical_decision.authorization_receipt,
+            decision=canonical_decision.decision,
+            signal=canonical_decision.signal,
+            risk_levels=canonical_decision.risk_levels,
+            current_state=prev_state,
+            transition_history=recomputed_history,
+        )
 
     if canonical_decision.current_state != prev_state:
         raise LiveDecisionLifecycleError(
             f"current_state '{canonical_decision.current_state.value}' does not match final transition history state '{prev_state.value}'."
         )
+
+    # Final fingerprint match check against recomputed chain
+    if canonical_decision.canonical_live_decision_fingerprint != provisional_dec.canonical_live_decision_fingerprint:
+        raise LiveDecisionLifecycleError("Canonical live decision fingerprint mismatch across history chain.")
 
     # 4. Risk Level Consistency in Post-Evaluation States
     evaluated_states = (
