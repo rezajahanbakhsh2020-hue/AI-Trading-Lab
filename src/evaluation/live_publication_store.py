@@ -130,23 +130,16 @@ def append_publication_record(
                         f"canonical_live_decision_fingerprint mismatch ('{ext_cld_str}' vs '{new_cld_str}')."
                     )
 
-                # Compare canonical publication content
-                payload_keys = ("publication_id", "signal_id", "decision_id", "symbol", "timeframe", "decision", "entry", "stop_loss", "tp1")
-                match_all = True
-                for k in payload_keys:
-                    if existing.get(k) != new_record.get(k):
-                        match_all = False
-                        break
-
-                if match_all and new_prov == ext_prov:
+                # Compare entire publication record representation for exact match
+                if existing == new_record:
                     # Identical replay: safe no-op
                     return history
-                else:
-                    # Conflicting replay for same identity -> fail closed
-                    raise PublicationIntegrityError(
-                        f"Conflicting publication replay detected for publication_id '{pub_id}'. "
-                        "Existing publication record differs from new record."
-                    )
+
+                # Conflicting replay for same identity -> fail closed
+                raise PublicationIntegrityError(
+                    f"Conflicting publication replay detected for publication_id '{pub_id}'. "
+                    "Existing publication record differs from new record."
+                )
 
     history.append(new_record)
     save_publication_history(history, target)

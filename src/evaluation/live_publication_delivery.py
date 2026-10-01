@@ -312,18 +312,34 @@ def save_delivery_history(
 
 
 def find_delivery_receipt(
-    publication_id: str,
-    canonical_live_decision_fingerprint: str,
+    publication_id: Optional[str] = None,
+    canonical_live_decision_fingerprint: Optional[str] = None,
     path: str | Path = DEFAULT_DELIVERY_STORE_PATH,
 ) -> Optional[PublicationDeliveryReceipt]:
-    """Find a delivery receipt in the ledger matching publication_id or canonical decision fingerprint."""
+    """Find a delivery receipt in the ledger matching exact compound publication_id and canonical decision fingerprint."""
+    if not publication_id and not canonical_live_decision_fingerprint:
+        return None
+
     history = load_delivery_history(path)
     for receipt in history:
-        if (
-            receipt.publication_id == publication_id
-            or receipt.canonical_live_decision_fingerprint == canonical_live_decision_fingerprint
-        ):
+        pub_match = publication_id is not None and receipt.publication_id == publication_id
+        cld_match = canonical_live_decision_fingerprint is not None and receipt.canonical_live_decision_fingerprint == canonical_live_decision_fingerprint
+
+        if pub_match and cld_match:
             return receipt
+        elif pub_match and canonical_live_decision_fingerprint is not None and not cld_match:
+            raise DeliveryIntegrityError(
+                f"Conflicting delivery receipt match for publication_id '{publication_id}': "
+                f"canonical_live_decision_fingerprint mismatch ('{receipt.canonical_live_decision_fingerprint}' vs '{canonical_live_decision_fingerprint}')"
+            )
+        elif cld_match and publication_id is not None and not pub_match:
+            raise DeliveryIntegrityError(
+                f"Conflicting delivery receipt match for canonical_live_decision_fingerprint '{canonical_live_decision_fingerprint}': "
+                f"publication_id mismatch ('{receipt.publication_id}' vs '{publication_id}')"
+            )
+        elif pub_match or cld_match:
+            return receipt
+
     return None
 
 
@@ -342,12 +358,22 @@ def append_delivery_receipt(
     # Search for existing receipt matching publication_id or canonical_live_decision_fingerprint
     existing_idx = None
     for idx, existing in enumerate(history):
-        if (
-            existing.publication_id == receipt.publication_id
-            or existing.canonical_live_decision_fingerprint == receipt.canonical_live_decision_fingerprint
-        ):
+        pub_match = existing.publication_id == receipt.publication_id
+        cld_match = existing.canonical_live_decision_fingerprint == receipt.canonical_live_decision_fingerprint
+
+        if pub_match and cld_match:
             existing_idx = idx
             break
+        elif pub_match and not cld_match:
+            raise DeliveryIntegrityError(
+                f"Conflicting delivery receipt detected for publication_id '{receipt.publication_id}': "
+                f"canonical_live_decision_fingerprint mismatch ('{existing.canonical_live_decision_fingerprint}' vs '{receipt.canonical_live_decision_fingerprint}')"
+            )
+        elif cld_match and not pub_match:
+            raise DeliveryIntegrityError(
+                f"Conflicting delivery receipt detected for canonical_live_decision_fingerprint '{receipt.canonical_live_decision_fingerprint}': "
+                f"publication_id mismatch ('{existing.publication_id}' vs '{receipt.publication_id}')"
+            )
 
     if existing_idx is not None:
         existing = history[existing_idx]

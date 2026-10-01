@@ -18,12 +18,12 @@ from src.evaluation.research_constitution import (
     ResearchExperimentSpec,
 )
 from src.evaluation.research_store import save_research_candidate
-from src.integration.project2_publisher import Project2Publisher, build_contract_v1_payload
+from src.integration.project2_publisher import Project2Publisher
 
 
 def make_market_data() -> pd.DataFrame:
     now_dt = datetime.datetime.now(datetime.timezone.utc)
-    timestamps = [(now_dt - datetime.timedelta(minutes=5 * (100 - i))).isoformat() for i in range(100)]
+    timestamps = [(now_dt - datetime.timedelta(minutes=5 * (99 - i))).isoformat() for i in range(100)]
     df = pd.DataFrame({
         "openTime": timestamps,
         "open": [2000.0 + i for i in range(100)],
@@ -31,6 +31,7 @@ def make_market_data() -> pd.DataFrame:
         "low": [1995.0 + i for i in range(100)],
         "close": [2002.0 + i for i in range(100)],
     })
+    df["timestamp"] = pd.to_datetime(df["openTime"], utc=True)
     return df
 
 
@@ -40,11 +41,16 @@ def test_end_to_end_pipeline(mock_urlopen, mock_load_data, tmp_path: Path) -> No
     # Setup mocks
     mock_load_data.return_value = make_market_data()
 
-    mock_resp = MagicMock()
-    mock_resp.getcode.return_value = 200
-    mock_resp.read.return_value = b'{"status": "ACKNOWLEDGED", "received_event_id": "test"}'
-    mock_resp.__enter__.return_value = mock_resp
-    mock_urlopen.return_value = mock_resp
+    def mock_urlopen_impl(req, *args, **kwargs):
+        body = json.loads(req.data.decode("utf-8")) if hasattr(req, "data") and req.data else {}
+        evt_id = body.get("event_id") or "test_event_id"
+        m_resp = MagicMock()
+        m_resp.getcode.return_value = 200
+        m_resp.read.return_value = json.dumps({"status": "INGESTED", "event_id": evt_id, "publication_id": evt_id}).encode("utf-8")
+        m_resp.__enter__.return_value = m_resp
+        return m_resp
+
+    mock_urlopen.side_effect = mock_urlopen_impl
 
     store_path = tmp_path / "live_history.json"
     snapshot_path = tmp_path / "latest_snapshot.json"

@@ -6,9 +6,6 @@ from typing import Any
 import pandas as pd
 
 from src.evaluation.end_to_end_runner import run_end_to_end
-from src.evaluation.production_live_bridge import (
-    load_production_selection,
-)
 
 
 DEFAULT_DATA_PATH = Path(

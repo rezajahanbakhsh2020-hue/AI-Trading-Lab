@@ -595,7 +595,6 @@ class LiveExecutionRuntime:
             risk=canonical_cld.risk_levels,
             candidate=candidate,
             authorization=receipt,
-            confidence=stability_score,
         )
 
         record = build_live_decision_record(display)
