@@ -309,7 +309,7 @@ def test_runtime_bypass_regression():
     data = _data()
     # Unpromoted strategy must fail closed
     with pytest.raises(ValueError, match="No authoritative promoted candidate resolved"):
-        build_live_runtime(data, stable_strategy="non_existent_strategy", stability_score=0.80)
+        build_live_runtime(data, stable_strategy="non_existent_strategy", stability_score=None)
 
 
 # --- Test K: Display Bypass Regression ---
@@ -321,7 +321,7 @@ def test_display_bypass_regression(monkeypatch):
     monkeypatch.setattr("src.evaluation.live_production_decision.authorize_production_runtime", pytest.fail, raising=False)
     monkeypatch.setattr("src.evaluation.research_store.resolve_promoted_candidate", pytest.fail, raising=False)
 
-    display = build_live_trade_display(data, canonical_decision=None, stable_strategy="non_existent_strategy", stability_score=0.80)
+    display = build_live_trade_display(data, canonical_decision=None, stable_strategy="non_existent_strategy", stability_score=None)
     assert display["decision"] == "BLOCKED"
     assert display["reason"] == "missing_canonical_live_decision"
 
@@ -333,7 +333,7 @@ def test_runtime_and_display_identity_parity(tmp_path):
     res = build_live_runtime(
         data,
         stable_strategy="momentum",
-        stability_score=0.85,
+        stability_score=None,
         reference_now=ref_now,
         store_path=tmp_path / "store.json",
         persist=False,

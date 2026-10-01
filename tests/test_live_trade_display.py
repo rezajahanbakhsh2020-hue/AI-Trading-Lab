@@ -33,7 +33,7 @@ def _rising_data(rows: int = 80) -> pd.DataFrame:
     )
 
 
-def _get_canonical_decision(data: pd.DataFrame, strategy: str = "momentum", score: float = 0.85, min_score: float = 0.50):
+def _get_canonical_decision(data: pd.DataFrame, strategy: str = "momentum", score: float | None = None, min_score: float = 0.50):
     res = build_live_runtime(data, stable_strategy=strategy, stability_score=score, min_stability_score=min_score, persist=False)
     return res.canonical_decision
 
@@ -42,12 +42,12 @@ def _get_canonical_decision(data: pd.DataFrame, strategy: str = "momentum", scor
 
 def test_buy_trade_display_contains_entry_sl_and_three_targets():
     data = _rising_data()
-    cld = _get_canonical_decision(data, strategy="momentum", score=0.85)
+    cld = _get_canonical_decision(data, strategy="momentum", score=None)
     result = build_live_trade_display(
         data,
         canonical_decision=cld,
         stable_strategy="momentum",
-        stability_score=0.85,
+        stability_score=None,
     )
 
     assert result["decision"] == "BUY"
@@ -65,12 +65,12 @@ def test_buy_trade_display_contains_entry_sl_and_three_targets():
 
 def test_default_targets_have_one_two_three_risk_structure():
     data = _rising_data()
-    cld = _get_canonical_decision(data, strategy="momentum", score=0.85)
+    cld = _get_canonical_decision(data, strategy="momentum", score=None)
     result = build_live_trade_display(
         data,
         canonical_decision=cld,
         stable_strategy="momentum",
-        stability_score=0.85,
+        stability_score=None,
     )
 
     assert result["tp1_multiplier"] == DEFAULT_TP1_MULTIPLIER
@@ -84,12 +84,12 @@ def test_default_targets_have_one_two_three_risk_structure():
 
 def test_custom_target_multipliers_are_applied():
     data = _rising_data()
-    cld = _get_canonical_decision(data, strategy="momentum", score=0.85)
+    cld = _get_canonical_decision(data, strategy="momentum", score=None)
     result = build_live_trade_display(
         data,
         canonical_decision=cld,
         stable_strategy="momentum",
-        stability_score=0.85,
+        stability_score=None,
         tp1_multiplier=0.5,
         tp2_multiplier=1.5,
         tp3_multiplier=2.5,
@@ -102,12 +102,12 @@ def test_custom_target_multipliers_are_applied():
 
 def test_no_trade_has_no_trade_levels():
     data = _rising_data()
-    cld = _get_canonical_decision(data, strategy="momentum", score=0.85, min_score=0.90)
+    cld = _get_canonical_decision(data, strategy="momentum", score=None, min_score=0.90)
     result = build_live_trade_display(
         data,
         canonical_decision=cld,
         stable_strategy="momentum",
-        stability_score=0.85,
+        stability_score=None,
     )
 
     assert result["decision"] == "NO TRADE"
@@ -121,12 +121,12 @@ def test_no_trade_has_no_trade_levels():
 
 def test_unsupported_strategy_has_no_trade_levels():
     data = _rising_data()
-    cld = _get_canonical_decision(data, strategy="moving_average", score=0.85)
+    cld = _get_canonical_decision(data, strategy="moving_average", score=None)
     result = build_live_trade_display(
         data,
         canonical_decision=cld,
         stable_strategy="moving_average",
-        stability_score=0.85,
+        stability_score=None,
     )
 
     assert result["decision"] == "NO TRADE"
@@ -144,7 +144,7 @@ def test_tp_multipliers_must_be_strictly_increasing():
             data,
             canonical_decision=cld,
             stable_strategy="momentum",
-            stability_score=0.80,
+            stability_score=None,
             tp1_multiplier=2.0,
             tp2_multiplier=1.0,
             tp3_multiplier=3.0,
@@ -162,19 +162,19 @@ def test_tp_multipliers_must_be_positive():
             data,
             canonical_decision=cld,
             stable_strategy="momentum",
-            stability_score=0.80,
+            stability_score=None,
             tp1_multiplier=0.0,
         )
 
 
 def test_no_sell_decision_is_invented():
     data = _rising_data()
-    cld = _get_canonical_decision(data, strategy="momentum", score=0.85)
+    cld = _get_canonical_decision(data, strategy="momentum", score=None)
     result = build_live_trade_display(
         data,
         canonical_decision=cld,
         stable_strategy="momentum",
-        stability_score=0.85,
+        stability_score=None,
     )
 
     assert result["decision"] in {"BUY", "NO TRADE"}
@@ -194,7 +194,7 @@ def test_missing_canonical_decision_fails_closed_without_calling_runtime(monkeyp
     monkeypatch.setattr("src.evaluation.live_production_decision.authorize_production_runtime", mock_authorize, raising=False)
     monkeypatch.setattr("src.evaluation.research_store.resolve_promoted_candidate", mock_resolve, raising=False)
 
-    result = build_live_trade_display(data, canonical_decision=None, stable_strategy="momentum", stability_score=0.85)
+    result = build_live_trade_display(data, canonical_decision=None, stable_strategy="momentum", stability_score=None)
 
     assert result["decision"] == "BLOCKED"
     assert result["reason"] == "missing_canonical_live_decision"
@@ -205,7 +205,7 @@ def test_missing_canonical_decision_fails_closed_without_calling_runtime(monkeyp
 
 def test_valid_canonical_decision_preserves_identities_without_runtime_calls(monkeypatch):
     data = _rising_data()
-    cld = _get_canonical_decision(data, strategy="momentum", score=0.85)
+    cld = _get_canonical_decision(data, strategy="momentum", score=None)
 
     monkeypatch.setattr("src.evaluation.live_runtime.build_live_runtime", pytest.fail, raising=False)
     monkeypatch.setattr("src.evaluation.live_production_decision.build_live_production_decision", pytest.fail, raising=False)

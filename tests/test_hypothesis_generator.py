@@ -339,8 +339,10 @@ def test_16_generated_hypotheses_cannot_bypass_governance():
     assert cand.can_promote() is False
 
     # Attempting to convert unvalidated candidate to production artifact must fail closed
+    from src.evaluation.stability import CanonicalStabilityEvidence
+    stab = CanonicalStabilityEvidence("momentum", 0.85)
     with pytest.raises(ValueError, match="evidence is missing"):
-        cand.promote_to_production_artifact("XAUUSD", "1h", operational_stability_score=0.85)
+        cand.promote_to_production_artifact("XAUUSD", "1h", canonical_stability=stab)
 
 
 # Test 17: Persistence and store integration with ResearchRegistryStore

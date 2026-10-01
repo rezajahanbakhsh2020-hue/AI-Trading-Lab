@@ -370,7 +370,8 @@ def persist_promoted_candidate_binding(
     *,
     candidate_id: str,
     evidence: ResearchEvidence,
-    operational_stability_score: float,
+    canonical_stability: Any = None,
+    operational_stability_score: float | None = None,
     base_dir: str | Path = DEFAULT_RESEARCH_DIR,
     policy: Any | None = None,
     robustness_assessment: Any | None = None,
@@ -462,12 +463,24 @@ def persist_promoted_candidate_binding(
 
     spec = evidence.spec
 
-    if operational_stability_score is None or isinstance(operational_stability_score, bool) or not isinstance(operational_stability_score, (int, float)):
-        raise PromotionIntegrityError("operational_stability_score must be a numeric float.")
-    f_stab_score = float(operational_stability_score)
-    import math
-    if not math.isfinite(f_stab_score):
-        raise PromotionIntegrityError("operational_stability_score must be finite (not NaN or infinity).")
+    from src.evaluation.stability import CanonicalStabilityEvidence
+
+    if canonical_stability is not None:
+        if not isinstance(canonical_stability, CanonicalStabilityEvidence):
+            raise PromotionIntegrityError("promoted binding requires canonical stability evidence (CanonicalStabilityEvidence).")
+        if canonical_stability.strategy_name != spec.strategy_name:
+            raise PromotionIntegrityError(
+                f"canonical stability strategy '{canonical_stability.strategy_name}' does not match "
+                f"evidence strategy '{spec.strategy_name}'."
+            )
+        f_stab_score = canonical_stability.stability_score
+    else:
+        if operational_stability_score is None or isinstance(operational_stability_score, bool) or not isinstance(operational_stability_score, (int, float)):
+            raise PromotionIntegrityError("operational_stability_score must be a numeric float or CanonicalStabilityEvidence.")
+        f_stab_score = float(operational_stability_score)
+        import math
+        if not math.isfinite(f_stab_score):
+            raise PromotionIntegrityError("operational_stability_score must be finite (not NaN or infinity).")
 
     binding = {
         "candidate_id": candidate_id,
@@ -503,7 +516,8 @@ def save_research_candidate(
     *,
     candidate_id: str,
     evidence: ResearchEvidence,
-    operational_stability_score: float,
+    canonical_stability: Any = None,
+    operational_stability_score: float | None = None,
     base_dir: str | Path = DEFAULT_RESEARCH_DIR,
     governance_decision: Any | None = None,
     campaign_selection_decision: Any | None = None,
@@ -513,6 +527,7 @@ def save_research_candidate(
     return persist_promoted_candidate_binding(
         candidate_id=candidate_id,
         evidence=evidence,
+        canonical_stability=canonical_stability,
         operational_stability_score=operational_stability_score,
         base_dir=base_dir,
         governance_decision=governance_decision,

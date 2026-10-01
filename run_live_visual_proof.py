@@ -147,7 +147,7 @@ def run_live_visual_proof() -> dict:
     runtime = build_live_runtime(
         data,
         stable_strategy=str(stable_strategy),
-        stability_score=float(stability_score),
+        stability_score=None,
         symbol="XAUUSD",
         interval=DEFAULT_INTERVAL,
     )

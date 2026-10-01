@@ -40,7 +40,7 @@ def test_buy_overlay_contains_all_trade_lines():
     runtime_res = build_live_runtime(
         data,
         stable_strategy="momentum",
-        stability_score=0.85,
+        stability_score=None,
         reference_now=ref_now,
         persist=False,
     )
@@ -70,7 +70,7 @@ def test_buy_overlay_has_five_visible_lines():
     runtime_res = build_live_runtime(
         data,
         stable_strategy="momentum",
-        stability_score=0.85,
+        stability_score=None,
         reference_now=ref_now,
         persist=False,
     )
@@ -125,7 +125,7 @@ def test_overlay_preserves_strategy_and_stability_metadata():
     runtime_res = build_live_runtime(
         data,
         stable_strategy="momentum",
-        stability_score=0.85,
+        stability_score=None,
         reference_now=ref_now,
         persist=False,
     )
@@ -133,7 +133,7 @@ def test_overlay_preserves_strategy_and_stability_metadata():
     overlay = build_live_trade_overlay(data, runtime_res.display)
 
     assert overlay["stable_strategy"] == "momentum"
-    assert overlay["stability_score"] == pytest.approx(0.85)
+    assert overlay["stability_score"] == pytest.approx(0.7458282289664787)
     assert overlay["trend"] == "UP"
     assert overlay["signal_label"] == "BUY"
 
@@ -144,7 +144,7 @@ def test_overlay_uses_latest_data_timestamp():
     runtime_res = build_live_runtime(
         data,
         stable_strategy="momentum",
-        stability_score=0.85,
+        stability_score=None,
         persist=False,
     )
 
@@ -159,7 +159,7 @@ def test_invalid_decision_is_rejected():
     runtime_res = build_live_runtime(
         data,
         stable_strategy="momentum",
-        stability_score=0.85,
+        stability_score=None,
         persist=False,
     )
     display = dict(runtime_res.display)
@@ -179,7 +179,7 @@ def test_missing_timestamp_is_rejected():
     runtime_res = build_live_runtime(
         _rising_data(),
         stable_strategy="momentum",
-        stability_score=0.85,
+        stability_score=None,
         persist=False,
     )
     display = runtime_res.display

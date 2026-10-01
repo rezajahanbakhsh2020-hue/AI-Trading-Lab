@@ -59,12 +59,13 @@ def test_production_end_to_end_uses_candidate_lineage(
         results_dir=tmp_path,
         symbol="XAUUSD",
         interval="1d",
+        min_stability_score=0.40,
         store_path=tmp_path / "store.json",
     )
 
     assert result["end_to_end_ready"] is True
     assert result["production_selection"]["stable_strategy"] == "momentum"
-    assert result["production_selection"]["stability_score"] == pytest.approx(0.85)
+    assert result["production_selection"]["stability_score"] == pytest.approx(0.7458282289664787)
     assert result["production_selection"]["source"] == "promoted_candidate_binding"
 
     assert result["decision"]["decision"] == "BUY"

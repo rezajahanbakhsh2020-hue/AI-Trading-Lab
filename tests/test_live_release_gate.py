@@ -38,7 +38,7 @@ def _runtime(store_path=None):
     return build_live_runtime(
         data,
         stable_strategy="momentum",
-        stability_score=0.85,
+        stability_score=None,
         symbol="XAUUSD",
         interval="1d",
         reference_now=ref_now,
@@ -89,7 +89,7 @@ def test_release_gate_accepts_no_trade_with_valid_levels_state(tmp_path):
     runtime = build_live_runtime(
         data,
         stable_strategy="momentum",
-        stability_score=0.85,
+        stability_score=None,
         symbol="XAUUSD",
         interval="1d",
         reference_now=ref_now,
