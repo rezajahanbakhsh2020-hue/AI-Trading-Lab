@@ -213,34 +213,37 @@ class ResearchEvidenceIntegrityGate:
                 )
 
             # Check exact UTC timestamps
-            if p.start_timestamp_utc is not None or p.end_timestamp_utc is not None:
-                if p.start_timestamp_utc is None or p.end_timestamp_utc is None:
+            if p.start_timestamp_utc is None or p.end_timestamp_utc is None or not str(p.start_timestamp_utc).strip() or not str(p.end_timestamp_utc).strip():
+                if require_exact_timestamps:
                     rejection_reasons.append(RejectionReason.EVIDENCE_INCOMPLETENESS)
                     notes.append(
-                        f"Partition '{p.role.value}' must provide both start_timestamp_utc and end_timestamp_utc."
+                        f"Partition '{p.role.value}' is missing required exact UTC timestamps."
                     )
-                else:
-                    try:
-                        p_start_dt = pd.to_datetime(p.start_timestamp_utc, utc=True)
-                        p_end_dt = pd.to_datetime(p.end_timestamp_utc, utc=True)
-                        if pd.isna(p_start_dt) or pd.isna(p_end_dt):
-                            raise ValueError("NaT value parsed.")
-                        if p_start_dt > p_end_dt:
-                            rejection_reasons.append(RejectionReason.FAILED_VALIDATION)
-                            notes.append(
-                                f"Partition '{p.role.value}' has reversed timestamps: "
-                                f"start '{p.start_timestamp_utc}' > end '{p.end_timestamp_utc}'."
-                            )
-                    except Exception as exc:
-                        rejection_reasons.append(RejectionReason.EVIDENCE_INCOMPLETENESS)
+            else:
+                try:
+                    s_str = str(p.start_timestamp_utc).strip()
+                    e_str = str(p.end_timestamp_utc).strip()
+                    p_start_dt = pd.to_datetime(s_str, utc=True)
+                    p_end_dt = pd.to_datetime(e_str, utc=True)
+                    if pd.isna(p_start_dt) or pd.isna(p_end_dt):
+                        raise ValueError("NaT value parsed.")
+                    if p_start_dt > p_end_dt:
+                        rejection_reasons.append(RejectionReason.FAILED_VALIDATION)
                         notes.append(
-                            f"Partition '{p.role.value}' has invalid UTC timestamps: {exc}"
+                            f"Partition '{p.role.value}' has reversed timestamps: "
+                            f"start '{p.start_timestamp_utc}' > end '{p.end_timestamp_utc}'."
                         )
-            elif require_exact_timestamps:
-                rejection_reasons.append(RejectionReason.EVIDENCE_INCOMPLETENESS)
-                notes.append(
-                    f"Partition '{p.role.value}' is missing required exact UTC timestamps."
-                )
+                    if p_start_dt.strftime("%Y-%m-%d") != p.start_date[:10] or p_end_dt.strftime("%Y-%m-%d") != p.end_date[:10]:
+                        rejection_reasons.append(RejectionReason.FAILED_VALIDATION)
+                        notes.append(
+                            f"Partition '{p.role.value}' date/timestamp mismatch: "
+                            f"dates [{p.start_date}, {p.end_date}] vs timestamps [{s_str}, {e_str}]."
+                        )
+                except Exception as exc:
+                    rejection_reasons.append(RejectionReason.EVIDENCE_INCOMPLETENESS)
+                    notes.append(
+                        f"Partition '{p.role.value}' has invalid UTC timestamps: {exc}"
+                    )
 
         # Check required roles
         if EvidencePartitionRole.IN_SAMPLE not in partition_by_role:

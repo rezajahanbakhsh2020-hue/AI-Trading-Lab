@@ -25,6 +25,7 @@ from src.evaluation.research_constitution import (
     ResearchHypothesis,
     WalkForwardProtocol,
 )
+from src.evaluation.hypothesis_generator import accept_hypothesis_for_research
 from src.evaluation.research_qualification import qualify_research_evidence
 from src.evaluation.research_runner import (
     run_research_experiment,
@@ -79,6 +80,12 @@ def make_test_spec(
         parameters={"window": 5},
         walk_forward_protocol=WalkForwardProtocol(train_size=30, test_size=20),
     )
+
+
+def make_test_hypothesis(**kwargs) -> ResearchHypothesis:
+    spec = make_test_spec(**kwargs)
+    hyp = ResearchHypothesis.from_experiment_spec(spec)
+    return accept_hypothesis_for_research(hyp)
 
 
 # A. Non-monotonic timestamp input fails closed before sorting
@@ -151,8 +158,8 @@ def test_datetime_index_path_ordering_guarantees():
 # F. Exact partition timestamps are populated by new evidence
 def test_new_evidence_populates_exact_utc_timestamps():
     df = make_test_dataframe(100)
-    spec = make_test_spec()
-    evidence = run_research_experiment(spec, df=df)
+    hyp = make_test_hypothesis()
+    evidence = run_research_experiment(hyp, df=df)
 
     assert len(evidence.partitions) >= 3
     for p in evidence.partitions:
@@ -166,8 +173,8 @@ def test_new_evidence_populates_exact_utc_timestamps():
 # G. Exact timestamps survive JSON persistence
 def test_exact_timestamps_survive_json_persistence(tmp_path: Path):
     df = make_test_dataframe(100)
-    spec = make_test_spec()
-    evidence = run_research_experiment(spec, df=df)
+    hyp = make_test_hypothesis()
+    evidence = run_research_experiment(hyp, df=df)
 
     saved_path = save_research_experiment(evidence, base_dir=tmp_path)
     loaded = load_research_experiment(saved_path)
@@ -288,8 +295,8 @@ def test_empty_partitions_fail_closed():
 # L. Walk-forward evidence uses actual test-window span
 def test_walk_forward_evidence_uses_actual_test_window_span():
     df = make_test_dataframe(100, start_date="2025-01-01")
-    spec = make_test_spec(start_date="2025-01-01", end_date="2025-04-10")
-    evidence = run_research_experiment(spec, df=df)
+    hyp = make_test_hypothesis(start_date="2025-01-01", end_date="2025-04-10")
+    evidence = run_research_experiment(hyp, df=df)
 
     wf_p = [p for p in evidence.partitions if p.role == EvidencePartitionRole.WALK_FORWARD][0]
 

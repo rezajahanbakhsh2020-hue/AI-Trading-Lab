@@ -17,6 +17,7 @@ from src.evaluation.campaign_synthesis import (
     select_campaign_candidate,
     validate_campaign_selection_integrity,
 )
+from src.evaluation.hypothesis_generator import accept_hypothesis_for_research
 from src.evaluation.research_constitution import (
     CodeProvenance,
     DatasetScope,
@@ -26,6 +27,7 @@ from src.evaluation.research_constitution import (
     ResearchCampaignStatus,
     ResearchEvidence,
     ResearchExperimentSpec,
+    ResearchHypothesis,
     ResearchPlannedTrial,
     ResearchTrialCheckpoint,
     ResearchTrialPlan,
@@ -80,7 +82,8 @@ def _create_mock_evidence(
         walk_forward_protocol=WalkForwardProtocol(train_size=40, test_size=15),
     )
 
-    orig_evidence = run_research_experiment(spec)
+    hyp = accept_hypothesis_for_research(ResearchHypothesis.from_experiment_spec(spec))
+    orig_evidence = run_research_experiment(hyp)
 
     from src.evaluation.research_constitution import EvidencePartition, EvidencePartitionRole
 

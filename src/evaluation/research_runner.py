@@ -226,7 +226,7 @@ def validate_and_prepare_dataset(
 
 
 def run_research_experiment(
-    spec: ResearchExperimentSpec | ResearchHypothesis,
+    spec: ResearchHypothesis,
     df: pd.DataFrame | None = None,
     *,
     criteria: DiscoveryCriteria | None = None,
@@ -240,22 +240,28 @@ def run_research_experiment(
 ) -> ResearchEvidence:
     """Execute a single canonical research experiment and return its ResearchEvidence.
 
-    Fails closed on invalid inputs, dataset mismatches, time-order violations, or
-    missing strategy definitions.
+    Fails closed if spec is not an ACCEPTED_FOR_RESEARCH ResearchHypothesis instance,
+    dataset mismatches, time-order violations, or missing strategy definitions.
 
     Does NOT promote candidates or alter production decision bindings.
     """
-    if isinstance(spec, ResearchHypothesis):
-        if spec.status != HypothesisStatus.ACCEPTED_FOR_RESEARCH:
-            raise UnacceptedHypothesisError(
-                f"Hypothesis '{spec.hypothesis_id}' with status '{spec.status.value}' "
-                f"is not accepted for research execution. Only ACCEPTED_FOR_RESEARCH hypotheses can enter execution."
-            )
-        if not spec.code_provenance or not spec.code_provenance.commit_sha or not spec.code_provenance.commit_sha.strip():
-            raise ValueError(f"Hypothesis '{spec.hypothesis_id}' lacks required CodeProvenance commit_sha.")
-        spec = spec.to_experiment_spec()
-    elif not isinstance(spec, ResearchExperimentSpec):
-        raise TypeError("spec must be a ResearchExperimentSpec or ResearchHypothesis instance.")
+    if not isinstance(spec, ResearchHypothesis):
+        raise TypeError(
+            f"run_research_experiment expects an authoritative ResearchHypothesis instance, "
+            f"got '{type(spec).__name__}'. Raw ResearchExperimentSpec execution is strictly forbidden."
+        )
+
+    if spec.status != HypothesisStatus.ACCEPTED_FOR_RESEARCH:
+        raise UnacceptedHypothesisError(
+            f"Hypothesis '{spec.hypothesis_id}' with status '{spec.status.value}' "
+            f"is not accepted for research execution. Only ACCEPTED_FOR_RESEARCH hypotheses can enter execution."
+        )
+
+    if not spec.code_provenance or not spec.code_provenance.commit_sha or not spec.code_provenance.commit_sha.strip():
+        raise ValueError(f"Hypothesis '{spec.hypothesis_id}' lacks required CodeProvenance commit_sha.")
+
+    hypothesis_authority = spec
+    spec = spec.to_experiment_spec()
     if not isinstance(spec.dataset_scope, DatasetScope):
         raise TypeError("spec.dataset_scope must be a DatasetScope instance.")
     if not isinstance(spec.execution_assumptions, ExecutionAssumptions):

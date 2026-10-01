@@ -239,8 +239,8 @@ def test_incomplete_provenance_hypothesis_cannot_bypass_governance():
         )
 
 
-def test_existing_non_governed_research_execution_remains_compatible():
-    """Prove that direct ResearchExperimentSpec execution remains 100% backward compatible."""
+def test_raw_research_experiment_spec_execution_fails_closed():
+    """Prove that passing a raw ResearchExperimentSpec directly to run_research_experiment fails closed with TypeError."""
     spec = ResearchExperimentSpec(
         hypothesis="Direct experiment spec without governed ResearchHypothesis wrapper",
         methodology_version="discovery_v1.0",
@@ -257,15 +257,12 @@ def test_existing_non_governed_research_execution_remains_compatible():
     )
 
     df = _make_sample_dataframe()
-    evidence = run_research_experiment(spec, df=df)
-
-    assert isinstance(evidence, ResearchEvidence)
-    assert evidence.experiment_fingerprint == spec.fingerprint
-    assert evidence.spec.fingerprint == spec.fingerprint
+    with pytest.raises(TypeError, match="expects an authoritative ResearchHypothesis instance"):
+        run_research_experiment(spec, df=df)
 
 
-def test_single_execution_engine_reused():
-    """Verify that run_research_experiment is reused for both specs and accepted hypotheses."""
+def test_single_execution_engine_accepts_only_accepted_hypothesis():
+    """Verify that run_research_experiment executes strictly via accepted ResearchHypothesis."""
     spec = ResearchExperimentSpec(
         hypothesis="Test hypothesis for single engine verification",
         methodology_version="1.0",
@@ -284,11 +281,11 @@ def test_single_execution_engine_reused():
     hyp = ResearchHypothesis.from_experiment_spec(spec)
     assert hyp.status == HypothesisStatus.GENERATED
 
-    accepted_hyp = accept_hypothesis_for_research(hyp)
+    with pytest.raises(UnacceptedHypothesisError):
+        run_research_experiment(hyp, df=_make_sample_dataframe())
 
+    accepted_hyp = accept_hypothesis_for_research(hyp)
     df = _make_sample_dataframe()
-    ev_spec = run_research_experiment(spec, df=df)
     ev_hyp = run_research_experiment(accepted_hyp, df=df)
 
-    assert ev_spec.experiment_fingerprint == ev_hyp.experiment_fingerprint
-    assert ev_spec.spec.fingerprint == ev_hyp.spec.fingerprint
+    assert ev_hyp.experiment_fingerprint == spec.fingerprint

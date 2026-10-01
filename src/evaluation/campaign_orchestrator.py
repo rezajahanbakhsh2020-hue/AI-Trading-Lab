@@ -688,9 +688,8 @@ class ResearchCampaignOrchestrator:
 
             # Execute research experiment
             try:
-                spec = hypothesis.to_experiment_spec()
                 evidence = run_research_experiment(
-                    spec=spec,
+                    spec=hypothesis,
                     df=data,
                     criteria=criteria,
                     registry=self.registry,
