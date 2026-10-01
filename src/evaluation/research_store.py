@@ -463,15 +463,6 @@ def persist_promoted_candidate_binding(
     spec = evidence.spec
 
     if operational_stability_score is None:
-        try:
-            from src.evaluation.production_selection import select_production_strategy
-            sel = select_production_strategy()
-            if sel and sel.get("strategy") == spec.strategy_name and sel.get("stability_score") is not None:
-                operational_stability_score = float(sel["stability_score"])
-        except Exception:
-            pass
-
-    if operational_stability_score is None:
         operational_stability_score = 1.0
 
     if isinstance(operational_stability_score, bool) or not isinstance(operational_stability_score, (int, float)):

@@ -124,7 +124,7 @@ def test_end_to_end_pipeline(mock_urlopen, mock_load_data, tmp_path: Path) -> No
         promotion_status=PromotionStatus.PROMOTABLE,
         rejection_reasons=(),
     )
-    save_research_candidate(candidate_id="cand_momentum_e2e", evidence=evidence, base_dir=tmp_path)
+    save_research_candidate(candidate_id="cand_momentum_e2e", evidence=evidence, base_dir=tmp_path, operational_stability_score=0.88)
 
     runtime = LiveExecutionRuntime(
         symbol="XAUUSD",

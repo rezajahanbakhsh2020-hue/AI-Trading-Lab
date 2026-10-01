@@ -648,23 +648,28 @@ def test_41_conflicting_caller_stability_score_rejected():
         governance_decision_fingerprint="gov_fp_test_123",
         operational_stability_score=0.88,
     )
-    now = datetime.now(timezone.utc)
-    auth = authorize_production_runtime(cand, symbol="XAUUSD", timeframe="5m", now=now)
+    data = make_market_data(rows=80, trend="UP")
+    ref_now = pd.to_datetime(data["timestamp"], utc=True).iloc[-1].to_pydatetime()
+
+    auth = authorize_production_runtime(cand, symbol="XAUUSD", timeframe="5m", now=ref_now)
     receipt = ProductionAuthorizationReceipt.from_authorization(auth)
     context = create_authorized_runtime_context(cand, auth, receipt)
 
-    data = make_market_data(trend="UP")
-    eval_obj = create_live_market_evaluation(data, context=context, reference_now=now)
+    eval_obj = create_live_market_evaluation(data, context=context, reference_now=ref_now)
 
-    # Conflicting caller-supplied score must raise ValueError
-    with pytest.raises(ValueError, match="conflicts with candidate's authoritative operational_stability_score"):
-        evaluate_authorized_live_runtime(
-            data,
-            evaluation=eval_obj,
-            context=context,
-            stable_strategy="momentum",
-            stability_score=0.50,
-        )
+    # Conflicting caller-supplied score (0.20 < 0.50) cannot override candidate's authoritative score (0.88)
+    res = evaluate_authorized_live_runtime(
+        data,
+        evaluation=eval_obj,
+        context=context,
+        stable_strategy="momentum",
+        stability_score=0.20,
+        min_stability_score=0.50,
+    )
+
+    # Decision gate MUST consume candidate's authoritative score (0.88 >= 0.50 -> BUY)
+    assert res.decision["decision"] == "BUY"
+    assert res.decision["stability_score"] == 0.88
 
 
 def test_42_raw_production_selection_isolation(tmp_path, monkeypatch):

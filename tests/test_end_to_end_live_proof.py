@@ -45,7 +45,7 @@ def test_end_to_end_live_proof():
     decision = build_live_production_decision(
         data,
         stable_strategy="momentum",
-        stability_score=0.80,
+        stability_score=0.85,
         symbol="XAUUSD",
         interval="1d",
     )
@@ -60,7 +60,7 @@ def test_end_to_end_live_proof():
     runtime = build_live_runtime(
         data,
         stable_strategy="momentum",
-        stability_score=0.80,
+        stability_score=0.85,
         symbol="XAUUSD",
         interval="1d",
         reference_now=ref_now,
@@ -70,7 +70,7 @@ def test_end_to_end_live_proof():
         data,
         canonical_decision=runtime.canonical_decision,
         stable_strategy="momentum",
-        stability_score=0.80,
+        stability_score=0.85,
         symbol="XAUUSD",
         interval="1d",
     )
@@ -118,7 +118,7 @@ def test_end_to_end_no_trade_proof():
     runtime = build_live_runtime(
         data,
         stable_strategy="momentum",
-        stability_score=0.20,
+        min_stability_score=0.90,
         symbol="XAUUSD",
         interval="1d",
         reference_now=ref_now,
@@ -150,7 +150,7 @@ def test_end_to_end_preserves_latest_market_timestamp():
     runtime = build_live_runtime(
         data,
         stable_strategy="momentum",
-        stability_score=0.80,
+        stability_score=0.85,
         symbol="XAUUSD",
         interval="1d",
         reference_now=ref_now,

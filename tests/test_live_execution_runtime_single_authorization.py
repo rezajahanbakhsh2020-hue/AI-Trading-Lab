@@ -242,7 +242,7 @@ def test_build_live_runtime_bypasses_resolution_and_authorization_when_authorize
     res = build_live_runtime(
         market_df,
         stable_strategy="momentum",
-        stability_score=0.9,
+        stability_score=1.0,
         symbol="XAUUSD",
         interval="5m",
         persist=False,

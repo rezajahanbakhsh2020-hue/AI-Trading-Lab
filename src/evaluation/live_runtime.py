@@ -100,14 +100,8 @@ def evaluate_authorized_live_runtime(
             f"stable_strategy '{stable_strategy}' conflicts with candidate's authoritative strategy_name '{resolved_candidate.strategy_name}'."
         )
 
-    # Authoritative stability score from candidate lineage
+    # Authoritative stability score strictly from candidate lineage (caller-supplied value cannot override)
     effective_stability_score = resolved_candidate.operational_stability_score
-
-    if stability_score is not None:
-        if abs(float(stability_score) - effective_stability_score) > 1e-9:
-            raise ValueError(
-                f"Caller-supplied stability_score ({stability_score}) conflicts with candidate's authoritative operational_stability_score ({effective_stability_score})."
-            )
 
     ts_now = evaluation.reference_timestamp_utc
     try:

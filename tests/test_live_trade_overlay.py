@@ -133,7 +133,7 @@ def test_overlay_preserves_strategy_and_stability_metadata():
     overlay = build_live_trade_overlay(data, runtime_res.display)
 
     assert overlay["stable_strategy"] == "momentum"
-    assert overlay["stability_score"] == pytest.approx(0.80)
+    assert overlay["stability_score"] == pytest.approx(0.85)
     assert overlay["trend"] == "UP"
     assert overlay["signal_label"] == "BUY"
 
