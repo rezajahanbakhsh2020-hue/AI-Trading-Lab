@@ -907,6 +907,7 @@ class ResearchCandidate:
         symbol: str,
         timeframe: str,
         policy: Any | None = None,
+        operational_stability_score: float = 1.0,
     ) -> Any:
         """Convert a qualified ResearchCandidate into a PromotedCandidateArtifact for production.
 
@@ -924,6 +925,7 @@ class ResearchCandidate:
             timeframe=timeframe,
             parameters=dict(self.hypothesis.parameters),
             policy=policy,
+            operational_stability_score=operational_stability_score,
         )
 
     def as_dict(self) -> dict[str, Any]:

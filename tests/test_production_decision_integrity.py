@@ -561,6 +561,187 @@ def test_missing_risk_parameters_fails_closed():
         calculate_production_risk_levels(dec, cand)
 
 
+def test_38_promoted_candidate_operational_stability_roundtrip(tmp_path):
+    """A. Prove persisted operational stability value survives round-trip unchanged."""
+    from src.evaluation.research_store import save_research_candidate, load_candidate_binding, resolve_promoted_candidate
+
+    ev = make_promoted_evidence(symbol="XAUUSD", timeframe="5m")
+    save_research_candidate(
+        candidate_id="cand_stab_roundtrip",
+        evidence=ev,
+        base_dir=tmp_path,
+        operational_stability_score=0.825,
+    )
+
+    binding = load_candidate_binding("cand_stab_roundtrip", base_dir=tmp_path)
+    assert binding["operational_stability_score"] == 0.825
+
+    reconstituted = resolve_promoted_candidate(candidate_id="cand_stab_roundtrip", base_dir=tmp_path)
+    assert reconstituted.operational_stability_score == 0.825
+
+
+def test_39_operational_stability_score_changes_artifact_fingerprint(tmp_path):
+    """B. Prove changing the authoritative operational stability value changes the promoted artifact fingerprint."""
+    ev = make_promoted_evidence(symbol="XAUUSD", timeframe="5m")
+
+    c1 = PromotedCandidateArtifact.from_persisted_research(
+        candidate_id="cand_fp_1",
+        evidence=ev,
+        symbol="XAUUSD",
+        timeframe="5m",
+        operational_stability_score=0.75,
+    )
+
+    c2 = PromotedCandidateArtifact.from_persisted_research(
+        candidate_id="cand_fp_1",
+        evidence=ev,
+        symbol="XAUUSD",
+        timeframe="5m",
+        operational_stability_score=0.90,
+    )
+
+    assert c1.artifact_fingerprint != c2.artifact_fingerprint
+
+
+def test_40_missing_or_non_finite_operational_stability_fails_closed(tmp_path):
+    """C. Prove missing, malformed, NaN, or infinite operational stability evidence fails closed."""
+    from src.evaluation.research_store import save_research_candidate, _candidate_binding_path, resolve_promoted_candidate, PromotionIntegrityError
+    import json
+
+    ev = make_promoted_evidence(symbol="XAUUSD", timeframe="5m")
+
+    # 1. Invalid values at PromotedCandidateArtifact construction
+    for invalid_val in (float("nan"), float("inf"), float("-inf"), "invalid_str"):
+        with pytest.raises((ValueError, TypeError)):
+            PromotedCandidateArtifact.from_persisted_research(
+                candidate_id="cand_bad_stab",
+                evidence=ev,
+                symbol="XAUUSD",
+                timeframe="5m",
+                operational_stability_score=invalid_val,  # type: ignore
+            )
+
+    # 2. Corrupted binding JSON missing operational_stability_score
+    save_research_candidate(candidate_id="cand_corrupt_stab", evidence=ev, base_dir=tmp_path, operational_stability_score=0.8)
+    b_path = _candidate_binding_path("cand_corrupt_stab", tmp_path)
+    b_data = json.loads(b_path.read_text(encoding="utf-8"))
+    del b_data["operational_stability_score"]
+    b_path.write_text(json.dumps(b_data), encoding="utf-8")
+
+    with pytest.raises(PromotionIntegrityError, match="missing or has invalid operational_stability_score"):
+        resolve_promoted_candidate(candidate_id="cand_corrupt_stab", base_dir=tmp_path)
+
+
+def test_41_conflicting_caller_stability_score_rejected():
+    """D. Prove conflicting caller-supplied stability_score cannot override candidate's authoritative value."""
+    from src.evaluation.live_runtime import evaluate_authorized_live_runtime
+    from src.evaluation.live_runtime_context import create_authorized_runtime_context
+    from src.evaluation.live_market_evaluation import create_live_market_evaluation
+    from src.evaluation.live_production_decision import authorize_production_runtime, ProductionAuthorizationReceipt
+
+    ev = make_promoted_evidence(symbol="XAUUSD", timeframe="5m")
+    cand = PromotedCandidateArtifact.from_persisted_research(
+        candidate_id="cand_auth_stab",
+        evidence=ev,
+        symbol="XAUUSD",
+        timeframe="5m",
+        governance_decision_fingerprint="gov_fp_test_123",
+        operational_stability_score=0.88,
+    )
+    now = datetime.now(timezone.utc)
+    auth = authorize_production_runtime(cand, symbol="XAUUSD", timeframe="5m", now=now)
+    receipt = ProductionAuthorizationReceipt.from_authorization(auth)
+    context = create_authorized_runtime_context(cand, auth, receipt)
+
+    data = make_market_data(trend="UP")
+    eval_obj = create_live_market_evaluation(data, context=context, reference_now=now)
+
+    # Conflicting caller-supplied score must raise ValueError
+    with pytest.raises(ValueError, match="conflicts with candidate's authoritative operational_stability_score"):
+        evaluate_authorized_live_runtime(
+            data,
+            evaluation=eval_obj,
+            context=context,
+            stable_strategy="momentum",
+            stability_score=0.50,
+        )
+
+
+def test_42_raw_production_selection_isolation(tmp_path, monkeypatch):
+    """E. Prove modifying load_production_selection() output does not alter live decisions."""
+    from unittest.mock import patch
+    from src.evaluation.research_store import save_research_candidate
+    from src.evaluation.live_execution_runtime import LiveExecutionRuntime, ProductionRuntimeConfig
+
+    ev = make_promoted_evidence(symbol="XAUUSD", timeframe="5m")
+    save_research_candidate(candidate_id="cand_isolation", evidence=ev, base_dir=tmp_path, operational_stability_score=0.92)
+
+    config = ProductionRuntimeConfig(symbol="XAUUSD", timeframe="5m", candidate_id="cand_isolation", strategy_id="momentum", research_dir=tmp_path)
+
+    # Mock load_production_selection to return conflicting/garbage data
+    monkeypatch.setattr(
+        "src.evaluation.production_live_bridge.load_production_selection",
+        lambda *args, **kwargs: {"stability_score": 0.10, "stable_strategy": "bogus_strategy"},
+    )
+
+    data = make_market_data(trend="UP")
+    df_ts = pd.to_datetime(data["timestamp"], utc=True).iloc[-1].to_pydatetime()
+
+    runtime = LiveExecutionRuntime(
+        symbol="XAUUSD",
+        interval="5m",
+        store_path=tmp_path / "store.json",
+        snapshot_path=tmp_path / "snap.json",
+        research_dir=tmp_path,
+        production_config=config,
+    )
+
+    with patch("src.evaluation.live_execution_runtime.load_live_market_data", return_value=data):
+        res = runtime.run_once(publish=False, persist=True, reference_now=df_ts)
+
+    # Live decision MUST succeed using candidate's authoritative stability_score (0.92) and strategy ("momentum")
+    assert res["decision"] == "BUY"
+    assert res["stability_score"] == 0.92
+    assert res["strategy"] == "momentum"
+
+
+def test_43_fresh_and_stale_convergence_lineage_preserved(tmp_path):
+    """F. Prove fresh and stale LiveMarketEvaluation enter same canonical downstream lifecycle with operational stability lineage."""
+    from unittest.mock import patch
+    from src.evaluation.research_store import save_research_candidate
+    from src.evaluation.live_execution_runtime import LiveExecutionRuntime, ProductionRuntimeConfig
+    from src.evaluation.live_decision_lifecycle import LiveDecisionLifecycleState
+
+    ev = make_promoted_evidence(symbol="XAUUSD", timeframe="5m")
+    save_research_candidate(candidate_id="cand_conv", evidence=ev, base_dir=tmp_path, operational_stability_score=0.84)
+
+    config = ProductionRuntimeConfig(symbol="XAUUSD", timeframe="5m", candidate_id="cand_conv", strategy_id="momentum", research_dir=tmp_path)
+    data = make_market_data(trend="UP")
+    df_ts = pd.to_datetime(data["timestamp"], utc=True).iloc[-1].to_pydatetime()
+
+    runtime = LiveExecutionRuntime(
+        symbol="XAUUSD",
+        interval="5m",
+        store_path=tmp_path / "store.json",
+        snapshot_path=tmp_path / "snap.json",
+        research_dir=tmp_path,
+        production_config=config,
+    )
+
+    from datetime import timedelta
+    with patch("src.evaluation.live_execution_runtime.load_live_market_data", return_value=data):
+        res_fresh = runtime.run_once(publish=False, persist=True, reference_now=df_ts)
+        res_stale = runtime.run_once(publish=False, persist=True, reference_now=df_ts + timedelta(seconds=1000))
+
+    assert res_fresh["decision"] == "BUY"
+    assert res_fresh["current_lifecycle_state"] == LiveDecisionLifecycleState.PERSISTED.value
+    assert res_fresh["record"]["stability_score"] == 0.84
+
+    assert res_stale["decision"] == "NO TRADE"
+    assert res_stale["current_lifecycle_state"] == LiveDecisionLifecycleState.PERSISTED.value
+    assert res_stale["record"]["stability_score"] == 0.84
+
+
 def test_missing_strategy_window_parameter_fails_closed():
     ev = make_promoted_evidence()
     spec_no_window = ResearchExperimentSpec(

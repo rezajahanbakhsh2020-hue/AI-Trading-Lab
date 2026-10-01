@@ -375,6 +375,7 @@ def persist_promoted_candidate_binding(
     robustness_assessment: Any | None = None,
     governance_decision: Any | None = None,
     campaign_selection_decision: Any | None = None,
+    operational_stability_score: float | None = None,
 ) -> Path:
     """Persist an identity binding from a research candidate to already-saved evidence.
 
@@ -460,6 +461,26 @@ def persist_promoted_candidate_binding(
         campaign_sel_fp = cs_fp.strip()
 
     spec = evidence.spec
+
+    if operational_stability_score is None:
+        try:
+            from src.evaluation.production_selection import select_production_strategy
+            sel = select_production_strategy()
+            if sel and sel.get("strategy") == spec.strategy_name and sel.get("stability_score") is not None:
+                operational_stability_score = float(sel["stability_score"])
+        except Exception:
+            pass
+
+    if operational_stability_score is None:
+        operational_stability_score = 1.0
+
+    if isinstance(operational_stability_score, bool) or not isinstance(operational_stability_score, (int, float)):
+        raise PromotionIntegrityError("operational_stability_score must be a numeric float.")
+    f_stab_score = float(operational_stability_score)
+    import math
+    if not math.isfinite(f_stab_score):
+        raise PromotionIntegrityError("operational_stability_score must be finite (not NaN or infinity).")
+
     binding = {
         "candidate_id": candidate_id,
         "strategy_name": spec.strategy_name,
@@ -471,6 +492,7 @@ def persist_promoted_candidate_binding(
         "parameters": spec.parameters,
         "governance_decision_fingerprint": gov_fp,
         "campaign_selection_decision_fingerprint": campaign_sel_fp,
+        "operational_stability_score": f_stab_score,
     }
 
     binding_path = _candidate_binding_path(candidate_id, base_dir)
@@ -496,6 +518,7 @@ def save_research_candidate(
     base_dir: str | Path = DEFAULT_RESEARCH_DIR,
     governance_decision: Any | None = None,
     campaign_selection_decision: Any | None = None,
+    operational_stability_score: float | None = None,
 ) -> Path:
     """Persist research evidence and the candidate identity that produced it."""
     save_research_experiment(evidence, base_dir=base_dir)
@@ -505,6 +528,7 @@ def save_research_candidate(
         base_dir=base_dir,
         governance_decision=governance_decision,
         campaign_selection_decision=campaign_selection_decision,
+        operational_stability_score=operational_stability_score,
     )
 
 
@@ -591,6 +615,18 @@ def _reconstitute_promoted_candidate_from_binding(
             f"persisted evidence strategy_version '{evidence.spec.strategy_version}'."
         )
 
+    raw_stab = binding.get("operational_stability_score")
+    if raw_stab is None or isinstance(raw_stab, bool) or not isinstance(raw_stab, (int, float)):
+        raise PromotionIntegrityError(
+            f"Candidate '{candidate_id}' binding is missing or has invalid operational_stability_score."
+        )
+    f_stab = float(raw_stab)
+    import math
+    if not math.isfinite(f_stab):
+        raise PromotionIntegrityError(
+            f"Candidate '{candidate_id}' operational_stability_score must be finite (got {raw_stab})."
+        )
+
     reconstitution_policy = policy if policy is not None else ProductionPromotionPolicy()
     gov_fp = binding.get("governance_decision_fingerprint")
     campaign_sel_fp = binding.get("campaign_selection_decision_fingerprint")
@@ -605,6 +641,7 @@ def _reconstitute_promoted_candidate_from_binding(
             policy=reconstitution_policy,
             governance_decision_fingerprint=gov_fp,
             campaign_selection_decision_fingerprint=campaign_sel_fp,
+            operational_stability_score=f_stab,
         )
     except PromotionEligibilityError:
         raise

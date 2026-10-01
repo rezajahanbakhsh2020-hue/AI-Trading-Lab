@@ -348,16 +348,13 @@ def test_restart_resolves_identical_authoritative_candidate(tmp_path: Path) -> N
     assert first.artifact_fingerprint == second.artifact_fingerprint
 
 
-@patch("src.evaluation.live_execution_runtime.load_production_selection")
 @patch("src.evaluation.live_execution_runtime.load_live_market_data")
 def test_production_lineage_preserved_through_decision_signal_risk_publication(
     mock_load_data,
-    mock_load_selection,
     tmp_path: Path,
 ) -> None:
     candidate_id, evidence = persist_test_candidate(tmp_path, candidate_id="cand_lineage")
     mock_load_data.return_value = make_buy_market_data()
-    mock_load_selection.return_value = {"stability_score": 0.85, "stable_strategy": "momentum"}
     ref_now = mock_load_data.return_value["timestamp"].iloc[-1].to_pydatetime()
     runtime = LiveExecutionRuntime(
         symbol="XAUUSD",

@@ -42,7 +42,6 @@ from src.evaluation.live_runtime import (
 from src.evaluation.live_runtime_context import (
     create_authorized_runtime_context,
 )
-from src.evaluation.production_live_bridge import load_production_selection
 from src.evaluation.research_store import (
     DEFAULT_RESEARCH_DIR,
     PromotionEligibilityError,
@@ -477,24 +476,10 @@ class LiveExecutionRuntime:
 
         if self.production_config is not None:
             config = self.production_config
-            selection: dict[str, Any] = {
-                "candidate_id": config.candidate_id,
-                "strategy_id": config.strategy_id,
-                "stable_strategy": config.strategy_id,
-                "strategy_version": config.strategy_version,
-            }
-            try:
-                extra = load_production_selection()
-            except Exception:
-                extra = {}
-            if isinstance(extra, dict) and extra.get("stability_score") is not None:
-                selection["stability_score"] = extra["stability_score"]
         else:
-            selection = load_production_selection()
-            config = ProductionRuntimeConfig.from_runtime(
+            config = ProductionRuntimeConfig(
                 symbol=self.symbol,
                 timeframe=self.interval,
-                selection=selection,
                 research_dir=self.research_dir,
             )
 
@@ -545,10 +530,7 @@ class LiveExecutionRuntime:
         candidate = context.candidate
         receipt = context.authorization_receipt
         stable_strategy = candidate.strategy_name
-        raw_score = selection.get("stability_score")
-        if raw_score is None:
-            raw_score = selection.get("confidence")
-        stability_score = float(raw_score) if raw_score is not None else None
+        stability_score = candidate.operational_stability_score
 
         # 3. Fetch market data
         try:
