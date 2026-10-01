@@ -961,7 +961,7 @@ def test_36_operational_wrapper_delegates_to_authoritative_chain(monkeypatch, tm
     res = build_live_production_decision(
         data,
         stable_strategy="momentum",
-        stability_score=0.80,
+        stability_score=0.85,
         candidate_id="cand_auth_test",
         research_dir=tmp_path,
     )

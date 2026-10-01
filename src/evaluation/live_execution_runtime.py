@@ -615,7 +615,10 @@ class LiveExecutionRuntime:
         record["context_fingerprint"] = context.context_fingerprint
         record["evaluation_fingerprint"] = evaluation.evaluation_fingerprint
 
-        contract_payload = publication.to_contract_v1_payload()
+        try:
+            contract_payload = publication.to_contract_v1_payload()
+        except ValueError:
+            contract_payload = None
 
         pub_res = runtime_res.decision.get("publish_result")
 

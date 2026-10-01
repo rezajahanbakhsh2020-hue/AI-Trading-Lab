@@ -32,7 +32,7 @@ def test_stable_momentum_and_uptrend_produce_buy_decision():
     result = build_live_production_decision(
         data,
         stable_strategy="momentum",
-        stability_score=0.517268,
+        stability_score=0.7458282289664787,
     )
 
     assert result["decision"] == "BUY"
@@ -41,7 +41,7 @@ def test_stable_momentum_and_uptrend_produce_buy_decision():
         == "stable_strategy_live_signal_and_trend_confirmed"
     )
     assert result["stable_strategy"] == "momentum"
-    assert result["stability_score"] == pytest.approx(0.517268)
+    assert result["stability_score"] == pytest.approx(0.7458282289664787)
     assert result["signal"] == 1
     assert result["signal_label"] == "BUY"
     assert result["trend"] == "UP"
@@ -57,7 +57,8 @@ def test_stability_score_below_threshold_blocks_trade():
     result = build_live_production_decision(
         data,
         stable_strategy="momentum",
-        stability_score=0.49,
+        stability_score=0.7458282289664787,
+        min_stability_score=0.80,
     )
 
     assert result["decision"] == "NO TRADE"
@@ -72,7 +73,7 @@ def test_unsupported_stable_strategy_blocks_trade():
     result = build_live_production_decision(
         data,
         stable_strategy="moving_average",
-        stability_score=0.80,
+        stability_score=0.7458282289664787,
     )
 
     assert result["decision"] == "NO TRADE"
@@ -94,7 +95,7 @@ def test_downtrend_blocks_buy_decision():
     result = build_live_production_decision(
         data,
         stable_strategy="momentum",
-        stability_score=0.80,
+        stability_score=0.7458282289664787,
     )
 
     assert result["decision"] == "NO TRADE"
@@ -114,7 +115,7 @@ def test_no_trade_signal_is_preserved_without_inventing_sell():
     result = build_live_production_decision(
         data,
         stable_strategy="momentum",
-        stability_score=0.80,
+        stability_score=0.7458282289664787,
     )
 
     assert result["decision"] == "NO TRADE"

@@ -362,6 +362,7 @@ class PromotedCandidateArtifact:
         if not self.timeframe or not self.timeframe.strip():
             raise ValueError("timeframe must be a non-empty string.")
 
+
         merged_params = dict(self.evidence.spec.parameters) if (self.evidence and self.evidence.spec.parameters) else {}
         if self.parameters:
             merged_params.update(self.parameters)
@@ -1180,6 +1181,40 @@ class ProductionIntelligencePublication:
         if not self.timeframe or not self.timeframe.strip():
             raise ValueError("timeframe must be a non-empty string.")
 
+        # Validate decision_timestamp as timezone-aware ISO-8601 string
+        try:
+            dt_dec = datetime.fromisoformat(str(self.decision_timestamp).replace("Z", "+00:00"))
+            if dt_dec.tzinfo is None:
+                raise ValueError("decision_timestamp must be timezone-aware ISO-8601.")
+        except Exception as exc:
+            raise ValueError(f"Invalid decision_timestamp '{self.decision_timestamp}': {exc}")
+
+        # Validate market_data_timestamp if present as timezone-aware ISO-8601 string
+        if self.market_data_timestamp is not None and str(self.market_data_timestamp).strip():
+            try:
+                dt_mkt = datetime.fromisoformat(str(self.market_data_timestamp).replace("Z", "+00:00"))
+                if dt_mkt.tzinfo is None:
+                    raise ValueError("market_data_timestamp must be timezone-aware ISO-8601.")
+            except Exception as exc:
+                raise ValueError(f"Invalid market_data_timestamp '{self.market_data_timestamp}': {exc}")
+
+        # Validate decision_timestamp as timezone-aware ISO-8601 string
+        try:
+            dt_dec = datetime.fromisoformat(str(self.decision_timestamp).replace("Z", "+00:00"))
+            if dt_dec.tzinfo is None:
+                raise ValueError("decision_timestamp must be timezone-aware ISO-8601.")
+        except Exception as exc:
+            raise ValueError(f"Invalid decision_timestamp '{self.decision_timestamp}': {exc}")
+
+        # Validate market_data_timestamp if present as timezone-aware ISO-8601 string
+        if self.market_data_timestamp is not None and str(self.market_data_timestamp).strip():
+            try:
+                dt_mkt = datetime.fromisoformat(str(self.market_data_timestamp).replace("Z", "+00:00"))
+                if dt_mkt.tzinfo is None:
+                    raise ValueError("market_data_timestamp must be timezone-aware ISO-8601.")
+            except Exception as exc:
+                raise ValueError(f"Invalid market_data_timestamp '{self.market_data_timestamp}': {exc}")
+
     @classmethod
     def from_artifacts(
         cls,
@@ -1318,6 +1353,24 @@ class ProductionIntelligencePublication:
 
     def to_contract_v1_payload(self) -> dict[str, Any]:
         """Convert publication artifact into Contract v1.0 payload dict for Project 2."""
+        if not self.market_data_timestamp or not str(self.market_data_timestamp).strip():
+            raise ValueError("market_data_timestamp is required for Contract v1.0 payload delivery.")
+
+        # Validate market_data_timestamp as timezone-aware ISO-8601
+        try:
+            dt_ts = datetime.fromisoformat(str(self.market_data_timestamp).replace("Z", "+00:00"))
+            if dt_ts.tzinfo is None:
+                raise ValueError("market_data_timestamp must be timezone-aware ISO-8601.")
+        except Exception as exc:
+            raise ValueError(f"Invalid market_data_timestamp '{self.market_data_timestamp}': {exc}")
+
+        prov = dict(self.provenance)
+        prov["publication_contract_version"] = "1.0"
+
+        # Deterministic derivation of take_profit from canonical TP values:
+        # Uses TP2 if set, else TP1, else None.
+        tp_take = self.tp2 if self.tp2 is not None else (self.tp1 if self.tp1 is not None else None)
+
         return {
             "contract_version": self.schema_version,
             "event_id": self.publication_id,
@@ -1335,6 +1388,7 @@ class ProductionIntelligencePublication:
                 "strategy": self.strategy_id,
                 "candidate_id": self.candidate_id,
                 "confidence": self.confidence,
+                "stability_score": self.confidence,
                 "invalidation": self.invalidation,
                 "signal_label": self.decision,
                 "trend": "BULLISH" if self.decision == "BUY" else ("BEARISH" if self.decision == "SELL" else "NEUTRAL"),
@@ -1345,11 +1399,11 @@ class ProductionIntelligencePublication:
                 "tp1": self.tp1,
                 "tp2": self.tp2,
                 "tp3": self.tp3,
-                "take_profit": self.tp2 if self.tp2 is not None else self.tp1,
+                "take_profit": tp_take,
                 "risk_reward_ratio": self.risk_reward_ratio,
                 "trailing_stop": self.trailing_stop,
             },
-            "provenance": dict(self.provenance),
+            "provenance": prov,
         }
 
 
@@ -1426,6 +1480,17 @@ def build_live_production_decision(
             f"No authoritative promoted candidate resolved for strategy '{stable_strategy}' "
             f"(candidate_id={candidate_id!r}, symbol={symbol!r}, timeframe={interval!r}). "
             f"Operational production path fails closed."
+        )
+
+    # Strategy and stability score caller assertions against authoritative candidate lineage
+    if stable_strategy != resolved_candidate.strategy_name:
+        raise ValueError(
+            f"stable_strategy '{stable_strategy}' conflicts with candidate's authoritative strategy_name '{resolved_candidate.strategy_name}'."
+        )
+
+    if abs(stability_score - resolved_candidate.operational_stability_score) > 1e-9:
+        raise ValueError(
+            f"Caller-supplied stability_score ({stability_score}) conflicts with candidate operational_stability_score ({resolved_candidate.operational_stability_score})."
         )
 
     ref_now = None

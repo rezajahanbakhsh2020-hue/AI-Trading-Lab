@@ -27,11 +27,11 @@ def build_contract_v1_payload(
     interval: str,
     decision: str,
     strategy: str,
-    stability_score: Optional[float],
-    signal_label: str,
-    trend: str,
-    entry_price: Optional[float],
-    stop_loss: Optional[float],
+    stability_score: Optional[float] = None,
+    signal_label: Optional[str] = None,
+    trend: Optional[str] = None,
+    entry_price: Optional[float] = None,
+    stop_loss: Optional[float] = None,
     tp1: Optional[float] = None,
     tp2: Optional[float] = None,
     tp3: Optional[float] = None,
@@ -40,45 +40,63 @@ def build_contract_v1_payload(
     timestamp: Optional[str] = None,
     candle_timestamp: Optional[str] = None,
 ) -> Dict[str, Any]:
-    """Construct a canonical Project 2 Integration Contract v1.0 payload."""
+    """Construct a canonical Project 2 Integration Contract v1.0 payload via ProductionIntelligencePublication."""
+    from src.evaluation.live_production_decision import ProductionIntelligencePublication
+
     now_iso = datetime.datetime.now(datetime.timezone.utc).isoformat()
-    event_timestamp = timestamp if timestamp else now_iso
+    event_timestamp = timestamp if timestamp else (candle_timestamp if candle_timestamp else now_iso)
     identity_timestamp = candle_timestamp if candle_timestamp else event_timestamp
 
-    # Unique event ID based on deterministic features + candle timestamp for idempotency
-    hash_input = f"{symbol}:{interval}:{strategy}:{decision}:{identity_timestamp}"
-    event_id = hashlib.sha256(hash_input.encode("utf-8")).hexdigest()[:32]
+    # Normalize event_timestamp to ISO-8601 string
+    try:
+        dt_check = datetime.datetime.fromisoformat(str(event_timestamp).replace("Z", "+00:00"))
+        if dt_check.tzinfo is None:
+            dt_check = dt_check.replace(tzinfo=datetime.timezone.utc)
+        event_timestamp = dt_check.isoformat()
+    except Exception as exc:
+        raise ValueError(f"Invalid timestamp '{event_timestamp}': {exc}")
 
-    return {
-        "contract_version": "1.0",
-        "event_id": event_id,
-        "event_type": "TRADING_SIGNAL",
-        "timestamp": event_timestamp,
-        "instrument": {
-            "symbol": str(symbol),
-            "interval": str(interval),
-        },
-        "signal": {
-            "decision": str(decision),
-            "strategy": str(strategy),
-            "stability_score": float(stability_score) if stability_score is not None else None,
-            "signal_label": str(signal_label),
-            "trend": str(trend),
-        },
-        "trade_setup": {
-            "entry_price": float(entry_price) if entry_price is not None else None,
-            "stop_loss": float(stop_loss) if stop_loss is not None else None,
-            "tp1": float(tp1) if tp1 is not None else None,
-            "tp2": float(tp2) if tp2 is not None else None,
-            "tp3": float(tp3) if tp3 is not None else None,
-            "take_profit": float(take_profit) if take_profit is not None else None,
-            "risk_reward_ratio": float(risk_reward_ratio) if risk_reward_ratio is not None else None,
-        },
-        "provenance": {
-            "source": "AI-Trading-Lab",
-            "produced_at": now_iso,
-        },
+    # Unique deterministic publication ID based on authoritative identity features
+    hash_input = f"{symbol}:{interval}:{strategy}:{decision}:{identity_timestamp}"
+    pub_id = hashlib.sha256(hash_input.encode("utf-8")).hexdigest()[:32]
+    sig_id = f"sig_{pub_id[:16]}"
+    dec_id = f"dec_{pub_id[16:]}"
+
+    provenance = {
+        "source": "AI-Trading-Lab",
+        "produced_at": now_iso,
+        "publication_contract_version": "1.0",
     }
+
+    eff_tp2 = float(tp2) if tp2 is not None else (float(take_profit) if take_profit is not None else None)
+
+    pub = ProductionIntelligencePublication(
+        schema_version="1.0",
+        publication_id=pub_id,
+        signal_id=sig_id,
+        decision_id=dec_id,
+        strategy_id=str(strategy),
+        candidate_id=f"cand_{strategy}",
+        research_evidence_id=f"ev_{strategy}",
+        research_fingerprint=pub_id,
+        symbol=str(symbol).upper(),
+        timeframe=str(interval),
+        decision_timestamp=now_iso,
+        market_data_timestamp=event_timestamp,
+        decision=str(decision),
+        confidence=float(stability_score) if stability_score is not None else None,
+        entry=float(entry_price) if entry_price is not None else None,
+        invalidation="Close below stop_loss or trend turns DOWN" if str(decision) == "BUY" else None,
+        stop_loss=float(stop_loss) if stop_loss is not None else None,
+        tp1=float(tp1) if tp1 is not None else None,
+        tp2=eff_tp2,
+        tp3=float(tp3) if tp3 is not None else None,
+        trailing_stop=None,
+        risk_reward_ratio=float(risk_reward_ratio) if risk_reward_ratio is not None else None,
+        provenance=provenance,
+    )
+
+    return pub.to_contract_v1_payload()
 
 
 class Project2Publisher:
