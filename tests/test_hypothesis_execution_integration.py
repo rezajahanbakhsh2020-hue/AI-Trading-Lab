@@ -81,6 +81,7 @@ def _make_valid_context() -> HypothesisGenerationContext:
         ),
         benchmark_reference="BUY_AND_HOLD",
         parameters_override={"fast_period": 10, "slow_period": 30},
+        walk_forward_protocol=WalkForwardProtocol(train_size=40, test_size=15),
     )
 
 
@@ -289,3 +290,89 @@ def test_single_execution_engine_accepts_only_accepted_hypothesis():
     ev_hyp = run_research_experiment(accepted_hyp, df=df)
 
     assert ev_hyp.experiment_fingerprint == spec.fingerprint
+
+
+def test_accepted_hypothesis_without_wf_protocol_fails_closed():
+    """Prove that an accepted hypothesis without an explicit WalkForwardProtocol fails closed."""
+    ctx = _make_valid_context()
+    ctx_no_wf = HypothesisGenerationContext(
+        dataset_scope=ctx.dataset_scope,
+        execution_assumptions=ctx.execution_assumptions,
+        code_provenance=ctx.code_provenance,
+        benchmark_reference=ctx.benchmark_reference,
+        parameters_override=ctx.parameters_override,
+        walk_forward_protocol=None,
+    )
+    pattern = _make_valid_pattern()
+    generator = KnowledgeHypothesisGenerator()
+    generated_hyp = generator.generate([pattern], context=ctx_no_wf)[0]
+    accepted_hyp = accept_hypothesis_for_research(generated_hyp)
+
+    assert accepted_hyp.walk_forward_protocol is None
+    df = _make_sample_dataframe()
+
+    with pytest.raises(ValueError, match="lacks an explicit WalkForwardProtocol"):
+        run_research_experiment(accepted_hyp, df=df)
+
+
+def test_accepted_hypothesis_fingerprint_equality_chain():
+    """Prove that hypothesis.fingerprint == experiment_spec.fingerprint == evidence.experiment_fingerprint."""
+    ctx = _make_valid_context()
+    pattern = _make_valid_pattern()
+    generator = KnowledgeHypothesisGenerator()
+    ctx_wf = HypothesisGenerationContext(
+        dataset_scope=ctx.dataset_scope,
+        execution_assumptions=ctx.execution_assumptions,
+        code_provenance=ctx.code_provenance,
+        benchmark_reference=ctx.benchmark_reference,
+        parameters_override=ctx.parameters_override,
+        walk_forward_protocol=WalkForwardProtocol(train_size=40, test_size=15),
+    )
+    generated_hyp = generator.generate([pattern], context=ctx_wf)[0]
+    accepted_hyp = accept_hypothesis_for_research(generated_hyp)
+
+    df = _make_sample_dataframe()
+    evidence = run_research_experiment(accepted_hyp, df=df)
+
+    exp_spec = accepted_hyp.to_experiment_spec()
+    assert accepted_hyp.fingerprint == exp_spec.fingerprint
+    assert exp_spec.fingerprint == evidence.experiment_fingerprint
+    assert evidence.experiment_fingerprint == accepted_hyp.fingerprint
+
+
+def test_converted_spec_fingerprint_mismatch_fails_closed(monkeypatch):
+    """Prove that if to_experiment_spec produces a mismatching fingerprint, run_research_experiment fails closed."""
+    ctx = _make_valid_context()
+    pattern = _make_valid_pattern()
+    generator = KnowledgeHypothesisGenerator()
+    ctx_wf = HypothesisGenerationContext(
+        dataset_scope=ctx.dataset_scope,
+        execution_assumptions=ctx.execution_assumptions,
+        code_provenance=ctx.code_provenance,
+        benchmark_reference=ctx.benchmark_reference,
+        parameters_override=ctx.parameters_override,
+        walk_forward_protocol=WalkForwardProtocol(train_size=40, test_size=15),
+    )
+    generated_hyp = generator.generate([pattern], context=ctx_wf)[0]
+    accepted_hyp = accept_hypothesis_for_research(generated_hyp)
+
+    original_to_spec = ResearchHypothesis.to_experiment_spec
+    call_count = 0
+
+    def mock_to_spec(self_obj):
+        nonlocal call_count
+        call_count += 1
+        spec = original_to_spec(self_obj)
+        object.__setattr__(spec, "fingerprint", "tampered_fake_fingerprint_12345678901234567890")
+        return spec
+
+    monkeypatch.setattr(ResearchHypothesis, "to_experiment_spec", mock_to_spec)
+
+    df = _make_sample_dataframe()
+    with pytest.raises(ValueError) as exc_info:
+        run_research_experiment(accepted_hyp, df=df)
+
+    assert call_count == 1
+    err_str = str(exc_info.value)
+    assert "Converted ResearchExperimentSpec fingerprint 'tampered_fake_fingerprint_12345678901234567890'" in err_str
+    assert f"mismatches accepted ResearchHypothesis fingerprint '{accepted_hyp.fingerprint}'" in err_str

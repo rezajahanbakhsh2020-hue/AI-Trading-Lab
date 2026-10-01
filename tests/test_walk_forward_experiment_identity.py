@@ -341,3 +341,33 @@ def test_runner_argument_conflict_with_spec_fails_closed():
 
     with pytest.raises(ValueError, match="conflicts with spec.walk_forward_protocol"):
         run_research_experiment(hyp, df=df, wf_test_size=20)
+
+
+def test_failed_walk_forward_window_fails_closed(monkeypatch):
+    import src.evaluation.research_runner
+    df = make_sample_df(100)
+    kwargs = make_base_spec_kwargs()
+    wf = WalkForwardProtocol(train_size=40, test_size=15)
+    spec = ResearchExperimentSpec(**kwargs, walk_forward_protocol=wf)
+    hyp = accept_hypothesis_for_research(ResearchHypothesis.from_experiment_spec(spec))
+
+    original_evaluate = src.evaluation.research_runner.evaluate_strategy
+    call_count = 0
+
+    def mock_evaluate_strategy(*args, **kwargs):
+        nonlocal call_count
+        call_count += 1
+        if call_count >= 4:
+            raise RuntimeError("Simulated strategy failure in Walk-Forward window")
+        return original_evaluate(*args, **kwargs)
+
+    monkeypatch.setattr(src.evaluation.research_runner, "evaluate_strategy", mock_evaluate_strategy)
+
+    evidence = run_research_experiment(hyp, df=df)
+
+    wf_parts = [p for p in evidence.partitions if p.role == EvidencePartitionRole.WALK_FORWARD]
+    assert len(wf_parts) == 0
+    assert RejectionReason.FAILED_WALK_FORWARD in evidence.rejection_reasons
+
+    qual_res = qualify_research_evidence(evidence)
+    assert qual_res.qualified is False

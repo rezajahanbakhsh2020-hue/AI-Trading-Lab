@@ -103,7 +103,7 @@ def _create_mock_evidence(
         ),
         EvidencePartition(
             role=EvidencePartitionRole.OUT_OF_SAMPLE,
-            start_date="2024-03-01",
+            start_date="2024-03-02",
             end_date="2024-05-01",
             total_return=0.1,
             max_drawdown=0.05,
@@ -111,7 +111,7 @@ def _create_mock_evidence(
             win_rate=0.6,
             profit_factor=profit_factor,
             observations=100,
-            start_timestamp_utc="2024-03-01T00:00:00+00:00",
+            start_timestamp_utc="2024-03-02T00:00:00+00:00",
             end_timestamp_utc="2024-05-01T00:00:00+00:00",
         ),
         EvidencePartition(

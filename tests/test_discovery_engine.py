@@ -506,3 +506,67 @@ def test_reproducibility_repeated_runs(
     assert res1.search_space_fingerprint == res2.search_space_fingerprint
     assert [t.candidate_id for t in res1.trial_ledger] == [t.candidate_id for t in res2.trial_ledger]
     assert [ev.evidence_id for ev in res1.promoted_evidence] == [ev.evidence_id for ev in res2.promoted_evidence]
+
+
+def test_hypothesis_acceptance_failure_fails_closed(
+    sample_market_data, dataset_scope, execution_assumptions, monkeypatch
+):
+    invalid_cp = CodeProvenance(commit_sha="a1b2c3d4e5f67890123456789012345678901234")
+    c1 = CandidateSpec("grid", "1.0", "baseline", {"fast_window": 3, "slow_window": 8})
+
+    def mock_accept(hyp):
+        raise ValueError("Simulated hypothesis acceptance failure")
+
+    monkeypatch.setattr("src.evaluation.discovery_engine.accept_hypothesis_for_research", mock_accept)
+
+    engine = DiscoveryEngine()
+    res = engine.run_discovery(
+        df=sample_market_data,
+        candidates=(c1,),
+        dataset_scope=dataset_scope,
+        execution_assumptions=execution_assumptions,
+        code_provenance=invalid_cp,
+    )
+
+    assert len(res.trial_ledger) == 1
+    trial = res.trial_ledger[0]
+    assert trial.status == "BLOCKED"
+    assert RejectionReason.GOVERNANCE_BLOCKED in trial.rejection_reasons
+    assert trial.evidence_fingerprint is None
+    assert trial.experiment_fingerprint == ""
+    assert len(res.promoted_evidence) == 0
+    assert len(res.rejected_evidence) == 0
+
+    assert len(res.research_candidates) == 1
+    cand_res = res.research_candidates[0]
+    assert cand_res.evidence is None
+    assert cand_res.validation_status == PromotionStatus.REJECTED
+    assert cand_res.promotion_status == PromotionStatus.REJECTED
+    assert RejectionReason.GOVERNANCE_BLOCKED in cand_res.rejection_reasons
+    from src.evaluation.research_constitution import HypothesisStatus
+    assert cand_res.hypothesis.status == HypothesisStatus.GENERATED
+
+
+def test_hypothesis_acceptance_failure_fail_fast_re_raises(
+    sample_market_data, dataset_scope, execution_assumptions, monkeypatch
+):
+    invalid_cp = CodeProvenance(commit_sha="a1b2c3d4e5f67890123456789012345678901234")
+    c1 = CandidateSpec("grid", "1.0", "baseline", {"fast_window": 3, "slow_window": 8})
+
+    def mock_accept(hyp):
+        raise ValueError("Simulated hypothesis acceptance failure for fail-fast")
+
+    monkeypatch.setattr("src.evaluation.discovery_engine.accept_hypothesis_for_research", mock_accept)
+
+    engine = DiscoveryEngine()
+    policy = ResearchSearchPolicy(max_trials=5, fail_fast=True)
+
+    with pytest.raises(ValueError, match="Simulated hypothesis acceptance failure for fail-fast"):
+        engine.run_discovery(
+            df=sample_market_data,
+            candidates=(c1,),
+            dataset_scope=dataset_scope,
+            execution_assumptions=execution_assumptions,
+            code_provenance=invalid_cp,
+            search_policy=policy,
+        )

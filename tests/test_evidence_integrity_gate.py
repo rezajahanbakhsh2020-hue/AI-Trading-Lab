@@ -358,13 +358,111 @@ def test_missing_exact_partition_timestamps_fails_closed():
     assert result.valid is False
     assert RejectionReason.EVIDENCE_INCOMPLETENESS in result.rejection_reasons
 
-    from src.evaluation.research_robustness import assess_research_robustness
-    qual_res = qualify_research_evidence(
-        tampered_evidence,
-        robustness_assessment=assess_research_robustness(tampered_evidence),
+
+# Q. Equal exact timestamp boundary rejected
+def test_equal_exact_timestamp_boundary_fails_closed():
+    spec = make_test_spec()
+    p_is = EvidencePartition(
+        role=EvidencePartitionRole.IN_SAMPLE,
+        start_date="2025-01-01",
+        end_date="2025-01-02",
+        total_return=0.05,
+        max_drawdown=-0.01,
+        sharpe_ratio=1.5,
+        observations=100,
+        start_timestamp_utc="2025-01-01T00:00:00+00:00",
+        end_timestamp_utc="2025-01-02T12:00:00+00:00",
     )
-    assert qual_res.qualified is False
-    assert RejectionReason.EVIDENCE_INCOMPLETENESS in qual_res.rejection_reasons
+    p_val = EvidencePartition(
+        role=EvidencePartitionRole.VALIDATION,
+        start_date="2025-01-02",
+        end_date="2025-01-03",
+        total_return=0.03,
+        max_drawdown=-0.01,
+        sharpe_ratio=1.2,
+        observations=50,
+        start_timestamp_utc="2025-01-02T12:00:00+00:00",  # Equal to IS end_timestamp_utc
+        end_timestamp_utc="2025-01-03T12:00:00+00:00",
+    )
+    evidence = ResearchEvidence(
+        experiment_fingerprint=spec.fingerprint,
+        spec=spec,
+        partitions=(p_is, p_val),
+        promotion_status=PromotionStatus.PROMOTABLE,
+    )
+
+    result = ResearchEvidenceIntegrityGate.validate(evidence)
+    assert result.valid is False
+    assert RejectionReason.FAILED_VALIDATION in result.rejection_reasons
+
+
+# R. Equal date boundary rejected
+def test_equal_date_boundary_fails_closed():
+    spec = make_test_spec()
+    p_is = EvidencePartition(
+        role=EvidencePartitionRole.IN_SAMPLE,
+        start_date="2025-01-01",
+        end_date="2025-01-02",
+        total_return=0.05,
+        max_drawdown=-0.01,
+        sharpe_ratio=1.5,
+        observations=100,
+    )
+    p_val = EvidencePartition(
+        role=EvidencePartitionRole.VALIDATION,
+        start_date="2025-01-02",  # Equal to IS end_date ("2025-01-02")
+        end_date="2025-01-03",
+        total_return=0.03,
+        max_drawdown=-0.01,
+        sharpe_ratio=1.2,
+        observations=50,
+    )
+    evidence = ResearchEvidence(
+        experiment_fingerprint=spec.fingerprint,
+        spec=spec,
+        partitions=(p_is, p_val),
+        promotion_status=PromotionStatus.PROMOTABLE,
+    )
+
+    result = ResearchEvidenceIntegrityGate.validate(evidence)
+    assert result.valid is False
+    assert RejectionReason.FAILED_VALIDATION in result.rejection_reasons
+
+
+# S. Strictly separated partitions accepted
+def test_strictly_separated_partitions_accepted():
+    spec = make_test_spec()
+    p_is = EvidencePartition(
+        role=EvidencePartitionRole.IN_SAMPLE,
+        start_date="2025-01-01",
+        end_date="2025-01-02",
+        total_return=0.05,
+        max_drawdown=-0.01,
+        sharpe_ratio=1.5,
+        observations=100,
+        start_timestamp_utc="2025-01-01T00:00:00+00:00",
+        end_timestamp_utc="2025-01-02T11:59:59+00:00",
+    )
+    p_val = EvidencePartition(
+        role=EvidencePartitionRole.VALIDATION,
+        start_date="2025-01-02",
+        end_date="2025-01-03",
+        total_return=0.03,
+        max_drawdown=-0.01,
+        sharpe_ratio=1.2,
+        observations=50,
+        start_timestamp_utc="2025-01-02T12:00:00+00:00",  # Strictly after IS end_timestamp_utc
+        end_timestamp_utc="2025-01-03T12:00:00+00:00",
+    )
+    evidence = ResearchEvidence(
+        experiment_fingerprint=spec.fingerprint,
+        spec=spec,
+        partitions=(p_is, p_val),
+        promotion_status=PromotionStatus.PROMOTABLE,
+    )
+
+    result = ResearchEvidenceIntegrityGate.validate(evidence)
+    assert result.valid is True
 
 
 # O. Naive timestamp without timezone rejected

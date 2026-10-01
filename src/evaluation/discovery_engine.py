@@ -635,7 +635,39 @@ class DiscoveryEngine:
                     continue
 
             # Transition candidate hypothesis to ACCEPTED_FOR_RESEARCH for research execution
-            accepted_hypothesis = accept_hypothesis_for_research(hypothesis)
+            try:
+                accepted_hypothesis = accept_hypothesis_for_research(hypothesis)
+            except Exception as exc:
+                trial_record = ResearchTrialRecord(
+                    search_id=search_space.search_id,
+                    trial_id=trial_id,
+                    trial_index=idx,
+                    candidate_id=cand.candidate_id,
+                    candidate_fingerprint=cand.candidate_id,
+                    experiment_fingerprint="",
+                    evidence_fingerprint=None,
+                    qualification_status=PromotionStatus.REJECTED,
+                    rejection_reasons=(RejectionReason.GOVERNANCE_BLOCKED,),
+                    status="BLOCKED",
+                    error_message=str(exc),
+                    campaign_id=campaign_id,
+                )
+                trial_records.append(trial_record)
+
+                research_cand = ResearchCandidate(
+                    candidate_id=cand.candidate_id,
+                    hypothesis=hypothesis,
+                    evidence=None,
+                    validation_status=PromotionStatus.REJECTED,
+                    promotion_status=PromotionStatus.REJECTED,
+                    rejection_reasons=(RejectionReason.GOVERNANCE_BLOCKED,),
+                )
+                research_candidates.append(research_cand)
+
+                if search_policy and search_policy.fail_fast:
+                    raise
+
+                continue
 
             try:
                 evidence = self._evaluate_candidate(

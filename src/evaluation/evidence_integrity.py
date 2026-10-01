@@ -301,16 +301,15 @@ class ResearchEvidenceIntegrityGate:
             ):
                 curr_end = pd.to_datetime(curr_p.end_timestamp_utc, utc=True)
                 next_start = pd.to_datetime(next_p.start_timestamp_utc, utc=True)
-                if curr_end > next_start:
+                if curr_end >= next_start:
                     rejection_reasons.append(RejectionReason.FAILED_VALIDATION)
                     notes.append(
                         f"Partition timestamp overlap or reversal between '{curr_p.role.value}' "
                         f"(end: {curr_p.end_timestamp_utc}) and '{next_p.role.value}' "
                         f"(start: {next_p.start_timestamp_utc})."
                     )
-            elif curr_p.start_timestamp_utc is not None or next_p.start_timestamp_utc is not None:
-                # If one has exact timestamps and the other doesn't, enforce date order
-                if curr_p.end_date > next_p.start_date:
+            else:
+                if curr_p.end_date >= next_p.start_date:
                     rejection_reasons.append(RejectionReason.FAILED_VALIDATION)
                     notes.append(
                         f"Partition date overlap or reversal between '{curr_p.role.value}' "
