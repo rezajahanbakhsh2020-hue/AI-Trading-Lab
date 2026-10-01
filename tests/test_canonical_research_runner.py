@@ -110,40 +110,6 @@ def make_valid_hypothesis(**kwargs) -> ResearchHypothesis:
     spec = make_valid_spec(**kwargs)
     hyp = ResearchHypothesis.from_experiment_spec(spec)
     return accept_hypothesis_for_research(hyp)
-    if parameters is None:
-        parameters = {"short_window": 5, "long_window": 20}
-    if walk_forward_protocol is None:
-        walk_forward_protocol = WalkForwardProtocol(train_size=40, test_size=15)
-    ds = DatasetScope(
-        dataset_id="xauusd_test",
-        symbol="XAUUSD",
-        timeframe="1D",
-        start_date=start_date,
-        end_date=end_date,
-    )
-    ea = ExecutionAssumptions(
-        transaction_cost=transaction_cost,
-        slippage=slippage,
-        latency_ms=latency_ms,
-    )
-    cp = CodeProvenance(
-        commit_sha="a1b2c3d4e5f678901234567890abcdef12345678",
-        repository_status="clean",
-        author="Research Bot",
-    )
-    return ResearchExperimentSpec(
-        hypothesis="Testing MA crossover trend capture",
-        methodology_version="discovery_v1.0",
-        strategy_name=strategy_name,
-        strategy_version="1.0.0",
-        dataset_scope=ds,
-        execution_assumptions=ea,
-        code_provenance=cp,
-        benchmark_reference="buy_and_hold",
-        parameters=parameters,
-        random_seed=42,
-        walk_forward_protocol=walk_forward_protocol,
-    )
 
 
 def test_A_valid_experiment_executes_and_creates_evidence():

@@ -50,7 +50,7 @@ class ResearchEvidenceIntegrityGate:
         cls,
         evidence: Any,
         *,
-        require_exact_timestamps: bool = False,
+        require_exact_timestamps: bool = True,
         require_walk_forward: bool = False,
         require_oos: bool = False,
         min_observations: int = 1,

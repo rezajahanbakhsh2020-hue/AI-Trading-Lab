@@ -260,7 +260,6 @@ def run_research_experiment(
     if not spec.code_provenance or not spec.code_provenance.commit_sha or not spec.code_provenance.commit_sha.strip():
         raise ValueError(f"Hypothesis '{spec.hypothesis_id}' lacks required CodeProvenance commit_sha.")
 
-    hypothesis_authority = spec
     spec = spec.to_experiment_spec()
     if not isinstance(spec.dataset_scope, DatasetScope):
         raise TypeError("spec.dataset_scope must be a DatasetScope instance.")

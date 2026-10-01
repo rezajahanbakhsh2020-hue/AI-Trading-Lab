@@ -205,10 +205,11 @@ def test_legacy_artifacts_without_exact_timestamps_remain_loadable(tmp_path: Pat
         assert p.start_timestamp_utc is None
         assert p.end_timestamp_utc is None
 
-    # Qualification succeeds for legacy artifacts if other policies pass
+    # Legacy artifacts remain loadable, but authoritative qualification fails closed without exact timestamps
     from src.evaluation.research_robustness import assess_research_robustness
     qual_res = qualify_research_evidence(loaded_legacy, robustness_assessment=assess_research_robustness(loaded_legacy))
-    assert qual_res.qualified is True
+    assert qual_res.qualified is False
+    assert RejectionReason.EVIDENCE_INCOMPLETENESS in qual_res.rejection_reasons
 
 
 # I. Invalid timestamp boundaries fail closed
@@ -324,3 +325,43 @@ def test_unaccepted_hypothesis_cannot_enter_runner():
     evidence = run_research_experiment(accepted, df=df)
     assert isinstance(evidence, ResearchEvidence)
     assert evidence.spec.fingerprint == hypothesis.fingerprint
+
+
+# N. Explicit regression test for missing exact partition timestamps
+def test_missing_exact_partition_timestamps_fails_closed():
+    from tests.test_research_qualification import make_valid_evidence
+    evidence = make_valid_evidence()
+
+    # Clear exact timestamps from one partition
+    p_is = evidence.partitions[0]
+    p_cleared = EvidencePartition(
+        role=p_is.role,
+        start_date=p_is.start_date,
+        end_date=p_is.end_date,
+        total_return=p_is.total_return,
+        max_drawdown=p_is.max_drawdown,
+        sharpe_ratio=p_is.sharpe_ratio,
+        observations=p_is.observations,
+        start_timestamp_utc=None,
+        end_timestamp_utc=None,
+    )
+    tampered_partitions = (p_cleared,) + evidence.partitions[1:]
+    tampered_evidence = ResearchEvidence(
+        experiment_fingerprint=evidence.experiment_fingerprint,
+        spec=evidence.spec,
+        partitions=tampered_partitions,
+        robustness_verdict=evidence.robustness_verdict,
+        promotion_status=evidence.promotion_status,
+    )
+
+    result = ResearchEvidenceIntegrityGate.validate(tampered_evidence)
+    assert result.valid is False
+    assert RejectionReason.EVIDENCE_INCOMPLETENESS in result.rejection_reasons
+
+    from src.evaluation.research_robustness import assess_research_robustness
+    qual_res = qualify_research_evidence(
+        tampered_evidence,
+        robustness_assessment=assess_research_robustness(tampered_evidence),
+    )
+    assert qual_res.qualified is False
+    assert RejectionReason.EVIDENCE_INCOMPLETENESS in qual_res.rejection_reasons

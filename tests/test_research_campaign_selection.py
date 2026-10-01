@@ -98,6 +98,8 @@ def _create_mock_evidence(
             win_rate=0.6,
             profit_factor=profit_factor,
             observations=100,
+            start_timestamp_utc="2024-01-01T00:00:00+00:00",
+            end_timestamp_utc="2024-03-01T00:00:00+00:00",
         ),
         EvidencePartition(
             role=EvidencePartitionRole.OUT_OF_SAMPLE,
@@ -109,6 +111,8 @@ def _create_mock_evidence(
             win_rate=0.6,
             profit_factor=profit_factor,
             observations=100,
+            start_timestamp_utc="2024-03-01T00:00:00+00:00",
+            end_timestamp_utc="2024-05-01T00:00:00+00:00",
         ),
         EvidencePartition(
             role=EvidencePartitionRole.WALK_FORWARD,
@@ -120,6 +124,8 @@ def _create_mock_evidence(
             win_rate=0.6,
             profit_factor=profit_factor,
             observations=100,
+            start_timestamp_utc="2024-05-01T00:00:00+00:00",
+            end_timestamp_utc="2024-06-01T00:00:00+00:00",
         ),
     )
 
