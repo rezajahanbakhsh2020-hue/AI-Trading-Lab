@@ -377,8 +377,6 @@ def test_matrix_H_timestamp_freshness_boundaries() -> None:
     assert res_future["status"] == "INVALID_RESPONSE"
 
     # 4. Older than 300 seconds -> SKIPPED_STALE
-    pub_dict_stale = pub.as_dict()
-    pub_dict_stale["market_data_timestamp"] = "2020-01-01T12:00:00+00:00"
     stale_dec = ProductionDecision(
         candidate_id=cand.candidate_id,
         evidence_id=cand.evidence.evidence_id,
@@ -404,3 +402,79 @@ def test_matrix_H_timestamp_freshness_boundaries() -> None:
     )
     res_stale = publisher.publish(stale_payload)
     assert res_stale["status"] == "SKIPPED_STALE"
+
+
+def test_adversarial_arbitrary_dict_and_fake_object_publish_rejected() -> None:
+    publisher = Project2Publisher(publish_url="https://api.example.com/signals", api_key="key", enabled=True)
+
+    # Arbitrary dict
+    res_dict = publisher.publish({"some": "dict"})
+    assert res_dict["status"] == "INVALID_RESPONSE"
+
+    # Fake object
+    class FakePayload:
+        def to_contract_v1_payload(self):
+            return {"fake": "payload"}
+
+    res_fake = publisher.publish(FakePayload())
+    assert res_fake["status"] == "INVALID_RESPONSE"
+
+
+def test_confidence_and_stability_are_independently_preserved() -> None:
+    cand, dec, sig, risk, pub = make_test_artifacts(confidence=0.61, stability_score=0.88)
+    assert pub.confidence == 0.61
+    assert pub.operational_stability_score == 0.88
+
+    payload = pub.to_contract_v1_payload()
+    assert payload["signal"]["confidence"] == 0.61
+    assert payload["signal"]["stability_score"] == 0.88
+
+
+def test_publication_id_changes_on_any_authoritative_mutation() -> None:
+    cand, dec, sig, risk, base_pub = make_test_artifacts()
+    base_id = base_pub.publication_id
+
+    # 1. Mutate confidence
+    pub_diff_conf = ProductionIntelligencePublication.from_artifacts(dec, sig, risk, cand, confidence=0.99)
+    assert pub_diff_conf.publication_id != base_id
+
+    # 2. Mutate entry
+    dec_diff_entry = ProductionDecision(
+        candidate_id=dec.candidate_id,
+        evidence_id=dec.evidence_id,
+        experiment_fingerprint=dec.experiment_fingerprint,
+        symbol=dec.symbol,
+        timeframe=dec.timeframe,
+        decision_timestamp=dec.decision_timestamp,
+        market_timestamp=dec.market_timestamp,
+        direction=dec.direction,
+        reason=dec.reason,
+        entry_price=2050.0,
+        invalidation_condition=dec.invalidation_condition,
+        confidence=dec.confidence,
+        parameters=dec.parameters,
+    )
+    sig_diff_entry = ProductionSignal.from_decision(dec_diff_entry)
+    risk_diff_entry = calculate_production_risk_levels(dec_diff_entry, cand)
+    pub_diff_entry = ProductionIntelligencePublication.from_artifacts(dec_diff_entry, sig_diff_entry, risk_diff_entry, cand)
+    assert pub_diff_entry.publication_id != base_id
+
+
+@patch("urllib.request.urlopen")
+def test_http_redirect_disallowed(mock_urlopen) -> None:
+    err = urllib.error.HTTPError(
+        url="https://api.example.com/signals",
+        code=302,
+        msg="Found",
+        hdrs={},
+        fp=MagicMock(read=lambda: b"Redirect"),
+    )
+    mock_urlopen.side_effect = err
+
+    publisher = Project2Publisher(publish_url="https://api.example.com/signals", api_key="secret-key", enabled=True)
+    cand, dec, sig, risk, pub = make_test_artifacts()
+    res = publisher.publish(pub)
+
+    assert res["status"] in ("UNAVAILABLE", "FAILED", "REJECTED")
+    assert res["published"] is False
+    assert "secret-key" not in str(res)

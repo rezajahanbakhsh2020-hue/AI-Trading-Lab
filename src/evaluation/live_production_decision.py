@@ -1210,23 +1210,6 @@ class ProductionIntelligencePublication:
             except Exception as exc:
                 raise ValueError(f"Invalid market_data_timestamp '{self.market_data_timestamp}': {exc}")
 
-        # Validate decision_timestamp as timezone-aware ISO-8601 string
-        try:
-            dt_dec = datetime.fromisoformat(str(self.decision_timestamp).replace("Z", "+00:00"))
-            if dt_dec.tzinfo is None:
-                raise ValueError("decision_timestamp must be timezone-aware ISO-8601.")
-        except Exception as exc:
-            raise ValueError(f"Invalid decision_timestamp '{self.decision_timestamp}': {exc}")
-
-        # Validate market_data_timestamp if present as timezone-aware ISO-8601 string
-        if self.market_data_timestamp is not None and str(self.market_data_timestamp).strip():
-            try:
-                dt_mkt = datetime.fromisoformat(str(self.market_data_timestamp).replace("Z", "+00:00"))
-                if dt_mkt.tzinfo is None:
-                    raise ValueError("market_data_timestamp must be timezone-aware ISO-8601.")
-            except Exception as exc:
-                raise ValueError(f"Invalid market_data_timestamp '{self.market_data_timestamp}': {exc}")
-
     @classmethod
     def from_artifacts(
         cls,

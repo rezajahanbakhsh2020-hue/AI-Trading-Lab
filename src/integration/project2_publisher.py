@@ -100,12 +100,26 @@ class Project2Publisher:
         skip_if_no_trade: bool = False,
     ) -> Dict[str, Any]:
         """Deliver contract payload to Project 2."""
-        if hasattr(payload, "to_contract_v1_payload"):
+        from src.evaluation.live_production_decision import ProductionIntelligencePublication
+
+        if isinstance(payload, ProductionIntelligencePublication):
             payload_dict = payload.to_contract_v1_payload()
-        elif isinstance(payload, dict):
-            payload_dict = payload
         else:
-            raise TypeError("payload must be a dictionary or ProductionIntelligencePublication instance.")
+            return {
+                "status": "INVALID_RESPONSE",
+                "published": False,
+                "reason": f"Outbound payload must be a ProductionIntelligencePublication instance, got {type(payload).__name__}",
+                "error": f"Invalid payload type: {type(payload).__name__}",
+            }
+
+        schema_ver = str(payload_dict.get("contract_version", "")).strip()
+        if schema_ver != "1.0":
+            return {
+                "status": "INVALID_RESPONSE",
+                "published": False,
+                "reason": f"Outbound payload contract_version '{schema_ver}' must be '1.0'",
+                "error": f"Invalid contract_version: {schema_ver}",
+            }
 
         if not self.enabled:
             return {
@@ -203,6 +217,17 @@ class Project2Publisher:
             )
             try:
                 with urllib.request.urlopen(req, timeout=self.timeout_seconds) as resp:
+                    raw_geturl = resp.geturl() if hasattr(resp, "geturl") and callable(resp.geturl) else None
+                    final_url = str(raw_geturl) if isinstance(raw_geturl, str) and raw_geturl.strip() else self.publish_url
+                    if final_url and urlparse(final_url).netloc != urlparse(self.publish_url).netloc:
+                        return {
+                            "status": "REJECTED",
+                            "published": False,
+                            "http_code": resp.getcode(),
+                            "event_id": event_id,
+                            "error": f"HTTP redirect to external host '{urlparse(final_url).netloc}' disallowed",
+                            "attempts": attempt,
+                        }
                     code = resp.getcode()
                     resp_body = resp.read().decode("utf-8")
                     if 200 <= code < 300:
@@ -258,18 +283,18 @@ class Project2Publisher:
                         raw_remote_id = receipt_json.get("remote_event_id") or receipt_json.get("id")
 
                         # Disagree check if multiple identity fields are present
-                        id_vals = [str(v).strip() for v in (raw_event_id, raw_pub_id) if v is not None and str(v).strip()]
-                        if len(set(id_vals)) > 1:
+                        all_id_vals = [str(v).strip() for v in (raw_event_id, raw_pub_id, raw_remote_id) if v is not None and str(v).strip()]
+                        if len(set(all_id_vals)) > 1:
                             return {
                                 "status": "INVALID_RESPONSE",
                                 "published": False,
                                 "http_code": code,
                                 "event_id": event_id,
-                                "error": f"Conflicting identity fields in acknowledgement receipt: event_id='{raw_event_id}', publication_id='{raw_pub_id}'",
+                                "error": f"Conflicting identity fields in acknowledgement receipt: {receipt_json}",
                                 "attempts": attempt,
                             }
 
-                        ack_id = id_vals[0] if id_vals else (str(raw_remote_id).strip() if raw_remote_id and str(raw_remote_id).strip() else None)
+                        ack_id = all_id_vals[0] if all_id_vals else None
                         if not ack_id:
                             return {
                                 "status": "INVALID_RESPONSE",
@@ -336,7 +361,7 @@ class Project2Publisher:
                 elif exc.code == 403:
                     final_status = "FORBIDDEN"
                     break
-                elif exc.code in (400, 422):
+                elif exc.code in (301, 302, 303, 307, 308, 400, 422):
                     final_status = "REJECTED"
                     break
                 elif exc.code in (404, 500, 502, 503, 504):
