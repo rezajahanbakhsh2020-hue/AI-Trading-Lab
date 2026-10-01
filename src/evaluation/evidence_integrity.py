@@ -8,10 +8,30 @@ qualification or promotion binding.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import datetime, timedelta, timezone
 import math
 from typing import Any
 
 import pandas as pd
+
+
+def _parse_exact_utc_timestamp(ts_str: str) -> datetime:
+    """Strictly parse exact UTC ISO-8601 timestamp string.
+
+    Fails closed on empty, naive (no timezone), or non-UTC offset strings.
+    """
+    if not ts_str or not isinstance(ts_str, str) or not ts_str.strip():
+        raise ValueError("Timestamp string is empty or invalid.")
+    cleaned = ts_str.strip()
+    iso_str = cleaned.replace("Z", "+00:00")
+    dt = datetime.fromisoformat(iso_str)
+    if dt.tzinfo is None:
+        raise ValueError(f"Timestamp '{ts_str}' lacks required explicit timezone information.")
+    if dt.utcoffset() != timedelta(0):
+        raise ValueError(
+            f"Timestamp '{ts_str}' offset ({dt.utcoffset()}) is not UTC (+00:00). Silent normalization is forbidden."
+        )
+    return dt
 
 from src.evaluation.research_constitution import (
     CodeProvenance,
@@ -223,8 +243,10 @@ class ResearchEvidenceIntegrityGate:
                 try:
                     s_str = str(p.start_timestamp_utc).strip()
                     e_str = str(p.end_timestamp_utc).strip()
-                    p_start_dt = pd.to_datetime(s_str, utc=True)
-                    p_end_dt = pd.to_datetime(e_str, utc=True)
+                    dt_start = _parse_exact_utc_timestamp(s_str)
+                    dt_end = _parse_exact_utc_timestamp(e_str)
+                    p_start_dt = pd.to_datetime(dt_start, utc=True)
+                    p_end_dt = pd.to_datetime(dt_end, utc=True)
                     if pd.isna(p_start_dt) or pd.isna(p_end_dt):
                         raise ValueError("NaT value parsed.")
                     if p_start_dt > p_end_dt:

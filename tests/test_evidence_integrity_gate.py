@@ -365,3 +365,63 @@ def test_missing_exact_partition_timestamps_fails_closed():
     )
     assert qual_res.qualified is False
     assert RejectionReason.EVIDENCE_INCOMPLETENESS in qual_res.rejection_reasons
+
+
+# O. Naive timestamp without timezone rejected
+def test_naive_timestamp_fails_closed():
+    from tests.test_research_qualification import make_valid_evidence
+    evidence = make_valid_evidence()
+
+    p_is = evidence.partitions[0]
+    p_naive = EvidencePartition(
+        role=p_is.role,
+        start_date=p_is.start_date,
+        end_date=p_is.end_date,
+        total_return=p_is.total_return,
+        max_drawdown=p_is.max_drawdown,
+        sharpe_ratio=p_is.sharpe_ratio,
+        observations=p_is.observations,
+        start_timestamp_utc="2025-01-01T00:00:00",  # Naive timestamp (no timezone)
+        end_timestamp_utc=p_is.end_timestamp_utc,
+    )
+    tampered_evidence = ResearchEvidence(
+        experiment_fingerprint=evidence.experiment_fingerprint,
+        spec=evidence.spec,
+        partitions=(p_naive,) + evidence.partitions[1:],
+        robustness_verdict=evidence.robustness_verdict,
+        promotion_status=evidence.promotion_status,
+    )
+
+    result = ResearchEvidenceIntegrityGate.validate(tampered_evidence)
+    assert result.valid is False
+    assert RejectionReason.EVIDENCE_INCOMPLETENESS in result.rejection_reasons
+
+
+# P. Non-UTC offset timestamp rejected
+def test_non_utc_offset_timestamp_fails_closed():
+    from tests.test_research_qualification import make_valid_evidence
+    evidence = make_valid_evidence()
+
+    p_is = evidence.partitions[0]
+    p_non_utc = EvidencePartition(
+        role=p_is.role,
+        start_date=p_is.start_date,
+        end_date=p_is.end_date,
+        total_return=p_is.total_return,
+        max_drawdown=p_is.max_drawdown,
+        sharpe_ratio=p_is.sharpe_ratio,
+        observations=p_is.observations,
+        start_timestamp_utc="2025-01-01T00:00:00+03:30",  # Non-UTC timezone offset
+        end_timestamp_utc=p_is.end_timestamp_utc,
+    )
+    tampered_evidence = ResearchEvidence(
+        experiment_fingerprint=evidence.experiment_fingerprint,
+        spec=evidence.spec,
+        partitions=(p_non_utc,) + evidence.partitions[1:],
+        robustness_verdict=evidence.robustness_verdict,
+        promotion_status=evidence.promotion_status,
+    )
+
+    result = ResearchEvidenceIntegrityGate.validate(tampered_evidence)
+    assert result.valid is False
+    assert RejectionReason.EVIDENCE_INCOMPLETENESS in result.rejection_reasons
