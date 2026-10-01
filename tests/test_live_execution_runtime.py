@@ -325,6 +325,7 @@ def test_live_execution_runtime_run_once(mock_load_data, tmp_path) -> None:
 @patch("src.evaluation.live_execution_runtime.load_live_market_data")
 def test_live_execution_runtime_idempotency_key(mock_load_data, tmp_path) -> None:
     mock_load_data.return_value = make_dummy_df()
+    ref_now = pd.to_datetime(mock_load_data.return_value["openTime"], utc=True).iloc[-1].to_pydatetime()
 
     runtime = LiveExecutionRuntime(
         symbol="XAUUSD",
@@ -333,8 +334,8 @@ def test_live_execution_runtime_idempotency_key(mock_load_data, tmp_path) -> Non
         production_config=production_config_for(tmp_path),
     )
 
-    res1 = runtime.run_once(publish=False, persist=False)
-    res2 = runtime.run_once(publish=False, persist=False)
+    res1 = runtime.run_once(publish=False, persist=False, reference_now=ref_now)
+    res2 = runtime.run_once(publish=False, persist=False, reference_now=ref_now)
 
     event_id1 = res1["contract_payload"]["event_id"]
     event_id2 = res2["contract_payload"]["event_id"]
@@ -620,6 +621,18 @@ def test_live_execution_runtime_persistence_freshness_isolation(
         research_dir=tmp_path,
         production_config=production_config_for(tmp_path),
     )
+
+    def mock_urlopen_impl(req, *args, **kwargs):
+        body = json.loads(req.data.decode("utf-8")) if hasattr(req, "data") and req.data else {}
+        evt_id = body.get("event_id") or "test_event_id"
+        m_resp = MagicMock()
+        m_resp.getcode.return_value = 200
+        m_resp.read.return_value = json.dumps({"status": "INGESTED", "event_id": evt_id, "publication_id": evt_id}).encode("utf-8")
+        m_resp.__enter__.return_value = m_resp
+        return m_resp
+
+    mock_urlopen.side_effect = mock_urlopen_impl
+
     res2 = runtime2.run_once(publish=True, persist=True, reference_now=ref_now)
     assert res2["publish_result"]["status"] == "PUBLISHED"
 

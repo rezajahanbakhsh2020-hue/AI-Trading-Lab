@@ -70,6 +70,8 @@ def build_contract_v1_payload(
 
     eff_tp2 = float(tp2) if tp2 is not None else (float(take_profit) if take_profit is not None else None)
 
+    stab_score = float(stability_score) if stability_score is not None else 0.85
+
     pub = ProductionIntelligencePublication(
         schema_version="1.0",
         publication_id=pub_id,
@@ -84,7 +86,7 @@ def build_contract_v1_payload(
         decision_timestamp=now_iso,
         market_data_timestamp=event_timestamp,
         decision=str(decision),
-        confidence=float(stability_score) if stability_score is not None else None,
+        confidence=stab_score,
         entry=float(entry_price) if entry_price is not None else None,
         invalidation="Close below stop_loss or trend turns DOWN" if str(decision) == "BUY" else None,
         stop_loss=float(stop_loss) if stop_loss is not None else None,
@@ -93,6 +95,7 @@ def build_contract_v1_payload(
         tp3=float(tp3) if tp3 is not None else None,
         trailing_stop=None,
         risk_reward_ratio=float(risk_reward_ratio) if risk_reward_ratio is not None else None,
+        operational_stability_score=stab_score,
         provenance=provenance,
     )
 
@@ -134,21 +137,40 @@ class Project2Publisher:
         self.max_retries = max_retries
         self.backoff_factor = backoff_factor
 
+    def validate_timestamp(self, timestamp_iso: Any) -> tuple[bool, Optional[str], Optional[str]]:
+        """Strictly validate event timestamp. Fail closed on missing, malformed, naive, or future timestamps.
+
+        Returns (valid_and_fresh, status_if_failed, reason_if_failed).
+        """
+        if timestamp_iso is None or not str(timestamp_iso).strip():
+            return False, "INVALID_RESPONSE", "Missing required timestamp in payload"
+
+        ts_str = str(timestamp_iso).strip()
+        try:
+            event_dt = datetime.datetime.fromisoformat(ts_str)
+        except Exception as exc:
+            return False, "INVALID_RESPONSE", f"Malformed timestamp '{ts_str}': {exc}"
+
+        if event_dt.tzinfo is None or event_dt.tzinfo.utcoffset(event_dt) is None:
+            return False, "INVALID_RESPONSE", f"Timestamp '{ts_str}' must be timezone-aware ISO-8601"
+
+        now_dt = datetime.datetime.now(datetime.timezone.utc)
+        age_seconds = (now_dt - event_dt).total_seconds()
+
+        if age_seconds < 0:
+            return False, "INVALID_RESPONSE", f"Future event timestamp '{ts_str}' relative to '{now_dt.isoformat()}'"
+
+        if age_seconds > self.max_age_seconds:
+            return False, "SKIPPED_STALE", f"Event timestamp '{ts_str}' age ({age_seconds:.1f}s) exceeds max_age_seconds={self.max_age_seconds}"
+
+        return True, None, None
+
     def is_stale(self, timestamp_iso: str) -> bool:
         """Check if event timestamp is older than max_age_seconds."""
-        try:
-            # Handle ISO timestamps ending in 'Z' or offset
-            ts_str = timestamp_iso.replace("Z", "+00:00")
-            event_dt = datetime.datetime.fromisoformat(ts_str)
-            if event_dt.tzinfo is None:
-                event_dt = event_dt.replace(tzinfo=datetime.timezone.utc)
-
-            now_dt = datetime.datetime.now(datetime.timezone.utc)
-            age = (now_dt - event_dt).total_seconds()
-            return age > self.max_age_seconds
-        except Exception as exc:
-            logger.warning("Could not parse timestamp %s for staleness check: %s", timestamp_iso, exc)
-            return False
+        valid, status, _ = self.validate_timestamp(timestamp_iso)
+        if not valid and status == "SKIPPED_STALE":
+            return True
+        return False
 
     def publish(
         self,
@@ -171,11 +193,40 @@ class Project2Publisher:
                 "reason": "Publisher disabled in configuration",
             }
 
-        if not self.publish_url:
+        if not self.publish_url or not str(self.publish_url).strip():
             return {
                 "status": "FAILED",
                 "published": False,
                 "reason": "Missing PROJECT2_PUBLISH_URL configuration",
+            }
+
+        url_str = str(self.publish_url).strip()
+        from urllib.parse import urlparse
+        try:
+            parsed_url = urlparse(url_str)
+            if not parsed_url.scheme or parsed_url.scheme.lower() not in ("http", "https"):
+                return {
+                    "status": "FAILED",
+                    "published": False,
+                    "reason": f"Invalid PROJECT2_PUBLISH_URL scheme: '{parsed_url.scheme}'",
+                }
+            if not parsed_url.netloc:
+                return {
+                    "status": "FAILED",
+                    "published": False,
+                    "reason": f"Invalid PROJECT2_PUBLISH_URL missing host: '{url_str}'",
+                }
+            if self.api_key and self.api_key in parsed_url.query:
+                return {
+                    "status": "FAILED",
+                    "published": False,
+                    "reason": "PROJECT2_API_KEY must not be passed in query parameters",
+                }
+        except Exception as exc:
+            return {
+                "status": "FAILED",
+                "published": False,
+                "reason": f"Malformed PROJECT2_PUBLISH_URL '{url_str}': {exc}",
             }
 
         if not self.api_key:
@@ -193,12 +244,14 @@ class Project2Publisher:
                 "reason": "Decision is NO TRADE and skip_if_no_trade=True",
             }
 
-        event_ts = payload_dict.get("timestamp", "")
-        if event_ts and self.is_stale(event_ts):
+        event_ts = payload_dict.get("timestamp")
+        ts_valid, ts_status, ts_reason = self.validate_timestamp(event_ts)
+        if not ts_valid:
             return {
-                "status": "SKIPPED_STALE",
+                "status": ts_status,
                 "published": False,
-                "reason": f"Event timestamp {event_ts} exceeds max_age_seconds={self.max_age_seconds}",
+                "reason": ts_reason,
+                "error": ts_reason,
             }
 
         body_bytes = json.dumps(payload_dict, separators=(",", ":")).encode("utf-8")
@@ -232,34 +285,101 @@ class Project2Publisher:
                     code = resp.getcode()
                     resp_body = resp.read().decode("utf-8")
                     if 200 <= code < 300:
-                        # Validate acknowledgement receipt
-                        receipt_json = None
+                        # Validate acknowledgement receipt JSON
+                        if not resp_body or not resp_body.strip():
+                            return {
+                                "status": "INVALID_RESPONSE",
+                                "published": False,
+                                "http_code": code,
+                                "event_id": event_id,
+                                "error": f"HTTP {code} response body is empty; identity-bearing acknowledgement required",
+                                "attempts": attempt,
+                            }
+
                         try:
                             receipt_json = json.loads(resp_body)
-                        except Exception:
-                            receipt_json = None
+                        except Exception as exc:
+                            return {
+                                "status": "INVALID_RESPONSE",
+                                "published": False,
+                                "http_code": code,
+                                "event_id": event_id,
+                                "error": f"HTTP {code} response is not valid JSON: {exc}",
+                                "attempts": attempt,
+                            }
 
-                        if isinstance(receipt_json, dict):
-                            # Verify publication identity in receipt if present
-                            ack_id = receipt_json.get("event_id") or receipt_json.get("publication_id") or receipt_json.get("id")
-                            if ack_id and ack_id != event_id:
-                                return {
-                                    "status": "INVALID_RESPONSE",
-                                    "published": False,
-                                    "http_code": code,
-                                    "event_id": event_id,
-                                    "error": f"Acknowledgement identity mismatch: expected '{event_id}', got '{ack_id}'",
-                                    "attempts": attempt,
-                                }
+                        if not isinstance(receipt_json, dict):
+                            return {
+                                "status": "INVALID_RESPONSE",
+                                "published": False,
+                                "http_code": code,
+                                "event_id": event_id,
+                                "error": f"HTTP {code} response JSON is not a object/dict",
+                                "attempts": attempt,
+                            }
 
-                            ack_status = str(receipt_json.get("status", "")).upper()
-                            if ack_status in ("REJECTED", "DECLINED", "INVALID", "FAILED"):
+                        # Check explicit rejection statuses first
+                        if "status" in receipt_json:
+                            ack_status_raw = str(receipt_json.get("status", "")).strip().upper()
+                            if ack_status_raw in ("REJECTED", "DECLINED", "INVALID", "FAILED"):
                                 return {
                                     "status": "REJECTED",
                                     "published": False,
                                     "http_code": code,
                                     "event_id": event_id,
-                                    "error": f"Gateway explicitly rejected signal in receipt with status '{ack_status}'",
+                                    "error": f"Gateway explicitly rejected signal with status '{ack_status_raw}'",
+                                    "attempts": attempt,
+                                }
+
+                        # Require identity-bearing acknowledgement: event_id, publication_id, or remote_event_id
+                        raw_event_id = receipt_json.get("event_id")
+                        raw_pub_id = receipt_json.get("publication_id")
+                        raw_remote_id = receipt_json.get("remote_event_id") or receipt_json.get("id")
+
+                        # Disagree check if multiple identity fields are present
+                        id_vals = [str(v).strip() for v in (raw_event_id, raw_pub_id) if v is not None and str(v).strip()]
+                        if len(set(id_vals)) > 1:
+                            return {
+                                "status": "INVALID_RESPONSE",
+                                "published": False,
+                                "http_code": code,
+                                "event_id": event_id,
+                                "error": f"Conflicting identity fields in acknowledgement receipt: event_id='{raw_event_id}', publication_id='{raw_pub_id}'",
+                                "attempts": attempt,
+                            }
+
+                        ack_id = id_vals[0] if id_vals else (str(raw_remote_id).strip() if raw_remote_id and str(raw_remote_id).strip() else None)
+                        if not ack_id:
+                            return {
+                                "status": "INVALID_RESPONSE",
+                                "published": False,
+                                "http_code": code,
+                                "event_id": event_id,
+                                "error": f"HTTP {code} response missing remote event_id/publication_id acknowledgement identity",
+                                "attempts": attempt,
+                            }
+
+                        if ack_id != event_id:
+                            return {
+                                "status": "INVALID_RESPONSE",
+                                "published": False,
+                                "http_code": code,
+                                "event_id": event_id,
+                                "error": f"Acknowledgement identity mismatch: expected '{event_id}', got '{ack_id}'",
+                                "attempts": attempt,
+                            }
+
+                        # Require explicit accepted status
+                        ACCEPTED_STATUSES = ("INGESTED", "DUPLICATE_ACCEPTED", "ACCEPTED", "ACKNOWLEDGED", "PUBLISHED", "OK", "SUCCESS", "DELIVERED")
+                        if "status" in receipt_json:
+                            ack_status = str(receipt_json.get("status", "")).strip().upper()
+                            if ack_status not in ACCEPTED_STATUSES:
+                                return {
+                                    "status": "INVALID_RESPONSE",
+                                    "published": False,
+                                    "http_code": code,
+                                    "event_id": event_id,
+                                    "error": f"Unrecognized or unaccepted acknowledgement status '{ack_status}'",
                                     "attempts": attempt,
                                 }
 
@@ -269,6 +389,7 @@ class Project2Publisher:
                             "http_code": code,
                             "event_id": event_id,
                             "publication_id": event_id,
+                            "remote_event_id": ack_id,
                             "response": _redact_secret(resp_body, self.api_key),
                             "attempts": attempt,
                         }

@@ -1159,6 +1159,7 @@ class ProductionIntelligencePublication:
     tp3: Optional[float]
     trailing_stop: Optional[float]
     risk_reward_ratio: Optional[float]
+    operational_stability_score: float
     provenance: dict[str, Any]
 
     def __post_init__(self) -> None:
@@ -1181,19 +1182,30 @@ class ProductionIntelligencePublication:
         if not self.timeframe or not self.timeframe.strip():
             raise ValueError("timeframe must be a non-empty string.")
 
+        if isinstance(self.operational_stability_score, bool) or not isinstance(self.operational_stability_score, Real):
+            raise ValueError("operational_stability_score must be a numeric float.")
+        f_stab = float(self.operational_stability_score)
+        if not math.isfinite(f_stab):
+            raise ValueError("operational_stability_score must be finite (not NaN or infinity).")
+        object.__setattr__(self, "operational_stability_score", f_stab)
+
         # Validate decision_timestamp as timezone-aware ISO-8601 string
+        ts_dec_str = str(self.decision_timestamp).strip()
+        if not ts_dec_str:
+            raise ValueError("decision_timestamp must be a non-empty string.")
         try:
-            dt_dec = datetime.fromisoformat(str(self.decision_timestamp).replace("Z", "+00:00"))
-            if dt_dec.tzinfo is None:
+            dt_dec = datetime.fromisoformat(ts_dec_str)
+            if dt_dec.tzinfo is None or dt_dec.tzinfo.utcoffset(dt_dec) is None:
                 raise ValueError("decision_timestamp must be timezone-aware ISO-8601.")
         except Exception as exc:
             raise ValueError(f"Invalid decision_timestamp '{self.decision_timestamp}': {exc}")
 
         # Validate market_data_timestamp if present as timezone-aware ISO-8601 string
         if self.market_data_timestamp is not None and str(self.market_data_timestamp).strip():
+            ts_mkt_str = str(self.market_data_timestamp).strip()
             try:
-                dt_mkt = datetime.fromisoformat(str(self.market_data_timestamp).replace("Z", "+00:00"))
-                if dt_mkt.tzinfo is None:
+                dt_mkt = datetime.fromisoformat(ts_mkt_str)
+                if dt_mkt.tzinfo is None or dt_mkt.tzinfo.utcoffset(dt_mkt) is None:
                     raise ValueError("market_data_timestamp must be timezone-aware ISO-8601.")
             except Exception as exc:
                 raise ValueError(f"Invalid market_data_timestamp '{self.market_data_timestamp}': {exc}")
@@ -1240,20 +1252,46 @@ class ProductionIntelligencePublication:
         if risk.decision_id != decision.decision_id:
             raise ValueError(f"Risk decision_id '{risk.decision_id}' does not match decision ID '{decision.decision_id}'.")
 
+        conf = confidence if confidence is not None else decision.confidence
+        stab_score = candidate.operational_stability_score
+
+        receipt = None
+        if authorization is not None:
+            receipt = (
+                authorization
+                if isinstance(authorization, ProductionAuthorizationReceipt)
+                else ProductionAuthorizationReceipt.from_authorization(authorization)
+            )
+
+        cld_fp = getattr(decision, "canonical_live_decision_fingerprint", None) or getattr(signal, "canonical_live_decision_fingerprint", None)
+        cld_state = getattr(decision, "current_lifecycle_state", None) or getattr(signal, "current_lifecycle_state", None)
+
         pub_raw = {
+            "schema_version": schema_version,
             "signal_id": signal.signal_id,
             "decision_id": decision.decision_id,
+            "strategy_id": candidate.strategy_name,
             "candidate_id": candidate.candidate_id,
-            "evidence_id": candidate.evidence.evidence_id,
-            "experiment_fingerprint": candidate.evidence.experiment_fingerprint,
+            "research_evidence_id": candidate.evidence.evidence_id,
+            "research_fingerprint": candidate.evidence.experiment_fingerprint,
             "symbol": decision.symbol.upper(),
             "timeframe": decision.timeframe,
-            "market_timestamp": decision.market_timestamp,
-            "direction": decision.direction.value,
-            "entry_price": decision.entry_price,
+            "market_data_timestamp": decision.market_timestamp,
+            "decision": decision.direction.value,
+            "confidence": conf,
+            "entry": decision.entry_price,
+            "invalidation": decision.invalidation_condition,
             "stop_loss": risk.stop_loss,
             "tp1": risk.tp1,
-            "schema_version": schema_version,
+            "tp2": risk.tp2,
+            "tp3": risk.tp3,
+            "trailing_stop": risk.trailing_stop,
+            "risk_reward_ratio": risk.risk_reward_ratio,
+            "strategy_name": candidate.strategy_name,
+            "strategy_version": candidate.strategy_version,
+            "operational_stability_score": stab_score,
+            "canonical_live_decision_fingerprint": str(cld_fp) if cld_fp else None,
+            "runtime_authorization_fingerprint": receipt.authorization_fingerprint if receipt else None,
         }
         serialized = json.dumps(pub_raw, sort_keys=True, ensure_ascii=True)
         pub_id = hashlib.sha256(serialized.encode("utf-8")).hexdigest()[:32]
@@ -1266,22 +1304,18 @@ class ProductionIntelligencePublication:
             "experiment_fingerprint": candidate.evidence.experiment_fingerprint,
             "artifact_fingerprint": candidate.artifact_fingerprint,
             "policy_version": candidate.policy.policy_version,
+            "strategy_name": candidate.strategy_name,
             "strategy_version": candidate.strategy_version,
+            "operational_stability_score": stab_score,
             "campaign_selection_decision_fingerprint": candidate.campaign_selection_decision_fingerprint,
+            "publication_contract_version": "1.0",
         }
 
-        conf = confidence if confidence is not None else decision.confidence
+        if candidate.governance_decision_fingerprint:
+            provenance["governance_decision_fingerprint"] = candidate.governance_decision_fingerprint
 
-        if authorization is not None:
-            receipt = (
-                authorization
-                if isinstance(authorization, ProductionAuthorizationReceipt)
-                else ProductionAuthorizationReceipt.from_authorization(authorization)
-            )
+        if receipt is not None:
             provenance.update({
-                "candidate_id": receipt.candidate_id,
-                "strategy_name": receipt.strategy_name,
-                "strategy_version": receipt.strategy_version,
                 "runtime_authorization_fingerprint": receipt.authorization_fingerprint,
                 "promoted_artifact_fingerprint": receipt.promoted_artifact_fingerprint,
                 "governance_decision_fingerprint": receipt.governance_decision_fingerprint,
@@ -1290,9 +1324,6 @@ class ProductionIntelligencePublication:
                 "authorized_at_utc": receipt.authorized_at_utc,
             })
 
-        # Record canonical live decision lifecycle state and fingerprint if present on candidate or decision context
-        cld_fp = getattr(decision, "canonical_live_decision_fingerprint", None) or getattr(signal, "canonical_live_decision_fingerprint", None)
-        cld_state = getattr(decision, "current_lifecycle_state", None) or getattr(signal, "current_lifecycle_state", None)
         if cld_fp:
             provenance["canonical_live_decision_fingerprint"] = str(cld_fp)
         if cld_state:
@@ -1321,6 +1352,7 @@ class ProductionIntelligencePublication:
             tp3=risk.tp3,
             trailing_stop=risk.trailing_stop,
             risk_reward_ratio=risk.risk_reward_ratio,
+            operational_stability_score=stab_score,
             provenance=provenance,
         )
 
@@ -1348,6 +1380,7 @@ class ProductionIntelligencePublication:
             "tp3": self.tp3,
             "trailing_stop": self.trailing_stop,
             "risk_reward_ratio": self.risk_reward_ratio,
+            "operational_stability_score": self.operational_stability_score,
             "provenance": dict(self.provenance),
         }
 
@@ -1357,9 +1390,10 @@ class ProductionIntelligencePublication:
             raise ValueError("market_data_timestamp is required for Contract v1.0 payload delivery.")
 
         # Validate market_data_timestamp as timezone-aware ISO-8601
+        ts_mkt_str = str(self.market_data_timestamp).strip()
         try:
-            dt_ts = datetime.fromisoformat(str(self.market_data_timestamp).replace("Z", "+00:00"))
-            if dt_ts.tzinfo is None:
+            dt_ts = datetime.fromisoformat(ts_mkt_str)
+            if dt_ts.tzinfo is None or dt_ts.tzinfo.utcoffset(dt_ts) is None:
                 raise ValueError("market_data_timestamp must be timezone-aware ISO-8601.")
         except Exception as exc:
             raise ValueError(f"Invalid market_data_timestamp '{self.market_data_timestamp}': {exc}")
@@ -1388,7 +1422,7 @@ class ProductionIntelligencePublication:
                 "strategy": self.strategy_id,
                 "candidate_id": self.candidate_id,
                 "confidence": self.confidence,
-                "stability_score": self.confidence,
+                "stability_score": self.operational_stability_score,
                 "invalidation": self.invalidation,
                 "signal_label": self.decision,
                 "trend": "BULLISH" if self.decision == "BUY" else ("BEARISH" if self.decision == "SELL" else "NEUTRAL"),

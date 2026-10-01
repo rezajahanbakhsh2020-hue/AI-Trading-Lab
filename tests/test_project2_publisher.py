@@ -115,17 +115,6 @@ def test_publisher_stale_detection() -> None:
 
 @patch("urllib.request.urlopen")
 def test_publisher_successful_delivery(mock_urlopen) -> None:
-    mock_resp = MagicMock()
-    mock_resp.getcode.return_value = 200
-    mock_resp.read.return_value = b'{"status": "received"}'
-    mock_resp.__enter__.return_value = mock_resp
-    mock_urlopen.return_value = mock_resp
-
-    publisher = Project2Publisher(
-        publish_url="https://api.example.com/signals",
-        api_key="test-key",
-        enabled=True,
-    )
     payload = build_contract_v1_payload(
         symbol="XAUUSD",
         interval="5m",
@@ -137,11 +126,25 @@ def test_publisher_successful_delivery(mock_urlopen) -> None:
         entry_price=2000.0,
         stop_loss=1980.0,
     )
+    evt_id = payload["event_id"]
+
+    mock_resp = MagicMock()
+    mock_resp.getcode.return_value = 200
+    mock_resp.read.return_value = json.dumps({"status": "INGESTED", "event_id": evt_id}).encode("utf-8")
+    mock_resp.__enter__.return_value = mock_resp
+    mock_urlopen.return_value = mock_resp
+
+    publisher = Project2Publisher(
+        publish_url="https://api.example.com/signals",
+        api_key="test-key",
+        enabled=True,
+    )
     res = publisher.publish(payload)
 
     assert res["status"] == "PUBLISHED"
     assert res["published"] is True
     assert res["http_code"] == 200
+    assert res["remote_event_id"] == evt_id
     assert mock_urlopen.called
 
 
