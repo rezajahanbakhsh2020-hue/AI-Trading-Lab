@@ -163,6 +163,7 @@ def test_authorization_mismatch_rejection():
         authorization_policy_version=receipt.authorization_policy_version,
         authorized_at_utc=receipt.authorized_at_utc,
         authorization_fingerprint=receipt.authorization_fingerprint,
+        operational_stability_score=receipt.operational_stability_score,
     )
 
     with pytest.raises(LiveDecisionLifecycleError, match="candidate_id"):
@@ -332,7 +333,7 @@ def test_runtime_and_display_identity_parity(tmp_path):
     res = build_live_runtime(
         data,
         stable_strategy="momentum",
-        stability_score=0.80,
+        stability_score=0.85,
         reference_now=ref_now,
         store_path=tmp_path / "store.json",
         persist=False,

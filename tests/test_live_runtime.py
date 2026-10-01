@@ -26,7 +26,7 @@ def test_live_runtime_builds_decision_and_display(tmp_path):
     result = build_live_runtime(
         data=_data(),
         stable_strategy="momentum",
-        stability_score=0.80,
+        stability_score=0.85,
         symbol="XAUUSD",
         interval="5m",
         store_path=tmp_path / "store.json",
@@ -49,7 +49,7 @@ def test_live_runtime_display_contains_tp_levels(tmp_path):
     result = build_live_runtime(
         data=df,
         stable_strategy="momentum",
-        stability_score=0.80,
+        stability_score=0.85,
         symbol="XAUUSD",
         interval="5m",
         reference_now=ref_now,
@@ -69,7 +69,7 @@ def test_live_runtime_keeps_decision_and_display_consistent(tmp_path):
     result = build_live_runtime(
         data=_data(),
         stable_strategy="momentum",
-        stability_score=0.80,
+        stability_score=0.85,
         store_path=tmp_path / "store.json",
     )
 

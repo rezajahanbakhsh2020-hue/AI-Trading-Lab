@@ -40,7 +40,7 @@ def test_buy_overlay_contains_all_trade_lines():
     runtime_res = build_live_runtime(
         data,
         stable_strategy="momentum",
-        stability_score=0.80,
+        stability_score=0.85,
         reference_now=ref_now,
         persist=False,
     )
@@ -70,7 +70,7 @@ def test_buy_overlay_has_five_visible_lines():
     runtime_res = build_live_runtime(
         data,
         stable_strategy="momentum",
-        stability_score=0.80,
+        stability_score=0.85,
         reference_now=ref_now,
         persist=False,
     )
@@ -95,7 +95,7 @@ def test_no_trade_overlay_hides_all_trade_lines():
     runtime_res = build_live_runtime(
         data,
         stable_strategy="momentum",
-        stability_score=0.20,
+        min_stability_score=0.90,
         persist=False,
     )
 
@@ -125,7 +125,7 @@ def test_overlay_preserves_strategy_and_stability_metadata():
     runtime_res = build_live_runtime(
         data,
         stable_strategy="momentum",
-        stability_score=0.80,
+        stability_score=0.85,
         reference_now=ref_now,
         persist=False,
     )
@@ -144,7 +144,7 @@ def test_overlay_uses_latest_data_timestamp():
     runtime_res = build_live_runtime(
         data,
         stable_strategy="momentum",
-        stability_score=0.80,
+        stability_score=0.85,
         persist=False,
     )
 
@@ -159,7 +159,7 @@ def test_invalid_decision_is_rejected():
     runtime_res = build_live_runtime(
         data,
         stable_strategy="momentum",
-        stability_score=0.80,
+        stability_score=0.85,
         persist=False,
     )
     display = dict(runtime_res.display)
@@ -179,7 +179,7 @@ def test_missing_timestamp_is_rejected():
     runtime_res = build_live_runtime(
         _rising_data(),
         stable_strategy="momentum",
-        stability_score=0.80,
+        stability_score=0.85,
         persist=False,
     )
     display = runtime_res.display

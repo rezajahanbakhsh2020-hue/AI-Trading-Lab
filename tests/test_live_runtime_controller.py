@@ -75,7 +75,7 @@ def _allowed_production_decision():
         "status": "READY",
         "strategy": "momentum",
         "readiness": {
-            "strategy_stability_score": 0.90,
+            "strategy_stability_score": 0.85,
         },
         "runtime_gate": {
             "runtime_ready": True,

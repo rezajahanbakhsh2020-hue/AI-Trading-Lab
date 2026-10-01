@@ -19,23 +19,36 @@ DEFAULT_DATA_PATH = Path(
 def run_production_end_to_end(
     data: pd.DataFrame,
     *,
+    candidate_id: str | None = None,
     results_dir: str | Path = "results/production",
+    research_dir: Any | None = None,
     symbol: str = "XAUUSD",
     interval: str = "1d",
     min_stability_score: float = 0.50,
     reference_now: Any | None = None,
     store_path: Any | None = None,
 ) -> dict[str, Any]:
-    """Connect the saved production selection to the live E2E pipeline."""
+    """Connect promoted candidate lineage to the live E2E pipeline."""
+    from src.evaluation.research_store import resolve_promoted_candidate, DEFAULT_RESEARCH_DIR
 
-    selection = load_production_selection(
-        results_dir
+    r_dir = research_dir if research_dir is not None else DEFAULT_RESEARCH_DIR
+    resolved_candidate = resolve_promoted_candidate(
+        candidate_id=candidate_id,
+        strategy_id="momentum",
+        symbol=symbol,
+        timeframe=interval,
+        base_dir=r_dir,
     )
+
+    if resolved_candidate is None:
+        raise ValueError(
+            f"No promoted candidate found for candidate_id={candidate_id!r}, symbol={symbol!r}, timeframe={interval!r}"
+        )
 
     result = run_end_to_end(
         data,
-        stable_strategy=selection["stable_strategy"],
-        stability_score=selection["stability_score"],
+        stable_strategy=resolved_candidate.strategy_name,
+        stability_score=None,
         symbol=symbol,
         interval=interval,
         min_stability_score=min_stability_score,
@@ -43,7 +56,12 @@ def run_production_end_to_end(
         store_path=store_path,
     )
 
-    result["production_selection"] = selection
+    result["production_selection"] = {
+        "stable_strategy": resolved_candidate.strategy_name,
+        "stability_score": resolved_candidate.operational_stability_score,
+        "candidate_id": resolved_candidate.candidate_id,
+        "source": "promoted_candidate_binding",
+    }
 
     result["end_to_end_ready"] = (
         result["end_to_end_ready"]
