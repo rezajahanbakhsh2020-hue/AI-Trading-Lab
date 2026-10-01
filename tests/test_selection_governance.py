@@ -84,10 +84,12 @@ def make_test_evidence(
             win_rate=0.6,
             profit_factor=1.8,
             observations=100,
+            start_timestamp_utc="2024-01-01T00:00:00+00:00",
+            end_timestamp_utc="2024-03-01T23:59:59+00:00",
         ),
         EvidencePartition(
             role=EvidencePartitionRole.OUT_OF_SAMPLE,
-            start_date="2024-03-01",
+            start_date="2024-03-02",
             end_date="2024-06-01",
             total_return=0.05,
             max_drawdown=-0.04,
@@ -95,6 +97,8 @@ def make_test_evidence(
             win_rate=0.55,
             profit_factor=1.5,
             observations=50,
+            start_timestamp_utc="2024-03-02T00:00:00+00:00",
+            end_timestamp_utc="2024-06-01T23:59:59+00:00",
         ),
         EvidencePartition(
             role=EvidencePartitionRole.WALK_FORWARD,
@@ -106,6 +110,8 @@ def make_test_evidence(
             win_rate=0.58,
             profit_factor=1.6,
             observations=80,
+            start_timestamp_utc="2024-01-01T00:00:00+00:00",
+            end_timestamp_utc="2024-06-01T23:59:59+00:00",
         ),
     )
 

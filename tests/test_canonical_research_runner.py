@@ -21,6 +21,7 @@ import pandas as pd
 import numpy as np
 from pathlib import Path
 
+from src.evaluation.hypothesis_generator import accept_hypothesis_for_research
 from src.evaluation.research_constitution import (
     CodeProvenance,
     DatasetScope,
@@ -30,6 +31,7 @@ from src.evaluation.research_constitution import (
     RejectionReason,
     ResearchEvidence,
     ResearchExperimentSpec,
+    ResearchHypothesis,
     WalkForwardProtocol,
 )
 from src.evaluation.research_runner import (
@@ -104,13 +106,19 @@ def make_valid_spec(
     )
 
 
+def make_valid_hypothesis(**kwargs) -> ResearchHypothesis:
+    spec = make_valid_spec(**kwargs)
+    hyp = ResearchHypothesis.from_experiment_spec(spec)
+    return accept_hypothesis_for_research(hyp)
+
+
 def test_A_valid_experiment_executes_and_creates_evidence():
     df = make_sample_data(100)
-    spec = make_valid_spec()
-    evidence = run_research_experiment(spec, df=df)
+    hyp = make_valid_hypothesis()
+    evidence = run_research_experiment(hyp, df=df)
 
     assert isinstance(evidence, ResearchEvidence)
-    assert evidence.experiment_fingerprint == spec.fingerprint
+    assert evidence.experiment_fingerprint == hyp.fingerprint
     assert len(evidence.partitions) >= 3
     assert evidence.evidence_id.startswith("ev_")
     assert evidence.promotion_status in (PromotionStatus.PROMOTABLE, PromotionStatus.REJECTED)
@@ -127,10 +135,10 @@ def test_B_invalid_dataset_scope_fails_closed():
         )
 
     df = make_sample_data(30, start_date="2025-01-01")
-    spec = make_valid_spec(start_date="2025-01-01", end_date="2025-06-01")
+    hyp = make_valid_hypothesis(start_date="2025-01-01", end_date="2025-06-01")
 
     with pytest.raises(ValueError, match="DatasetScope dates .* extend beyond actual data boundaries"):
-        run_research_experiment(spec, df=df)
+        run_research_experiment(hyp, df=df)
 
 
 def test_C_invalid_execution_assumptions_fail_closed():
@@ -145,8 +153,8 @@ def test_C_invalid_execution_assumptions_fail_closed():
 
 
 def test_D_missing_dataset_fails_closed(tmp_path):
-    spec = make_valid_spec(start_date="2025-01-01", end_date="2025-04-01")
-    evidence = run_research_experiment(spec, df=None, base_dir=tmp_path)
+    hyp = make_valid_hypothesis(start_date="2025-01-01", end_date="2025-04-01")
+    evidence = run_research_experiment(hyp, df=None, base_dir=tmp_path)
 
     assert evidence.promotion_status == PromotionStatus.REJECTED
     assert RejectionReason.INVALID_DATASET_SCOPE in evidence.rejection_reasons
@@ -154,10 +162,10 @@ def test_D_missing_dataset_fails_closed(tmp_path):
 
 def test_E_dataset_identity_mismatch_fails_closed():
     df = make_sample_data(50, start_date="2024-01-01")
-    spec = make_valid_spec(start_date="2025-01-01", end_date="2025-04-10")
+    hyp = make_valid_hypothesis(start_date="2025-01-01", end_date="2025-04-10")
 
     with pytest.raises(ValueError, match="DatasetScope dates .* extend beyond actual data boundaries"):
-        run_research_experiment(spec, df=df)
+        run_research_experiment(hyp, df=df)
 
 
 def test_F_time_order_violation_fails_closed():
@@ -175,8 +183,8 @@ def test_F_time_order_violation_fails_closed():
 
 def test_G_train_test_overlap_fails_closed():
     df = make_sample_data(100)
-    spec = make_valid_spec()
-    evidence = run_research_experiment(spec, df=df)
+    hyp = make_valid_hypothesis()
+    evidence = run_research_experiment(hyp, df=df)
 
     partitions_by_role = {p.role: p for p in evidence.partitions if p.role in (EvidencePartitionRole.IN_SAMPLE, EvidencePartitionRole.VALIDATION, EvidencePartitionRole.OUT_OF_SAMPLE)}
 
@@ -193,8 +201,8 @@ def test_G_train_test_overlap_fails_closed():
 
 def test_H_future_data_leakage_fails_closed():
     df = make_sample_data(100)
-    spec = make_valid_spec()
-    evidence = run_research_experiment(spec, df=df)
+    hyp = make_valid_hypothesis()
+    evidence = run_research_experiment(hyp, df=df)
 
     robustness = evidence.robustness_verdict
     assert "anti_overfitting_verdict" in robustness
@@ -204,11 +212,11 @@ def test_H_future_data_leakage_fails_closed():
 def test_I_costs_slippage_latency_reflected_in_execution_and_evidence():
     df = make_sample_data(100)
 
-    spec_zero_cost = make_valid_spec(transaction_cost=0.0, slippage=0.0, latency_ms=0.0)
-    spec_high_cost = make_valid_spec(transaction_cost=0.05, slippage=0.05, latency_ms=500.0)
+    hyp_zero_cost = make_valid_hypothesis(transaction_cost=0.0, slippage=0.0, latency_ms=0.0)
+    hyp_high_cost = make_valid_hypothesis(transaction_cost=0.05, slippage=0.05, latency_ms=500.0)
 
-    ev_zero = run_research_experiment(spec_zero_cost, df=df)
-    ev_high = run_research_experiment(spec_high_cost, df=df)
+    ev_zero = run_research_experiment(hyp_zero_cost, df=df)
+    ev_high = run_research_experiment(hyp_high_cost, df=df)
 
     is_zero = [p for p in ev_zero.partitions if p.role == EvidencePartitionRole.IN_SAMPLE][0]
     is_high = [p for p in ev_high.partitions if p.role == EvidencePartitionRole.IN_SAMPLE][0]
@@ -220,30 +228,30 @@ def test_I_costs_slippage_latency_reflected_in_execution_and_evidence():
 
 def test_J_evidence_contains_complete_traceable_information():
     df = make_sample_data(100)
-    spec = make_valid_spec()
-    evidence = run_research_experiment(spec, df=df)
+    hyp = make_valid_hypothesis()
+    evidence = run_research_experiment(hyp, df=df)
 
     d = evidence.as_dict()
     assert d["evidence_id"].startswith("ev_")
-    assert d["experiment_fingerprint"] == spec.fingerprint
-    assert d["spec"]["strategy_name"] == spec.strategy_name
+    assert d["experiment_fingerprint"] == hyp.fingerprint
+    assert d["spec"]["strategy_name"] == hyp.strategy_name
     assert d["spec"]["dataset_scope"]["symbol"] == "XAUUSD"
     assert d["spec"]["execution_assumptions"]["transaction_cost"] == 0.001
-    assert d["spec"]["code_provenance"]["commit_sha"] == spec.code_provenance.commit_sha
+    assert d["spec"]["code_provenance"]["commit_sha"] == hyp.code_provenance.commit_sha
     assert len(d["partitions"]) >= 3
     assert "robustness_verdict" in d
     assert "benchmark_comparison" in d
 
 
 def test_K_identical_deterministic_inputs_produce_reproducible_fingerprint():
-    spec1 = make_valid_spec()
-    spec2 = make_valid_spec()
+    hyp1 = make_valid_hypothesis()
+    hyp2 = make_valid_hypothesis()
 
-    assert spec1.fingerprint == spec2.fingerprint
+    assert hyp1.fingerprint == hyp2.fingerprint
 
     df = make_sample_data(100)
-    ev1 = run_research_experiment(spec1, df=df)
-    ev2 = run_research_experiment(spec2, df=df)
+    ev1 = run_research_experiment(hyp1, df=df)
+    ev2 = run_research_experiment(hyp2, df=df)
 
     assert ev1.experiment_fingerprint == ev2.experiment_fingerprint
     assert ev1.evidence_id == ev2.evidence_id
@@ -251,13 +259,13 @@ def test_K_identical_deterministic_inputs_produce_reproducible_fingerprint():
 
 def test_L_research_execution_cannot_silently_create_production_candidate(tmp_path):
     df = make_sample_data(100)
-    spec = make_valid_spec()
+    hyp = make_valid_hypothesis()
 
-    evidence = run_research_experiment(spec, df=df, persist_evidence=True, base_dir=tmp_path)
+    evidence = run_research_experiment(hyp, df=df, persist_evidence=True, base_dir=tmp_path)
 
     assert evidence.promotion_status in (PromotionStatus.PROMOTABLE, PromotionStatus.REJECTED)
 
-    candidate_id = f"cand_{spec.strategy_name}_test"
+    candidate_id = f"cand_{hyp.strategy_name}_test"
     with pytest.raises(FileNotFoundError):
         load_candidate_binding(candidate_id, base_dir=tmp_path)
 
@@ -375,15 +383,13 @@ def test_Q_resolver_ambiguous_matches_fail_closed(tmp_path, monkeypatch):
 
 def test_R_run_research_experiment_dataset_resolution_failure_handling(tmp_path, monkeypatch):
     """Test E: run_research_experiment(spec, df=None) preserves fail-closed behavior on dataset resolution failure."""
-    spec = make_valid_spec(start_date="2025-01-01", end_date="2025-04-01")
-    # spec has dataset_id="xauusd_test"
-    # Set repo_root to empty dir
+    hyp = make_valid_hypothesis(start_date="2025-01-01", end_date="2025-04-01")
     empty_repo = tmp_path / "empty_repo"
     (empty_repo / "data").mkdir(parents=True, exist_ok=True)
 
     with monkeypatch.context() as m:
         m.setattr("src.evaluation.research_runner.Path.resolve", lambda self: empty_repo / "src" / "evaluation" / "research_runner.py")
-        evidence = run_research_experiment(spec, df=None)
+        evidence = run_research_experiment(hyp, df=None)
 
     assert evidence.promotion_status == PromotionStatus.REJECTED
     assert RejectionReason.INVALID_DATASET_SCOPE in evidence.rejection_reasons

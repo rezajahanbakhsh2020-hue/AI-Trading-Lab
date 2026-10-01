@@ -92,10 +92,12 @@ def sample_dataset():
 
 @pytest.fixture
 def base_context():
+    from src.evaluation.research_constitution import WalkForwardProtocol
     return HypothesisGenerationContext(
         dataset_scope=DatasetScope("ds_test", "XAUUSD", "1h", "2023-01-01", "2023-01-05"),
         execution_assumptions=ExecutionAssumptions(0.0001, 0.0001, 10.0),
         code_provenance=CodeProvenance("sha1234567890", "clean", "author"),
+        walk_forward_protocol=WalkForwardProtocol(train_size=40, test_size=15),
     )
 
 

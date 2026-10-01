@@ -8,10 +8,30 @@ qualification or promotion binding.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import datetime, timedelta, timezone
 import math
 from typing import Any
 
 import pandas as pd
+
+
+def _parse_exact_utc_timestamp(ts_str: str) -> datetime:
+    """Strictly parse exact UTC ISO-8601 timestamp string.
+
+    Fails closed on empty, naive (no timezone), or non-UTC offset strings.
+    """
+    if not ts_str or not isinstance(ts_str, str) or not ts_str.strip():
+        raise ValueError("Timestamp string is empty or invalid.")
+    cleaned = ts_str.strip()
+    iso_str = cleaned.replace("Z", "+00:00")
+    dt = datetime.fromisoformat(iso_str)
+    if dt.tzinfo is None:
+        raise ValueError(f"Timestamp '{ts_str}' lacks required explicit timezone information.")
+    if dt.utcoffset() != timedelta(0):
+        raise ValueError(
+            f"Timestamp '{ts_str}' offset ({dt.utcoffset()}) is not UTC (+00:00). Silent normalization is forbidden."
+        )
+    return dt
 
 from src.evaluation.research_constitution import (
     CodeProvenance,
@@ -50,7 +70,7 @@ class ResearchEvidenceIntegrityGate:
         cls,
         evidence: Any,
         *,
-        require_exact_timestamps: bool = False,
+        require_exact_timestamps: bool = True,
         require_walk_forward: bool = False,
         require_oos: bool = False,
         min_observations: int = 1,
@@ -213,34 +233,39 @@ class ResearchEvidenceIntegrityGate:
                 )
 
             # Check exact UTC timestamps
-            if p.start_timestamp_utc is not None or p.end_timestamp_utc is not None:
-                if p.start_timestamp_utc is None or p.end_timestamp_utc is None:
+            if p.start_timestamp_utc is None or p.end_timestamp_utc is None or not str(p.start_timestamp_utc).strip() or not str(p.end_timestamp_utc).strip():
+                if require_exact_timestamps:
                     rejection_reasons.append(RejectionReason.EVIDENCE_INCOMPLETENESS)
                     notes.append(
-                        f"Partition '{p.role.value}' must provide both start_timestamp_utc and end_timestamp_utc."
+                        f"Partition '{p.role.value}' is missing required exact UTC timestamps."
                     )
-                else:
-                    try:
-                        p_start_dt = pd.to_datetime(p.start_timestamp_utc, utc=True)
-                        p_end_dt = pd.to_datetime(p.end_timestamp_utc, utc=True)
-                        if pd.isna(p_start_dt) or pd.isna(p_end_dt):
-                            raise ValueError("NaT value parsed.")
-                        if p_start_dt > p_end_dt:
-                            rejection_reasons.append(RejectionReason.FAILED_VALIDATION)
-                            notes.append(
-                                f"Partition '{p.role.value}' has reversed timestamps: "
-                                f"start '{p.start_timestamp_utc}' > end '{p.end_timestamp_utc}'."
-                            )
-                    except Exception as exc:
-                        rejection_reasons.append(RejectionReason.EVIDENCE_INCOMPLETENESS)
+            else:
+                try:
+                    s_str = str(p.start_timestamp_utc).strip()
+                    e_str = str(p.end_timestamp_utc).strip()
+                    dt_start = _parse_exact_utc_timestamp(s_str)
+                    dt_end = _parse_exact_utc_timestamp(e_str)
+                    p_start_dt = pd.to_datetime(dt_start, utc=True)
+                    p_end_dt = pd.to_datetime(dt_end, utc=True)
+                    if pd.isna(p_start_dt) or pd.isna(p_end_dt):
+                        raise ValueError("NaT value parsed.")
+                    if p_start_dt > p_end_dt:
+                        rejection_reasons.append(RejectionReason.FAILED_VALIDATION)
                         notes.append(
-                            f"Partition '{p.role.value}' has invalid UTC timestamps: {exc}"
+                            f"Partition '{p.role.value}' has reversed timestamps: "
+                            f"start '{p.start_timestamp_utc}' > end '{p.end_timestamp_utc}'."
                         )
-            elif require_exact_timestamps:
-                rejection_reasons.append(RejectionReason.EVIDENCE_INCOMPLETENESS)
-                notes.append(
-                    f"Partition '{p.role.value}' is missing required exact UTC timestamps."
-                )
+                    if p_start_dt.strftime("%Y-%m-%d") != p.start_date[:10] or p_end_dt.strftime("%Y-%m-%d") != p.end_date[:10]:
+                        rejection_reasons.append(RejectionReason.FAILED_VALIDATION)
+                        notes.append(
+                            f"Partition '{p.role.value}' date/timestamp mismatch: "
+                            f"dates [{p.start_date}, {p.end_date}] vs timestamps [{s_str}, {e_str}]."
+                        )
+                except Exception as exc:
+                    rejection_reasons.append(RejectionReason.EVIDENCE_INCOMPLETENESS)
+                    notes.append(
+                        f"Partition '{p.role.value}' has invalid UTC timestamps: {exc}"
+                    )
 
         # Check required roles
         if EvidencePartitionRole.IN_SAMPLE not in partition_by_role:
@@ -276,16 +301,15 @@ class ResearchEvidenceIntegrityGate:
             ):
                 curr_end = pd.to_datetime(curr_p.end_timestamp_utc, utc=True)
                 next_start = pd.to_datetime(next_p.start_timestamp_utc, utc=True)
-                if curr_end > next_start:
+                if curr_end >= next_start:
                     rejection_reasons.append(RejectionReason.FAILED_VALIDATION)
                     notes.append(
                         f"Partition timestamp overlap or reversal between '{curr_p.role.value}' "
                         f"(end: {curr_p.end_timestamp_utc}) and '{next_p.role.value}' "
                         f"(start: {next_p.start_timestamp_utc})."
                     )
-            elif curr_p.start_timestamp_utc is not None or next_p.start_timestamp_utc is not None:
-                # If one has exact timestamps and the other doesn't, enforce date order
-                if curr_p.end_date > next_p.start_date:
+            else:
+                if curr_p.end_date >= next_p.start_date:
                     rejection_reasons.append(RejectionReason.FAILED_VALIDATION)
                     notes.append(
                         f"Partition date overlap or reversal between '{curr_p.role.value}' "

@@ -22,6 +22,9 @@ from src.evaluation.discovery_feedback import (
     ResearchDiscoveryFeedback,
     evaluate_candidate_discovery_feedback,
 )
+from src.evaluation.hypothesis_generator import (
+    accept_hypothesis_for_research,
+)
 from src.evaluation.memory_governance import (
     DiscoveryMemoryGovernanceResult,
     MemoryGovernanceDecision,
@@ -631,9 +634,45 @@ class DiscoveryEngine:
                     research_candidates.append(research_cand)
                     continue
 
+            # Transition candidate hypothesis to ACCEPTED_FOR_RESEARCH for research execution
+            try:
+                accepted_hypothesis = accept_hypothesis_for_research(hypothesis)
+            except Exception as exc:
+                trial_record = ResearchTrialRecord(
+                    search_id=search_space.search_id,
+                    trial_id=trial_id,
+                    trial_index=idx,
+                    candidate_id=cand.candidate_id,
+                    candidate_fingerprint=cand.candidate_id,
+                    experiment_fingerprint="",
+                    evidence_fingerprint=None,
+                    qualification_status=PromotionStatus.REJECTED,
+                    rejection_reasons=(RejectionReason.GOVERNANCE_BLOCKED,),
+                    status="BLOCKED",
+                    error_message=str(exc),
+                    campaign_id=campaign_id,
+                )
+                trial_records.append(trial_record)
+
+                research_cand = ResearchCandidate(
+                    candidate_id=cand.candidate_id,
+                    hypothesis=hypothesis,
+                    evidence=None,
+                    validation_status=PromotionStatus.REJECTED,
+                    promotion_status=PromotionStatus.REJECTED,
+                    rejection_reasons=(RejectionReason.GOVERNANCE_BLOCKED,),
+                )
+                research_candidates.append(research_cand)
+
+                if search_policy and search_policy.fail_fast:
+                    raise
+
+                continue
+
             try:
                 evidence = self._evaluate_candidate(
                     cand=cand,
+                    hypothesis=accepted_hypothesis,
                     df_full=data,
                     df_is=df_is,
                     df_val=df_val,
@@ -722,7 +761,7 @@ class DiscoveryEngine:
 
             research_cand = ResearchCandidate(
                 candidate_id=cand.candidate_id,
-                hypothesis=hypothesis,
+                hypothesis=accepted_hypothesis,
                 evidence=evidence,
                 validation_status=qual_res.status,
                 promotion_status=qual_res.status,
@@ -958,6 +997,7 @@ class DiscoveryEngine:
         self,
         *,
         cand: CandidateSpec,
+        hypothesis: ResearchHypothesis,
         df_full: pd.DataFrame,
         df_is: pd.DataFrame,
         df_val: pd.DataFrame,
@@ -970,29 +1010,9 @@ class DiscoveryEngine:
         wf_test_size: int | None,
         seen_fingerprints: set[str],
     ) -> ResearchEvidence:
-        """Evaluate a single candidate by constructing a ResearchExperimentSpec and delegating to run_research_experiment."""
-        hypothesis = (
-            cand.hypothesis_template.replace("{candidate_id}", cand.candidate_id)
-            if cand.hypothesis_template
-            else f"Hypothesis for candidate {cand.candidate_id}"
-        )
-
-        spec = ResearchExperimentSpec(
-            hypothesis=hypothesis,
-            methodology_version=self.criteria.methodology_version,
-            strategy_name=cand.strategy_name,
-            strategy_version=self.criteria.strategy_version,
-            dataset_scope=dataset_scope,
-            execution_assumptions=execution_assumptions,
-            code_provenance=code_provenance,
-            benchmark_reference=self.criteria.benchmark_reference,
-            parameters=cand.parameters,
-            random_seed=cand.random_seed,
-            walk_forward_protocol=wf_protocol,
-        )
-
+        """Evaluate a single candidate by delegating its accepted hypothesis to run_research_experiment."""
         evidence = run_research_experiment(
-            spec=spec,
+            spec=hypothesis,
             df=df_full,
             criteria=self.criteria,
             registry=self.registry,

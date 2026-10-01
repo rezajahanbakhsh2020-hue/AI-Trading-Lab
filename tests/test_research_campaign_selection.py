@@ -17,6 +17,7 @@ from src.evaluation.campaign_synthesis import (
     select_campaign_candidate,
     validate_campaign_selection_integrity,
 )
+from src.evaluation.hypothesis_generator import accept_hypothesis_for_research
 from src.evaluation.research_constitution import (
     CodeProvenance,
     DatasetScope,
@@ -26,6 +27,7 @@ from src.evaluation.research_constitution import (
     ResearchCampaignStatus,
     ResearchEvidence,
     ResearchExperimentSpec,
+    ResearchHypothesis,
     ResearchPlannedTrial,
     ResearchTrialCheckpoint,
     ResearchTrialPlan,
@@ -80,7 +82,8 @@ def _create_mock_evidence(
         walk_forward_protocol=WalkForwardProtocol(train_size=40, test_size=15),
     )
 
-    orig_evidence = run_research_experiment(spec)
+    hyp = accept_hypothesis_for_research(ResearchHypothesis.from_experiment_spec(spec))
+    orig_evidence = run_research_experiment(hyp)
 
     from src.evaluation.research_constitution import EvidencePartition, EvidencePartitionRole
 
@@ -95,10 +98,12 @@ def _create_mock_evidence(
             win_rate=0.6,
             profit_factor=profit_factor,
             observations=100,
+            start_timestamp_utc="2024-01-01T00:00:00+00:00",
+            end_timestamp_utc="2024-03-01T00:00:00+00:00",
         ),
         EvidencePartition(
             role=EvidencePartitionRole.OUT_OF_SAMPLE,
-            start_date="2024-03-01",
+            start_date="2024-03-02",
             end_date="2024-05-01",
             total_return=0.1,
             max_drawdown=0.05,
@@ -106,6 +111,8 @@ def _create_mock_evidence(
             win_rate=0.6,
             profit_factor=profit_factor,
             observations=100,
+            start_timestamp_utc="2024-03-02T00:00:00+00:00",
+            end_timestamp_utc="2024-05-01T00:00:00+00:00",
         ),
         EvidencePartition(
             role=EvidencePartitionRole.WALK_FORWARD,
@@ -117,6 +124,8 @@ def _create_mock_evidence(
             win_rate=0.6,
             profit_factor=profit_factor,
             observations=100,
+            start_timestamp_utc="2024-05-01T00:00:00+00:00",
+            end_timestamp_utc="2024-06-01T00:00:00+00:00",
         ),
     )
 

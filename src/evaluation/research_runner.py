@@ -226,7 +226,7 @@ def validate_and_prepare_dataset(
 
 
 def run_research_experiment(
-    spec: ResearchExperimentSpec | ResearchHypothesis,
+    spec: ResearchHypothesis,
     df: pd.DataFrame | None = None,
     *,
     criteria: DiscoveryCriteria | None = None,
@@ -240,22 +240,43 @@ def run_research_experiment(
 ) -> ResearchEvidence:
     """Execute a single canonical research experiment and return its ResearchEvidence.
 
-    Fails closed on invalid inputs, dataset mismatches, time-order violations, or
-    missing strategy definitions.
+    Fails closed if spec is not an ACCEPTED_FOR_RESEARCH ResearchHypothesis instance,
+    dataset mismatches, time-order violations, or missing strategy definitions.
 
     Does NOT promote candidates or alter production decision bindings.
     """
-    if isinstance(spec, ResearchHypothesis):
-        if spec.status != HypothesisStatus.ACCEPTED_FOR_RESEARCH:
-            raise UnacceptedHypothesisError(
-                f"Hypothesis '{spec.hypothesis_id}' with status '{spec.status.value}' "
-                f"is not accepted for research execution. Only ACCEPTED_FOR_RESEARCH hypotheses can enter execution."
-            )
-        if not spec.code_provenance or not spec.code_provenance.commit_sha or not spec.code_provenance.commit_sha.strip():
-            raise ValueError(f"Hypothesis '{spec.hypothesis_id}' lacks required CodeProvenance commit_sha.")
-        spec = spec.to_experiment_spec()
-    elif not isinstance(spec, ResearchExperimentSpec):
-        raise TypeError("spec must be a ResearchExperimentSpec or ResearchHypothesis instance.")
+    if not isinstance(spec, ResearchHypothesis):
+        raise TypeError(
+            f"run_research_experiment expects an authoritative ResearchHypothesis instance, "
+            f"got '{type(spec).__name__}'. Raw ResearchExperimentSpec execution is strictly forbidden."
+        )
+
+    if spec.status != HypothesisStatus.ACCEPTED_FOR_RESEARCH:
+        raise UnacceptedHypothesisError(
+            f"Hypothesis '{spec.hypothesis_id}' with status '{spec.status.value}' "
+            f"is not accepted for research execution. Only ACCEPTED_FOR_RESEARCH hypotheses can enter execution."
+        )
+
+    if not spec.code_provenance or not spec.code_provenance.commit_sha or not spec.code_provenance.commit_sha.strip():
+        raise ValueError(f"Hypothesis '{spec.hypothesis_id}' lacks required CodeProvenance commit_sha.")
+
+    hypothesis_fp = spec.fingerprint
+
+    if spec.walk_forward_protocol is None:
+        raise ValueError(
+            f"Canonical ACCEPTED_FOR_RESEARCH hypothesis '{spec.hypothesis_id}' lacks an explicit WalkForwardProtocol. "
+            f"Execution requires an explicit WalkForwardProtocol on the accepted hypothesis."
+        )
+
+    exp_spec = spec.to_experiment_spec()
+    if exp_spec.fingerprint != hypothesis_fp:
+        raise ValueError(
+            f"Converted ResearchExperimentSpec fingerprint '{exp_spec.fingerprint}' "
+            f"mismatches accepted ResearchHypothesis fingerprint '{hypothesis_fp}'."
+        )
+
+    spec = exp_spec
+
     if not isinstance(spec.dataset_scope, DatasetScope):
         raise TypeError("spec.dataset_scope must be a DatasetScope instance.")
     if not isinstance(spec.execution_assumptions, ExecutionAssumptions):
@@ -295,38 +316,17 @@ def run_research_experiment(
             created_at_utc=now_utc,
         )
 
-    # Resolve or validate WalkForwardProtocol on spec
-    if spec.walk_forward_protocol is None:
-        wf_protocol = resolve_walk_forward_protocol(
-            n_observations=len(data),
-            train_size=wf_train_size,
-            test_size=wf_test_size,
+    wf_protocol = spec.walk_forward_protocol
+    if wf_train_size is not None and wf_train_size != wf_protocol.train_size:
+        raise ValueError(
+            f"wf_train_size argument ({wf_train_size}) conflicts with "
+            f"spec.walk_forward_protocol.train_size ({wf_protocol.train_size})."
         )
-        spec = ResearchExperimentSpec(
-            hypothesis=spec.hypothesis,
-            methodology_version=spec.methodology_version,
-            strategy_name=spec.strategy_name,
-            strategy_version=spec.strategy_version,
-            dataset_scope=spec.dataset_scope,
-            execution_assumptions=spec.execution_assumptions,
-            code_provenance=spec.code_provenance,
-            benchmark_reference=spec.benchmark_reference,
-            parameters=spec.parameters,
-            random_seed=spec.random_seed,
-            walk_forward_protocol=wf_protocol,
+    if wf_test_size is not None and wf_test_size != wf_protocol.test_size:
+        raise ValueError(
+            f"wf_test_size argument ({wf_test_size}) conflicts with "
+            f"spec.walk_forward_protocol.test_size ({wf_protocol.test_size})."
         )
-    else:
-        wf_protocol = spec.walk_forward_protocol
-        if wf_train_size is not None and wf_train_size != wf_protocol.train_size:
-            raise ValueError(
-                f"wf_train_size argument ({wf_train_size}) conflicts with "
-                f"spec.walk_forward_protocol.train_size ({wf_protocol.train_size})."
-            )
-        if wf_test_size is not None and wf_test_size != wf_protocol.test_size:
-            raise ValueError(
-                f"wf_test_size argument ({wf_test_size}) conflicts with "
-                f"spec.walk_forward_protocol.test_size ({wf_protocol.test_size})."
-            )
 
     latency_ms = float(spec.execution_assumptions.latency_ms)
     latency_slippage_factor = (latency_ms / 1000.0) * 0.0001
@@ -622,7 +622,8 @@ def _eval_walk_forward(
     for w in windows:
         df_test = df_full.iloc[w.test_start : w.test_end]
         if df_test.empty:
-            continue
+            rejections.append(RejectionReason.FAILED_WALK_FORWARD)
+            return None, rejections
 
         try:
             eval_res = evaluate_strategy(
@@ -638,9 +639,10 @@ def _eval_walk_forward(
             if ret > 0:
                 positive_windows += 1
         except Exception:
-            pass
+            rejections.append(RejectionReason.FAILED_WALK_FORWARD)
+            return None, rejections
 
-    if not wf_returns:
+    if len(wf_returns) != len(windows):
         rejections.append(RejectionReason.FAILED_WALK_FORWARD)
         return None, rejections
 

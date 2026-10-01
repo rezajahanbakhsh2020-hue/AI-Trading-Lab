@@ -153,7 +153,7 @@ def qualify_research_evidence(
     # 1. Authoritative Pre-Qualification Integrity Gate
     gate_res = ResearchEvidenceIntegrityGate.validate(
         evidence,
-        require_exact_timestamps=False,
+        require_exact_timestamps=True,
         require_walk_forward=policy.require_walk_forward,
         require_oos=policy.require_oos,
     )

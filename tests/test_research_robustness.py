@@ -47,7 +47,7 @@ def make_sample_evidence(
     symbol: str = "XAUUSD",
     timeframe: str = "5m",
     start_date: str = "2025-01-01",
-    end_date: str = "2025-01-02",
+    end_date: str = "2025-01-03",
     transaction_cost: float = 0.001,
     slippage: float = 0.001,
     latency_ms: float = 10.0,
@@ -103,30 +103,36 @@ def make_sample_evidence(
                 max_drawdown=0.02,
                 sharpe_ratio=1.5,
                 observations=is_obs,
+                start_timestamp_utc="2025-01-01T00:00:00+00:00",
+                end_timestamp_utc="2025-01-01T23:59:59+00:00",
             )
         )
     if include_val:
         partitions.append(
             EvidencePartition(
                 role=EvidencePartitionRole.VALIDATION,
-                start_date="2025-01-01",
+                start_date="2025-01-02",
                 end_date="2025-01-02",
                 total_return=0.08,
                 max_drawdown=0.02,
                 sharpe_ratio=1.2,
                 observations=val_obs,
+                start_timestamp_utc="2025-01-02T00:00:00+00:00",
+                end_timestamp_utc="2025-01-02T23:59:59+00:00",
             )
         )
     if include_oos:
         partitions.append(
             EvidencePartition(
                 role=EvidencePartitionRole.OUT_OF_SAMPLE,
-                start_date="2025-01-02",
-                end_date="2025-01-02",
+                start_date="2025-01-03",
+                end_date="2025-01-03",
                 total_return=0.06,
                 max_drawdown=0.03,
                 sharpe_ratio=1.1,
                 observations=oos_obs,
+                start_timestamp_utc="2025-01-03T00:00:00+00:00",
+                end_timestamp_utc="2025-01-03T23:59:59+00:00",
             )
         )
     if include_wf:
@@ -134,11 +140,13 @@ def make_sample_evidence(
             EvidencePartition(
                 role=EvidencePartitionRole.WALK_FORWARD,
                 start_date="2025-01-01",
-                end_date="2025-01-02",
+                end_date="2025-01-03",
                 total_return=0.07,
                 max_drawdown=0.02,
                 sharpe_ratio=1.3,
                 observations=wf_obs,
+                start_timestamp_utc="2025-01-01T00:00:00+00:00",
+                end_timestamp_utc="2025-01-03T23:59:59+00:00",
             )
         )
 

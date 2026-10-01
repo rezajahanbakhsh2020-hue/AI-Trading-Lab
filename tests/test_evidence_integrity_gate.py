@@ -25,6 +25,7 @@ from src.evaluation.research_constitution import (
     ResearchHypothesis,
     WalkForwardProtocol,
 )
+from src.evaluation.hypothesis_generator import accept_hypothesis_for_research
 from src.evaluation.research_qualification import qualify_research_evidence
 from src.evaluation.research_runner import (
     run_research_experiment,
@@ -79,6 +80,12 @@ def make_test_spec(
         parameters={"window": 5},
         walk_forward_protocol=WalkForwardProtocol(train_size=30, test_size=20),
     )
+
+
+def make_test_hypothesis(**kwargs) -> ResearchHypothesis:
+    spec = make_test_spec(**kwargs)
+    hyp = ResearchHypothesis.from_experiment_spec(spec)
+    return accept_hypothesis_for_research(hyp)
 
 
 # A. Non-monotonic timestamp input fails closed before sorting
@@ -151,8 +158,8 @@ def test_datetime_index_path_ordering_guarantees():
 # F. Exact partition timestamps are populated by new evidence
 def test_new_evidence_populates_exact_utc_timestamps():
     df = make_test_dataframe(100)
-    spec = make_test_spec()
-    evidence = run_research_experiment(spec, df=df)
+    hyp = make_test_hypothesis()
+    evidence = run_research_experiment(hyp, df=df)
 
     assert len(evidence.partitions) >= 3
     for p in evidence.partitions:
@@ -166,8 +173,8 @@ def test_new_evidence_populates_exact_utc_timestamps():
 # G. Exact timestamps survive JSON persistence
 def test_exact_timestamps_survive_json_persistence(tmp_path: Path):
     df = make_test_dataframe(100)
-    spec = make_test_spec()
-    evidence = run_research_experiment(spec, df=df)
+    hyp = make_test_hypothesis()
+    evidence = run_research_experiment(hyp, df=df)
 
     saved_path = save_research_experiment(evidence, base_dir=tmp_path)
     loaded = load_research_experiment(saved_path)
@@ -198,10 +205,11 @@ def test_legacy_artifacts_without_exact_timestamps_remain_loadable(tmp_path: Pat
         assert p.start_timestamp_utc is None
         assert p.end_timestamp_utc is None
 
-    # Qualification succeeds for legacy artifacts if other policies pass
+    # Legacy artifacts remain loadable, but authoritative qualification fails closed without exact timestamps
     from src.evaluation.research_robustness import assess_research_robustness
     qual_res = qualify_research_evidence(loaded_legacy, robustness_assessment=assess_research_robustness(loaded_legacy))
-    assert qual_res.qualified is True
+    assert qual_res.qualified is False
+    assert RejectionReason.EVIDENCE_INCOMPLETENESS in qual_res.rejection_reasons
 
 
 # I. Invalid timestamp boundaries fail closed
@@ -288,8 +296,8 @@ def test_empty_partitions_fail_closed():
 # L. Walk-forward evidence uses actual test-window span
 def test_walk_forward_evidence_uses_actual_test_window_span():
     df = make_test_dataframe(100, start_date="2025-01-01")
-    spec = make_test_spec(start_date="2025-01-01", end_date="2025-04-10")
-    evidence = run_research_experiment(spec, df=df)
+    hyp = make_test_hypothesis(start_date="2025-01-01", end_date="2025-04-10")
+    evidence = run_research_experiment(hyp, df=df)
 
     wf_p = [p for p in evidence.partitions if p.role == EvidencePartitionRole.WALK_FORWARD][0]
 
@@ -317,3 +325,201 @@ def test_unaccepted_hypothesis_cannot_enter_runner():
     evidence = run_research_experiment(accepted, df=df)
     assert isinstance(evidence, ResearchEvidence)
     assert evidence.spec.fingerprint == hypothesis.fingerprint
+
+
+# N. Explicit regression test for missing exact partition timestamps
+def test_missing_exact_partition_timestamps_fails_closed():
+    from tests.test_research_qualification import make_valid_evidence
+    evidence = make_valid_evidence()
+
+    # Clear exact timestamps from one partition
+    p_is = evidence.partitions[0]
+    p_cleared = EvidencePartition(
+        role=p_is.role,
+        start_date=p_is.start_date,
+        end_date=p_is.end_date,
+        total_return=p_is.total_return,
+        max_drawdown=p_is.max_drawdown,
+        sharpe_ratio=p_is.sharpe_ratio,
+        observations=p_is.observations,
+        start_timestamp_utc=None,
+        end_timestamp_utc=None,
+    )
+    tampered_partitions = (p_cleared,) + evidence.partitions[1:]
+    tampered_evidence = ResearchEvidence(
+        experiment_fingerprint=evidence.experiment_fingerprint,
+        spec=evidence.spec,
+        partitions=tampered_partitions,
+        robustness_verdict=evidence.robustness_verdict,
+        promotion_status=evidence.promotion_status,
+    )
+
+    result = ResearchEvidenceIntegrityGate.validate(tampered_evidence)
+    assert result.valid is False
+    assert RejectionReason.EVIDENCE_INCOMPLETENESS in result.rejection_reasons
+
+
+# Q. Equal exact timestamp boundary rejected
+def test_equal_exact_timestamp_boundary_fails_closed():
+    spec = make_test_spec()
+    p_is = EvidencePartition(
+        role=EvidencePartitionRole.IN_SAMPLE,
+        start_date="2025-01-01",
+        end_date="2025-01-02",
+        total_return=0.05,
+        max_drawdown=-0.01,
+        sharpe_ratio=1.5,
+        observations=100,
+        start_timestamp_utc="2025-01-01T00:00:00+00:00",
+        end_timestamp_utc="2025-01-02T12:00:00+00:00",
+    )
+    p_val = EvidencePartition(
+        role=EvidencePartitionRole.VALIDATION,
+        start_date="2025-01-02",
+        end_date="2025-01-03",
+        total_return=0.03,
+        max_drawdown=-0.01,
+        sharpe_ratio=1.2,
+        observations=50,
+        start_timestamp_utc="2025-01-02T12:00:00+00:00",  # Equal to IS end_timestamp_utc
+        end_timestamp_utc="2025-01-03T12:00:00+00:00",
+    )
+    evidence = ResearchEvidence(
+        experiment_fingerprint=spec.fingerprint,
+        spec=spec,
+        partitions=(p_is, p_val),
+        promotion_status=PromotionStatus.PROMOTABLE,
+    )
+
+    result = ResearchEvidenceIntegrityGate.validate(evidence)
+    assert result.valid is False
+    assert RejectionReason.FAILED_VALIDATION in result.rejection_reasons
+
+
+# R. Equal date boundary rejected
+def test_equal_date_boundary_fails_closed():
+    spec = make_test_spec()
+    p_is = EvidencePartition(
+        role=EvidencePartitionRole.IN_SAMPLE,
+        start_date="2025-01-01",
+        end_date="2025-01-02",
+        total_return=0.05,
+        max_drawdown=-0.01,
+        sharpe_ratio=1.5,
+        observations=100,
+    )
+    p_val = EvidencePartition(
+        role=EvidencePartitionRole.VALIDATION,
+        start_date="2025-01-02",  # Equal to IS end_date ("2025-01-02")
+        end_date="2025-01-03",
+        total_return=0.03,
+        max_drawdown=-0.01,
+        sharpe_ratio=1.2,
+        observations=50,
+    )
+    evidence = ResearchEvidence(
+        experiment_fingerprint=spec.fingerprint,
+        spec=spec,
+        partitions=(p_is, p_val),
+        promotion_status=PromotionStatus.PROMOTABLE,
+    )
+
+    result = ResearchEvidenceIntegrityGate.validate(evidence)
+    assert result.valid is False
+    assert RejectionReason.FAILED_VALIDATION in result.rejection_reasons
+
+
+# S. Strictly separated partitions accepted
+def test_strictly_separated_partitions_accepted():
+    spec = make_test_spec()
+    p_is = EvidencePartition(
+        role=EvidencePartitionRole.IN_SAMPLE,
+        start_date="2025-01-01",
+        end_date="2025-01-02",
+        total_return=0.05,
+        max_drawdown=-0.01,
+        sharpe_ratio=1.5,
+        observations=100,
+        start_timestamp_utc="2025-01-01T00:00:00+00:00",
+        end_timestamp_utc="2025-01-02T11:59:59+00:00",
+    )
+    p_val = EvidencePartition(
+        role=EvidencePartitionRole.VALIDATION,
+        start_date="2025-01-02",
+        end_date="2025-01-03",
+        total_return=0.03,
+        max_drawdown=-0.01,
+        sharpe_ratio=1.2,
+        observations=50,
+        start_timestamp_utc="2025-01-02T12:00:00+00:00",  # Strictly after IS end_timestamp_utc
+        end_timestamp_utc="2025-01-03T12:00:00+00:00",
+    )
+    evidence = ResearchEvidence(
+        experiment_fingerprint=spec.fingerprint,
+        spec=spec,
+        partitions=(p_is, p_val),
+        promotion_status=PromotionStatus.PROMOTABLE,
+    )
+
+    result = ResearchEvidenceIntegrityGate.validate(evidence)
+    assert result.valid is True
+
+
+# O. Naive timestamp without timezone rejected
+def test_naive_timestamp_fails_closed():
+    from tests.test_research_qualification import make_valid_evidence
+    evidence = make_valid_evidence()
+
+    p_is = evidence.partitions[0]
+    p_naive = EvidencePartition(
+        role=p_is.role,
+        start_date=p_is.start_date,
+        end_date=p_is.end_date,
+        total_return=p_is.total_return,
+        max_drawdown=p_is.max_drawdown,
+        sharpe_ratio=p_is.sharpe_ratio,
+        observations=p_is.observations,
+        start_timestamp_utc="2025-01-01T00:00:00",  # Naive timestamp (no timezone)
+        end_timestamp_utc=p_is.end_timestamp_utc,
+    )
+    tampered_evidence = ResearchEvidence(
+        experiment_fingerprint=evidence.experiment_fingerprint,
+        spec=evidence.spec,
+        partitions=(p_naive,) + evidence.partitions[1:],
+        robustness_verdict=evidence.robustness_verdict,
+        promotion_status=evidence.promotion_status,
+    )
+
+    result = ResearchEvidenceIntegrityGate.validate(tampered_evidence)
+    assert result.valid is False
+    assert RejectionReason.EVIDENCE_INCOMPLETENESS in result.rejection_reasons
+
+
+# P. Non-UTC offset timestamp rejected
+def test_non_utc_offset_timestamp_fails_closed():
+    from tests.test_research_qualification import make_valid_evidence
+    evidence = make_valid_evidence()
+
+    p_is = evidence.partitions[0]
+    p_non_utc = EvidencePartition(
+        role=p_is.role,
+        start_date=p_is.start_date,
+        end_date=p_is.end_date,
+        total_return=p_is.total_return,
+        max_drawdown=p_is.max_drawdown,
+        sharpe_ratio=p_is.sharpe_ratio,
+        observations=p_is.observations,
+        start_timestamp_utc="2025-01-01T00:00:00+03:30",  # Non-UTC timezone offset
+        end_timestamp_utc=p_is.end_timestamp_utc,
+    )
+    tampered_evidence = ResearchEvidence(
+        experiment_fingerprint=evidence.experiment_fingerprint,
+        spec=evidence.spec,
+        partitions=(p_non_utc,) + evidence.partitions[1:],
+        robustness_verdict=evidence.robustness_verdict,
+        promotion_status=evidence.promotion_status,
+    )
+
+    result = ResearchEvidenceIntegrityGate.validate(tampered_evidence)
+    assert result.valid is False
+    assert RejectionReason.EVIDENCE_INCOMPLETENESS in result.rejection_reasons
