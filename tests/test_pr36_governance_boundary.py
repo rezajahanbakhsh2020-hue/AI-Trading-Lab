@@ -268,6 +268,7 @@ def test_G_H_promotion_consumes_canonical_decision_and_binds_fingerprint():
         evidence=evidence,
         symbol="XAUUSD",
         timeframe="5m",
+        operational_stability_score=0.85,
         governance_decision=gov_decision,
         governance_decision_fingerprint=gov_decision.decision_fingerprint,
     )

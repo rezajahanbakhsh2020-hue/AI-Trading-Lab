@@ -49,6 +49,7 @@ def test_live_visual_proof_creates_real_html(monkeypatch, tmp_path):
         evidence=ev,
         symbol="XAUUSD",
         timeframe="5m",
+        operational_stability_score=0.85,
         governance_decision_fingerprint="gov_fp_vp_01",
     )
 
@@ -162,6 +163,7 @@ def test_live_visual_proof_uses_production_selection(monkeypatch, tmp_path):
         evidence=ev,
         symbol="XAUUSD",
         timeframe="5m",
+        operational_stability_score=0.85,
         governance_decision_fingerprint="gov_fp_vp_02",
     )
 

@@ -370,12 +370,12 @@ def persist_promoted_candidate_binding(
     *,
     candidate_id: str,
     evidence: ResearchEvidence,
+    operational_stability_score: float,
     base_dir: str | Path = DEFAULT_RESEARCH_DIR,
     policy: Any | None = None,
     robustness_assessment: Any | None = None,
     governance_decision: Any | None = None,
     campaign_selection_decision: Any | None = None,
-    operational_stability_score: float | None = None,
 ) -> Path:
     """Persist an identity binding from a research candidate to already-saved evidence.
 
@@ -462,10 +462,7 @@ def persist_promoted_candidate_binding(
 
     spec = evidence.spec
 
-    if operational_stability_score is None:
-        operational_stability_score = 1.0
-
-    if isinstance(operational_stability_score, bool) or not isinstance(operational_stability_score, (int, float)):
+    if operational_stability_score is None or isinstance(operational_stability_score, bool) or not isinstance(operational_stability_score, (int, float)):
         raise PromotionIntegrityError("operational_stability_score must be a numeric float.")
     f_stab_score = float(operational_stability_score)
     import math
@@ -506,20 +503,20 @@ def save_research_candidate(
     *,
     candidate_id: str,
     evidence: ResearchEvidence,
+    operational_stability_score: float,
     base_dir: str | Path = DEFAULT_RESEARCH_DIR,
     governance_decision: Any | None = None,
     campaign_selection_decision: Any | None = None,
-    operational_stability_score: float | None = None,
 ) -> Path:
     """Persist research evidence and the candidate identity that produced it."""
     save_research_experiment(evidence, base_dir=base_dir)
     return persist_promoted_candidate_binding(
         candidate_id=candidate_id,
         evidence=evidence,
+        operational_stability_score=operational_stability_score,
         base_dir=base_dir,
         governance_decision=governance_decision,
         campaign_selection_decision=campaign_selection_decision,
-        operational_stability_score=operational_stability_score,
     )
 
 
@@ -606,10 +603,14 @@ def _reconstitute_promoted_candidate_from_binding(
             f"persisted evidence strategy_version '{evidence.spec.strategy_version}'."
         )
 
-    raw_stab = binding.get("operational_stability_score")
+    if "operational_stability_score" not in binding:
+        raise PromotionIntegrityError(
+            f"Candidate '{candidate_id}' binding is missing required operational_stability_score."
+        )
+    raw_stab = binding["operational_stability_score"]
     if raw_stab is None or isinstance(raw_stab, bool) or not isinstance(raw_stab, (int, float)):
         raise PromotionIntegrityError(
-            f"Candidate '{candidate_id}' binding is missing or has invalid operational_stability_score."
+            f"Candidate '{candidate_id}' binding has invalid operational_stability_score."
         )
     f_stab = float(raw_stab)
     import math

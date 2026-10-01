@@ -50,7 +50,7 @@ class ProductionAuthorizationReceipt:
     authorization_policy_version: str
     authorized_at_utc: str
     authorization_fingerprint: str
-    operational_stability_score: float = 1.0
+    operational_stability_score: float
 
     def __post_init__(self) -> None:
         if isinstance(self.operational_stability_score, bool) or not isinstance(self.operational_stability_score, Real):
@@ -158,7 +158,7 @@ class ProductionRuntimeAuthorization:
 
     authorization_policy_version: str
     authorized_at_utc: str
-    operational_stability_score: float = 1.0
+    operational_stability_score: float
 
     authorization_fingerprint: str = field(init=False)
 
@@ -334,12 +334,12 @@ class PromotedCandidateArtifact:
     evidence: ResearchEvidence
     symbol: str
     timeframe: str
+    operational_stability_score: float
     parameters: dict[str, Any] = field(default_factory=dict)
     policy: ProductionPromotionPolicy = field(default_factory=ProductionPromotionPolicy)
     governance_decision: Any | None = None
     governance_decision_fingerprint: str | None = None
     campaign_selection_decision_fingerprint: str | None = None
-    operational_stability_score: float = 1.0
     artifact_fingerprint: str = field(init=False)
 
     def __post_init__(self) -> None:
@@ -428,12 +428,12 @@ class PromotedCandidateArtifact:
         evidence: ResearchEvidence,
         symbol: str,
         timeframe: str,
+        operational_stability_score: float,
         parameters: Optional[dict[str, Any]] = None,
         policy: Optional[ProductionPromotionPolicy] = None,
         governance_decision: Any | None = None,
         governance_decision_fingerprint: str | None = None,
         campaign_selection_decision_fingerprint: str | None = None,
-        operational_stability_score: float = 1.0,
     ) -> "PromotedCandidateArtifact":
         """Reconstitute a candidate solely from persisted research evidence.
 

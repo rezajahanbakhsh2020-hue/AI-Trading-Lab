@@ -45,15 +45,10 @@ def run_production_end_to_end(
 
     result["production_selection"] = selection
 
-    prod_score = selection.get("stability_score")
-    if prod_score is not None and float(prod_score) < min_stability_score:
-        result["end_to_end_ready"] = False
-        result["release_gate"]["release_ready"] = False
-    else:
-        result["end_to_end_ready"] = (
-            result["end_to_end_ready"]
-            and result["release_gate"]["release_ready"]
-        )
+    result["end_to_end_ready"] = (
+        result["end_to_end_ready"]
+        and result["release_gate"]["release_ready"]
+    )
 
     return result
 

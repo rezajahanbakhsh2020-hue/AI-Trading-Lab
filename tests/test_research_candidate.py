@@ -266,7 +266,7 @@ def test_unvalidated_candidate_cannot_be_promoted(sample_hypothesis: ResearchHyp
         promotion_status=PromotionStatus.PROPOSED,
     )
     with pytest.raises(ValueError, match="Cannot promote ResearchCandidate 'cand_unvalidated': evidence is missing"):
-        cand.promote_to_production_artifact(symbol="XAUUSD", timeframe="5m")
+        cand.promote_to_production_artifact(symbol="XAUUSD", timeframe="5m", operational_stability_score=0.85)
 
 
 def test_candidate_lineage_reaches_original_experiment(

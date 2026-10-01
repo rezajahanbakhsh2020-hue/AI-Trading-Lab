@@ -101,7 +101,22 @@ def evaluate_authorized_live_runtime(
         )
 
     # Authoritative stability score strictly from candidate lineage (caller-supplied value cannot override)
-    effective_stability_score = resolved_candidate.operational_stability_score
+    authoritative_score = resolved_candidate.operational_stability_score
+
+    if stability_score is not None:
+        if isinstance(stability_score, bool) or not isinstance(stability_score, (int, float)):
+            raise ValueError("stability_score must be a numeric float.")
+        supplied_score = float(stability_score)
+        import math
+        if not math.isfinite(supplied_score):
+            raise ValueError("stability_score must be finite (not NaN or infinity).")
+        if abs(supplied_score - authoritative_score) > 1e-9:
+            raise ValueError(
+                f"Caller-supplied stability_score ({supplied_score}) conflicts with authoritative "
+                f"candidate operational_stability_score ({authoritative_score})."
+            )
+
+    effective_stability_score = authoritative_score
 
     ts_now = evaluation.reference_timestamp_utc
     try:

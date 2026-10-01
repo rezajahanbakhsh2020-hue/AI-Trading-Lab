@@ -120,7 +120,7 @@ def create_test_candidate_and_receipt(tmp_path, candidate_id="cand_delivery_test
         promotion_status=PromotionStatus.PROMOTABLE,
         rejection_reasons=(),
     )
-    save_research_candidate(candidate_id=candidate_id, evidence=evidence, base_dir=tmp_path)
+    save_research_candidate(candidate_id=candidate_id, evidence=evidence, operational_stability_score=0.85, base_dir=tmp_path)
     candidate = resolve_promoted_candidate(candidate_id=candidate_id, base_dir=tmp_path)
     auth = authorize_production_runtime(candidate, symbol=symbol, timeframe="5m")
     auth_receipt = ProductionAuthorizationReceipt.from_authorization(auth)

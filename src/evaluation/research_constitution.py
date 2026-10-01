@@ -906,8 +906,8 @@ class ResearchCandidate:
         self,
         symbol: str,
         timeframe: str,
+        operational_stability_score: float,
         policy: Any | None = None,
-        operational_stability_score: float = 1.0,
     ) -> Any:
         """Convert a qualified ResearchCandidate into a PromotedCandidateArtifact for production.
 
