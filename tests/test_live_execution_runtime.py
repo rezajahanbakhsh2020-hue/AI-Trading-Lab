@@ -497,10 +497,8 @@ def test_live_execution_runtime_missing_invalid_timestamp_blocked(
         production_config=production_config_for(tmp_path),
     )
 
-    result = runtime.run_once(publish=False, persist=True)
-
-    assert result["decision"] == "NO TRADE"
-    assert result["record"]["quote_stale"] is True
+    with pytest.raises(ValueError, match="market_data_timestamp is required"):
+        runtime.run_once(publish=False, persist=True)
 
 
 @patch("src.evaluation.live_execution_runtime.load_live_market_data")

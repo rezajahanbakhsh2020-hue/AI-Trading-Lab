@@ -43,7 +43,6 @@ from src.evaluation.research_constitution import (
 from src.integration.project2_publisher import (
     Project2Publisher,
     _redact_secret,
-    build_contract_v1_payload,
 )
 
 

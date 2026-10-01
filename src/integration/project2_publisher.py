@@ -21,85 +21,6 @@ def _redact_secret(text: str, secret: Optional[str]) -> str:
     return text
 
 
-def build_contract_v1_payload(
-    *,
-    symbol: str,
-    interval: str,
-    decision: str,
-    strategy: str,
-    stability_score: Optional[float] = None,
-    signal_label: Optional[str] = None,
-    trend: Optional[str] = None,
-    entry_price: Optional[float] = None,
-    stop_loss: Optional[float] = None,
-    tp1: Optional[float] = None,
-    tp2: Optional[float] = None,
-    tp3: Optional[float] = None,
-    take_profit: Optional[float] = None,
-    risk_reward_ratio: Optional[float] = None,
-    timestamp: Optional[str] = None,
-    candle_timestamp: Optional[str] = None,
-) -> Dict[str, Any]:
-    """Construct a canonical Project 2 Integration Contract v1.0 payload via ProductionIntelligencePublication."""
-    from src.evaluation.live_production_decision import ProductionIntelligencePublication
-
-    now_iso = datetime.datetime.now(datetime.timezone.utc).isoformat()
-    event_timestamp = timestamp if timestamp else (candle_timestamp if candle_timestamp else now_iso)
-    identity_timestamp = candle_timestamp if candle_timestamp else event_timestamp
-
-    # Normalize event_timestamp to ISO-8601 string
-    try:
-        dt_check = datetime.datetime.fromisoformat(str(event_timestamp).replace("Z", "+00:00"))
-        if dt_check.tzinfo is None:
-            dt_check = dt_check.replace(tzinfo=datetime.timezone.utc)
-        event_timestamp = dt_check.isoformat()
-    except Exception as exc:
-        raise ValueError(f"Invalid timestamp '{event_timestamp}': {exc}")
-
-    # Unique deterministic publication ID based on authoritative identity features
-    hash_input = f"{symbol}:{interval}:{strategy}:{decision}:{identity_timestamp}"
-    pub_id = hashlib.sha256(hash_input.encode("utf-8")).hexdigest()[:32]
-    sig_id = f"sig_{pub_id[:16]}"
-    dec_id = f"dec_{pub_id[16:]}"
-
-    provenance = {
-        "source": "AI-Trading-Lab",
-        "produced_at": now_iso,
-        "publication_contract_version": "1.0",
-    }
-
-    eff_tp2 = float(tp2) if tp2 is not None else (float(take_profit) if take_profit is not None else None)
-
-    stab_score = float(stability_score) if stability_score is not None else 0.85
-
-    pub = ProductionIntelligencePublication(
-        schema_version="1.0",
-        publication_id=pub_id,
-        signal_id=sig_id,
-        decision_id=dec_id,
-        strategy_id=str(strategy),
-        candidate_id=f"cand_{strategy}",
-        research_evidence_id=f"ev_{strategy}",
-        research_fingerprint=pub_id,
-        symbol=str(symbol).upper(),
-        timeframe=str(interval),
-        decision_timestamp=now_iso,
-        market_data_timestamp=event_timestamp,
-        decision=str(decision),
-        confidence=stab_score,
-        entry=float(entry_price) if entry_price is not None else None,
-        invalidation="Close below stop_loss or trend turns DOWN" if str(decision) == "BUY" else None,
-        stop_loss=float(stop_loss) if stop_loss is not None else None,
-        tp1=float(tp1) if tp1 is not None else None,
-        tp2=eff_tp2,
-        tp3=float(tp3) if tp3 is not None else None,
-        trailing_stop=None,
-        risk_reward_ratio=float(risk_reward_ratio) if risk_reward_ratio is not None else None,
-        operational_stability_score=stab_score,
-        provenance=provenance,
-    )
-
-    return pub.to_contract_v1_payload()
 
 
 class Project2Publisher:
@@ -370,18 +291,27 @@ class Project2Publisher:
                             }
 
                         # Require explicit accepted status
+                        if "status" not in receipt_json:
+                            return {
+                                "status": "INVALID_RESPONSE",
+                                "published": False,
+                                "http_code": code,
+                                "event_id": event_id,
+                                "error": "HTTP 2xx acknowledgement receipt missing required 'status' field",
+                                "attempts": attempt,
+                            }
+
                         ACCEPTED_STATUSES = ("INGESTED", "DUPLICATE_ACCEPTED", "ACCEPTED", "ACKNOWLEDGED", "PUBLISHED", "OK", "SUCCESS", "DELIVERED")
-                        if "status" in receipt_json:
-                            ack_status = str(receipt_json.get("status", "")).strip().upper()
-                            if ack_status not in ACCEPTED_STATUSES:
-                                return {
-                                    "status": "INVALID_RESPONSE",
-                                    "published": False,
-                                    "http_code": code,
-                                    "event_id": event_id,
-                                    "error": f"Unrecognized or unaccepted acknowledgement status '{ack_status}'",
-                                    "attempts": attempt,
-                                }
+                        ack_status = str(receipt_json.get("status", "")).strip().upper()
+                        if ack_status not in ACCEPTED_STATUSES:
+                            return {
+                                "status": "INVALID_RESPONSE",
+                                "published": False,
+                                "http_code": code,
+                                "event_id": event_id,
+                                "error": f"Unrecognized or unaccepted acknowledgement status '{ack_status}'",
+                                "attempts": attempt,
+                            }
 
                         return {
                             "status": "PUBLISHED",

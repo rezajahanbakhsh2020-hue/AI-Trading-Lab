@@ -18,7 +18,7 @@ from src.evaluation.research_constitution import (
     ResearchExperimentSpec,
 )
 from src.evaluation.research_store import save_research_candidate
-from src.integration.project2_publisher import Project2Publisher, build_contract_v1_payload
+from src.integration.project2_publisher import Project2Publisher
 
 
 def make_market_data() -> pd.DataFrame:

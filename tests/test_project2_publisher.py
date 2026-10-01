@@ -1,48 +1,121 @@
-"""Tests for Project 2 Integration Contract v1.0 Publisher Module."""
+"""Tests for Project 2 Outbound Integration Publisher & Delivery Boundary."""
+
+from datetime import datetime, timezone
 import json
-import pytest
 from unittest.mock import MagicMock, patch
 import urllib.error
 
+import pytest
+
+from src.evaluation.live_production_decision import (
+    Direction,
+    ProductionDecision,
+    ProductionIntelligencePublication,
+    ProductionRiskLevels,
+    ProductionSignal,
+    PromotedCandidateArtifact,
+    calculate_production_risk_levels,
+)
+from src.evaluation.research_constitution import (
+    CodeProvenance,
+    DatasetScope,
+    EvidencePartition,
+    EvidencePartitionRole,
+    ExecutionAssumptions,
+    PromotionStatus,
+    ResearchEvidence,
+    ResearchExperimentSpec,
+)
 from src.integration.project2_publisher import (
     Project2Publisher,
-    build_contract_v1_payload,
     _redact_secret,
 )
 
 
-def test_build_contract_v1_payload_structure() -> None:
-    payload = build_contract_v1_payload(
-        symbol="XAUUSD",
-        interval="5m",
-        decision="BUY",
-        strategy="momentum",
-        stability_score=0.85,
-        signal_label="BUY",
-        trend="BULLISH",
-        entry_price=2000.0,
-        stop_loss=1980.0,
-        tp1=2020.0,
-        tp2=2040.0,
-        tp3=2060.0,
-        take_profit=2040.0,
-        risk_reward_ratio=2.0,
-        timestamp="2025-01-01T12:00:00Z",
+def make_test_artifacts(
+    symbol: str = "XAUUSD",
+    timeframe: str = "5m",
+    direction: Direction = Direction.BUY,
+    mkt_ts: str | None = None,
+    stability_score: float = 0.85,
+    confidence: float = 0.85,
+):
+    if mkt_ts is None:
+        mkt_ts = datetime.now(timezone.utc).isoformat()
+    ds = DatasetScope(
+        dataset_id=f"ds_{symbol.lower()}_{timeframe}",
+        symbol=symbol,
+        timeframe=timeframe,
+        start_date="2025-01-01",
+        end_date="2025-01-10",
     )
-
-    assert payload["contract_version"] == "1.0"
-    assert payload["event_type"] == "TRADING_SIGNAL"
-    assert "event_id" in payload
-    assert payload["instrument"]["symbol"] == "XAUUSD"
-    assert payload["instrument"]["interval"] == "5m"
-    assert payload["signal"]["decision"] == "BUY"
-    assert payload["signal"]["strategy"] == "momentum"
-    assert payload["signal"]["stability_score"] == 0.85
-    assert payload["trade_setup"]["entry_price"] == 2000.0
-    assert payload["trade_setup"]["stop_loss"] == 1980.0
-    assert payload["trade_setup"]["tp1"] == 2020.0
-    assert payload["trade_setup"]["tp2"] == 2040.0
-    assert payload["trade_setup"]["tp3"] == 2060.0
+    ea = ExecutionAssumptions(transaction_cost=0.001, slippage=0.001, latency_ms=10.0)
+    cp = CodeProvenance(commit_sha="e52d95d1ede22cf3c8ce07dc216763ace4a4359c")
+    spec = ResearchExperimentSpec(
+        hypothesis="Publisher unit test hypothesis",
+        methodology_version="1.0",
+        strategy_name="momentum",
+        strategy_version="1.0",
+        dataset_scope=ds,
+        execution_assumptions=ea,
+        code_provenance=cp,
+        benchmark_reference="buy_and_hold",
+        parameters={"momentum_window": 10, "stop_loss_pct": 0.01, "take_profit_pct": 0.02},
+    )
+    part_is = EvidencePartition(
+        role=EvidencePartitionRole.IN_SAMPLE,
+        start_date="2025-01-01",
+        end_date="2025-01-02",
+        total_return=0.20,
+        max_drawdown=0.05,
+        sharpe_ratio=2.0,
+        observations=50,
+        start_timestamp_utc="2025-01-01T00:00:00+00:00",
+        end_timestamp_utc="2025-01-02T00:00:00+00:00",
+    )
+    evidence = ResearchEvidence(
+        experiment_fingerprint=spec.fingerprint,
+        spec=spec,
+        partitions=(part_is,),
+        robustness_verdict={"passed": True},
+        promotion_status=PromotionStatus.PROMOTABLE,
+        rejection_reasons=(),
+    )
+    cand = PromotedCandidateArtifact(
+        candidate_id="cand_pub_unit",
+        strategy_name="momentum",
+        strategy_version="1.0",
+        evidence=evidence,
+        symbol=symbol,
+        timeframe=timeframe,
+        operational_stability_score=stability_score,
+        governance_decision_fingerprint="gov_fp_test_123",
+    )
+    dec = ProductionDecision(
+        candidate_id=cand.candidate_id,
+        evidence_id=evidence.evidence_id,
+        experiment_fingerprint=evidence.experiment_fingerprint,
+        symbol=symbol,
+        timeframe=timeframe,
+        decision_timestamp=mkt_ts,
+        market_timestamp=mkt_ts,
+        direction=direction,
+        reason="test_direction",
+        entry_price=2000.0 if direction == Direction.BUY else None,
+        invalidation_condition="Close below SL" if direction == Direction.BUY else None,
+        confidence=confidence,
+        parameters=cand.parameters,
+    )
+    sig = ProductionSignal.from_decision(dec)
+    risk = calculate_production_risk_levels(dec, cand)
+    pub = ProductionIntelligencePublication.from_artifacts(
+        decision=dec,
+        signal=sig,
+        risk=risk,
+        candidate=cand,
+        confidence=confidence,
+    )
+    return cand, dec, sig, risk, pub
 
 
 def test_redact_secret() -> None:
@@ -55,36 +128,16 @@ def test_redact_secret() -> None:
 
 def test_publisher_disabled_by_default() -> None:
     publisher = Project2Publisher(enabled=False)
-    payload = build_contract_v1_payload(
-        symbol="XAUUSD",
-        interval="5m",
-        decision="BUY",
-        strategy="momentum",
-        stability_score=0.8,
-        signal_label="BUY",
-        trend="BULLISH",
-        entry_price=2000.0,
-        stop_loss=1980.0,
-    )
-    res = publisher.publish(payload)
+    _, _, _, _, pub = make_test_artifacts()
+    res = publisher.publish(pub)
     assert res["status"] == "SKIPPED_DISABLED"
     assert res["published"] is False
 
 
 def test_publisher_skip_no_trade() -> None:
     publisher = Project2Publisher(publish_url="https://api.example.com/signals", api_key="test-key", enabled=True)
-    payload = build_contract_v1_payload(
-        symbol="XAUUSD",
-        interval="5m",
-        decision="NO TRADE",
-        strategy="momentum",
-        stability_score=0.8,
-        signal_label="NO TRADE",
-        trend="NEUTRAL",
-        entry_price=None,
-        stop_loss=None,
-    )
-    res = publisher.publish(payload, skip_if_no_trade=True)
+    _, _, _, _, pub = make_test_artifacts(direction=Direction.NO_TRADE)
+    res = publisher.publish(pub, skip_if_no_trade=True)
     assert res["status"] == "SKIPPED_NO_TRADE"
     assert res["published"] is False
 
@@ -96,37 +149,16 @@ def test_publisher_stale_detection() -> None:
         enabled=True,
         max_age_seconds=60,
     )
-    stale_payload = build_contract_v1_payload(
-        symbol="XAUUSD",
-        interval="5m",
-        decision="BUY",
-        strategy="momentum",
-        stability_score=0.8,
-        signal_label="BUY",
-        trend="BULLISH",
-        entry_price=2000.0,
-        stop_loss=1980.0,
-        timestamp="2020-01-01T00:00:00Z",
-    )
-    res = publisher.publish(stale_payload)
+    _, _, _, _, pub = make_test_artifacts(mkt_ts="2020-01-01T00:00:00+00:00")
+    res = publisher.publish(pub)
     assert res["status"] == "SKIPPED_STALE"
     assert res["published"] is False
 
 
 @patch("urllib.request.urlopen")
 def test_publisher_successful_delivery(mock_urlopen) -> None:
-    payload = build_contract_v1_payload(
-        symbol="XAUUSD",
-        interval="5m",
-        decision="BUY",
-        strategy="momentum",
-        stability_score=0.8,
-        signal_label="BUY",
-        trend="BULLISH",
-        entry_price=2000.0,
-        stop_loss=1980.0,
-    )
-    evt_id = payload["event_id"]
+    _, _, _, _, pub = make_test_artifacts()
+    evt_id = pub.publication_id
 
     mock_resp = MagicMock()
     mock_resp.getcode.return_value = 200
@@ -139,7 +171,7 @@ def test_publisher_successful_delivery(mock_urlopen) -> None:
         api_key="test-key",
         enabled=True,
     )
-    res = publisher.publish(payload)
+    res = publisher.publish(pub)
 
     assert res["status"] == "PUBLISHED"
     assert res["published"] is True
@@ -159,62 +191,13 @@ def test_publisher_retry_and_failure(mock_urlopen) -> None:
         max_retries=2,
         backoff_factor=0.01,
     )
-    payload = build_contract_v1_payload(
-        symbol="XAUUSD",
-        interval="5m",
-        decision="BUY",
-        strategy="momentum",
-        stability_score=0.8,
-        signal_label="BUY",
-        trend="BULLISH",
-        entry_price=2000.0,
-        stop_loss=1980.0,
-    )
-    res = publisher.publish(payload)
+    _, _, _, _, pub = make_test_artifacts()
+    res = publisher.publish(pub)
 
     assert res["status"] in ("UNAVAILABLE", "FAILED")
     assert res["published"] is False
     assert res["attempts"] == 2
     assert "secret-key" not in res["error"]
-
-
-def test_contract_v1_event_id_uniqueness_scope() -> None:
-    """Verify that event_id changes when symbol, interval, decision, strategy, or timestamp differ."""
-    base_kwargs = dict(
-        symbol="XAUUSD",
-        interval="5m",
-        decision="BUY",
-        strategy="momentum",
-        stability_score=0.8,
-        signal_label="BUY",
-        trend="BULLISH",
-        entry_price=2000.0,
-        stop_loss=1980.0,
-        candle_timestamp="2025-01-01T12:00:00Z",
-    )
-
-    base_payload = build_contract_v1_payload(**base_kwargs)
-    base_id = base_payload["event_id"]
-
-    # Different symbol -> different event_id
-    diff_symbol = build_contract_v1_payload(**{**base_kwargs, "symbol": "BTCUSD"})
-    assert diff_symbol["event_id"] != base_id
-
-    # Different interval -> different event_id
-    diff_interval = build_contract_v1_payload(**{**base_kwargs, "interval": "15m"})
-    assert diff_interval["event_id"] != base_id
-
-    # Different strategy -> different event_id
-    diff_strategy = build_contract_v1_payload(**{**base_kwargs, "strategy": "mean_reversion"})
-    assert diff_strategy["event_id"] != base_id
-
-    # Different decision -> different event_id
-    diff_decision = build_contract_v1_payload(**{**base_kwargs, "decision": "NO TRADE"})
-    assert diff_decision["event_id"] != base_id
-
-    # Different candle timestamp -> different event_id
-    diff_ts = build_contract_v1_payload(**{**base_kwargs, "candle_timestamp": "2025-01-01T12:05:00Z"})
-    assert diff_ts["event_id"] != base_id
 
 
 def test_publisher_missing_api_key() -> None:
@@ -223,18 +206,8 @@ def test_publisher_missing_api_key() -> None:
         api_key="",
         enabled=True,
     )
-    payload = build_contract_v1_payload(
-        symbol="XAUUSD",
-        interval="5m",
-        decision="BUY",
-        strategy="momentum",
-        stability_score=0.8,
-        signal_label="BUY",
-        trend="BULLISH",
-        entry_price=2000.0,
-        stop_loss=1980.0,
-    )
-    res = publisher.publish(payload)
+    _, _, _, _, pub = make_test_artifacts()
+    res = publisher.publish(pub)
     assert res["status"] == "FAILED"
     assert "PROJECT2_API_KEY" in res["reason"]
 
@@ -255,18 +228,179 @@ def test_publisher_rejected_http_401(mock_urlopen) -> None:
         api_key="bad-key",
         enabled=True,
     )
-    payload = build_contract_v1_payload(
-        symbol="XAUUSD",
-        interval="5m",
-        decision="BUY",
-        strategy="momentum",
-        stability_score=0.8,
-        signal_label="BUY",
-        trend="BULLISH",
-        entry_price=2000.0,
-        stop_loss=1980.0,
-    )
-    res = publisher.publish(payload)
+    _, _, _, _, pub = make_test_artifacts()
+    res = publisher.publish(pub)
     assert res["status"] == "AUTH_FAILED"
     assert res["http_code"] == 401
     assert res["attempts"] == 1
+
+
+# --- Blocker 10 Detailed Matrix Tests ---
+
+@patch("urllib.request.urlopen")
+def test_matrix_A_http_200_valid_identity_and_accepted_status(mock_urlopen) -> None:
+    _, _, _, _, pub = make_test_artifacts()
+    evt_id = pub.publication_id
+
+    mock_resp = MagicMock()
+    mock_resp.getcode.return_value = 200
+    mock_resp.read.return_value = json.dumps({"status": "INGESTED", "event_id": evt_id}).encode("utf-8")
+    mock_resp.__enter__.return_value = mock_resp
+    mock_urlopen.return_value = mock_resp
+
+    publisher = Project2Publisher(publish_url="https://api.example.com/signals", api_key="key", enabled=True)
+    res = publisher.publish(pub)
+    assert res["status"] == "PUBLISHED"
+    assert res["published"] is True
+
+
+@patch("urllib.request.urlopen")
+def test_matrix_B_http_200_no_identity_fails(mock_urlopen) -> None:
+    _, _, _, _, pub = make_test_artifacts()
+
+    mock_resp = MagicMock()
+    mock_resp.getcode.return_value = 200
+    mock_resp.read.return_value = json.dumps({"status": "INGESTED"}).encode("utf-8")
+    mock_resp.__enter__.return_value = mock_resp
+    mock_urlopen.return_value = mock_resp
+
+    publisher = Project2Publisher(publish_url="https://api.example.com/signals", api_key="key", enabled=True)
+    res = publisher.publish(pub)
+    assert res["status"] == "INVALID_RESPONSE"
+    assert res["published"] is False
+
+
+@patch("urllib.request.urlopen")
+def test_matrix_C_http_200_malformed_json_fails(mock_urlopen) -> None:
+    _, _, _, _, pub = make_test_artifacts()
+
+    mock_resp = MagicMock()
+    mock_resp.getcode.return_value = 200
+    mock_resp.read.return_value = b'NOT VALID JSON'
+    mock_resp.__enter__.return_value = mock_resp
+    mock_urlopen.return_value = mock_resp
+
+    publisher = Project2Publisher(publish_url="https://api.example.com/signals", api_key="key", enabled=True)
+    res = publisher.publish(pub)
+    assert res["status"] == "INVALID_RESPONSE"
+    assert res["published"] is False
+
+
+@patch("urllib.request.urlopen")
+def test_matrix_D_http_200_wrong_identity_fails(mock_urlopen) -> None:
+    _, _, _, _, pub = make_test_artifacts()
+
+    mock_resp = MagicMock()
+    mock_resp.getcode.return_value = 200
+    mock_resp.read.return_value = json.dumps({"status": "INGESTED", "event_id": "wrong_id_123"}).encode("utf-8")
+    mock_resp.__enter__.return_value = mock_resp
+    mock_urlopen.return_value = mock_resp
+
+    publisher = Project2Publisher(publish_url="https://api.example.com/signals", api_key="key", enabled=True)
+    res = publisher.publish(pub)
+    assert res["status"] == "INVALID_RESPONSE"
+    assert res["published"] is False
+
+
+@patch("urllib.request.urlopen")
+def test_matrix_E_http_200_conflicting_identity_fields_fails(mock_urlopen) -> None:
+    _, _, _, _, pub = make_test_artifacts()
+
+    mock_resp = MagicMock()
+    mock_resp.getcode.return_value = 200
+    mock_resp.read.return_value = json.dumps({
+        "status": "INGESTED",
+        "event_id": pub.publication_id,
+        "publication_id": "conflicting_pub_id",
+    }).encode("utf-8")
+    mock_resp.__enter__.return_value = mock_resp
+    mock_urlopen.return_value = mock_resp
+
+    publisher = Project2Publisher(publish_url="https://api.example.com/signals", api_key="key", enabled=True)
+    res = publisher.publish(pub)
+    assert res["status"] == "INVALID_RESPONSE"
+    assert res["published"] is False
+
+
+@patch("urllib.request.urlopen")
+def test_matrix_F_http_204_empty_body_fails(mock_urlopen) -> None:
+    _, _, _, _, pub = make_test_artifacts()
+
+    mock_resp = MagicMock()
+    mock_resp.getcode.return_value = 204
+    mock_resp.read.return_value = b""
+    mock_resp.__enter__.return_value = mock_resp
+    mock_urlopen.return_value = mock_resp
+
+    publisher = Project2Publisher(publish_url="https://api.example.com/signals", api_key="key", enabled=True)
+    res = publisher.publish(pub)
+    assert res["status"] == "INVALID_RESPONSE"
+    assert res["published"] is False
+
+
+@patch("urllib.request.urlopen")
+def test_matrix_G_http_200_unrecognized_status_fails(mock_urlopen) -> None:
+    _, _, _, _, pub = make_test_artifacts()
+
+    mock_resp = MagicMock()
+    mock_resp.getcode.return_value = 200
+    mock_resp.read.return_value = json.dumps({"status": "UNRECOGNIZED_FOO", "event_id": pub.publication_id}).encode("utf-8")
+    mock_resp.__enter__.return_value = mock_resp
+    mock_urlopen.return_value = mock_resp
+
+    publisher = Project2Publisher(publish_url="https://api.example.com/signals", api_key="key", enabled=True)
+    res = publisher.publish(pub)
+    assert res["status"] == "INVALID_RESPONSE"
+    assert res["published"] is False
+
+
+def test_matrix_H_timestamp_freshness_boundaries() -> None:
+    publisher = Project2Publisher(publish_url="https://api.example.com/signals", api_key="key", enabled=True, max_age_seconds=300)
+    cand, dec, sig, risk, pub = make_test_artifacts()
+
+    # 1. Naive timestamp -> INVALID_RESPONSE
+    pub_dict_naive = pub.as_dict()
+    pub_dict_naive["market_data_timestamp"] = "2025-01-01T12:00:00"  # missing offset!
+    res_naive = publisher.publish(pub_dict_naive)
+    assert res_naive["status"] == "INVALID_RESPONSE"
+
+    # 2. Malformed timestamp -> INVALID_RESPONSE
+    pub_dict_malformed = pub.as_dict()
+    pub_dict_malformed["market_data_timestamp"] = "NOT_A_TIMESTAMP"
+    res_malformed = publisher.publish(pub_dict_malformed)
+    assert res_malformed["status"] == "INVALID_RESPONSE"
+
+    # 3. Future timestamp -> INVALID_RESPONSE
+    pub_dict_future = pub.as_dict()
+    pub_dict_future["market_data_timestamp"] = "2099-01-01T12:00:00+00:00"
+    res_future = publisher.publish(pub_dict_future)
+    assert res_future["status"] == "INVALID_RESPONSE"
+
+    # 4. Older than 300 seconds -> SKIPPED_STALE
+    pub_dict_stale = pub.as_dict()
+    pub_dict_stale["market_data_timestamp"] = "2020-01-01T12:00:00+00:00"
+    stale_dec = ProductionDecision(
+        candidate_id=cand.candidate_id,
+        evidence_id=cand.evidence.evidence_id,
+        experiment_fingerprint=cand.evidence.experiment_fingerprint,
+        symbol=cand.symbol,
+        timeframe=cand.timeframe,
+        decision_timestamp="2020-01-01T12:00:00+00:00",
+        market_timestamp="2020-01-01T12:00:00+00:00",
+        direction=Direction.BUY,
+        reason="test_stale",
+        entry_price=2000.0,
+        invalidation_condition="Close below SL",
+        confidence=0.85,
+        parameters=cand.parameters,
+    )
+    stale_sig = ProductionSignal.from_decision(stale_dec)
+    stale_risk = calculate_production_risk_levels(stale_dec, cand)
+    stale_payload = ProductionIntelligencePublication.from_artifacts(
+        stale_dec,
+        stale_sig,
+        stale_risk,
+        cand,
+    )
+    res_stale = publisher.publish(stale_payload)
+    assert res_stale["status"] == "SKIPPED_STALE"
