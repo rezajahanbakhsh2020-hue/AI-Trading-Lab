@@ -80,6 +80,7 @@ def _make_dummy_candidate(
     timeframe: str = "5m",
     gov_fp: str = "gov_fp_1234567890",
     cs_fp: str | None = "cs_fp_1234567890",
+    operational_stability_score: float = 0.85,
 ) -> PromotedCandidateArtifact:
     evidence = _make_dummy_evidence(candidate_id, symbol, timeframe)
     return PromotedCandidateArtifact.from_persisted_research(
@@ -89,6 +90,7 @@ def _make_dummy_candidate(
         timeframe=timeframe,
         governance_decision_fingerprint=gov_fp,
         campaign_selection_decision_fingerprint=cs_fp,
+        operational_stability_score=operational_stability_score,
     )
 
 

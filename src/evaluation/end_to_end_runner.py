@@ -13,7 +13,7 @@ def run_end_to_end(
     data: pd.DataFrame,
     *,
     stable_strategy: str,
-    stability_score: float,
+    stability_score: float | None = None,
     symbol: str = "XAUUSD",
     interval: str = "1d",
     min_stability_score: float = 0.50,

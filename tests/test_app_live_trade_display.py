@@ -46,7 +46,7 @@ def test_chart_contains_candlestick_trace():
     runtime_res = build_live_runtime(
         data,
         stable_strategy="momentum",
-        stability_score=0.80,
+        stability_score=None,
         reference_now=ref_now,
         persist=False,
     )
@@ -72,7 +72,7 @@ def test_buy_chart_contains_five_trade_lines():
     runtime_res = build_live_runtime(
         data,
         stable_strategy="momentum",
-        stability_score=0.80,
+        stability_score=None,
         reference_now=ref_now,
         persist=False,
     )
@@ -96,7 +96,7 @@ def test_no_trade_chart_has_no_trade_lines():
     runtime_res = build_live_runtime(
         data,
         stable_strategy="momentum",
-        stability_score=0.20,
+        min_stability_score=None,
         persist=False,
     )
 
@@ -119,7 +119,7 @@ def test_chart_uses_latest_market_timestamp():
     runtime_res = build_live_runtime(
         data,
         stable_strategy="momentum",
-        stability_score=0.80,
+        stability_score=None,
         persist=False,
     )
 
@@ -172,7 +172,7 @@ def test_buy_chart_level_order_is_preserved():
     runtime_res = build_live_runtime(
         data,
         stable_strategy="momentum",
-        stability_score=0.80,
+        stability_score=None,
         reference_now=ref_now,
         persist=False,
     )

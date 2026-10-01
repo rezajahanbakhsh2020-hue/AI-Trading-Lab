@@ -258,6 +258,7 @@ def test_candidate_cannot_bypass_validation(sample_hypothesis: ResearchHypothesi
 
 def test_unvalidated_candidate_cannot_be_promoted(sample_hypothesis: ResearchHypothesis):
     """Verify promoting candidate without evidence raises ValueError."""
+    from src.evaluation.stability import CanonicalStabilityEvidence
     cand = ResearchCandidate(
         candidate_id="cand_unvalidated",
         hypothesis=sample_hypothesis,
@@ -265,8 +266,9 @@ def test_unvalidated_candidate_cannot_be_promoted(sample_hypothesis: ResearchHyp
         validation_status=PromotionStatus.PROPOSED,
         promotion_status=PromotionStatus.PROPOSED,
     )
+    stab = CanonicalStabilityEvidence("momentum", 0.85)
     with pytest.raises(ValueError, match="Cannot promote ResearchCandidate 'cand_unvalidated': evidence is missing"):
-        cand.promote_to_production_artifact(symbol="XAUUSD", timeframe="5m")
+        cand.promote_to_production_artifact(symbol="XAUUSD", timeframe="5m", canonical_stability=stab)
 
 
 def test_candidate_lineage_reaches_original_experiment(

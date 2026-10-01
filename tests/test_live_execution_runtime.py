@@ -105,7 +105,7 @@ def persist_momentum_candidate(
         promotion_status=PromotionStatus.PROMOTABLE,
         rejection_reasons=(),
     )
-    save_research_candidate(candidate_id=candidate_id, evidence=evidence, base_dir=base_dir)
+    save_research_candidate(candidate_id=candidate_id, evidence=evidence, base_dir=base_dir, operational_stability_score=0.85)
     return candidate_id
 
 
@@ -291,14 +291,9 @@ def test_provider_capability_registry_custom_adapter(monkeypatch) -> None:
     assert "timestamp" in df.columns
 
 
-@patch("src.evaluation.live_execution_runtime.load_production_selection")
 @patch("src.evaluation.live_execution_runtime.load_live_market_data")
-def test_live_execution_runtime_run_once(mock_load_data, mock_load_selection, tmp_path) -> None:
+def test_live_execution_runtime_run_once(mock_load_data, tmp_path) -> None:
     mock_load_data.return_value = make_dummy_df()
-    mock_load_selection.return_value = {
-        "stable_strategy": "momentum",
-        "stability_score": 0.85,
-    }
 
     mock_publisher = MagicMock()
     mock_publisher.publish.return_value = {
@@ -327,15 +322,9 @@ def test_live_execution_runtime_run_once(mock_load_data, mock_load_selection, tm
     assert mock_publisher.publish.called
 
 
-@patch("src.evaluation.live_execution_runtime.load_production_selection")
 @patch("src.evaluation.live_execution_runtime.load_live_market_data")
-def test_live_execution_runtime_idempotency_key(mock_load_data, mock_load_selection, tmp_path) -> None:
+def test_live_execution_runtime_idempotency_key(mock_load_data, tmp_path) -> None:
     mock_load_data.return_value = make_dummy_df()
-    mock_load_selection.return_value = {
-        "stable_strategy": "momentum",
-        "stability_score": 0.85,
-        "candidate_id": "cand_momentum_live",
-    }
 
     runtime = LiveExecutionRuntime(
         symbol="XAUUSD",
@@ -370,19 +359,13 @@ def make_buy_market_data(start_time="2025-01-01 10:00") -> pd.DataFrame:
     return df
 
 
-@patch("src.evaluation.live_execution_runtime.load_production_selection")
 @patch("src.evaluation.live_execution_runtime.load_live_market_data")
 def test_live_execution_runtime_buy_signal_field_propagation(
     mock_load_data,
-    mock_load_selection,
     tmp_path,
 ) -> None:
     """Verify end-to-end propagation of BUY trade levels (Entry, SL, TP1-TP3) from decision engine to Contract v1 payload."""
     mock_load_data.return_value = make_buy_market_data()
-    mock_load_selection.return_value = {
-        "stable_strategy": "momentum",
-        "stability_score": 0.85,
-    }
 
     mock_publisher = MagicMock()
     mock_publisher.publish.return_value = {
@@ -442,21 +425,15 @@ def test_live_execution_runtime_buy_signal_field_propagation(
 
 
 @patch("src.evaluation.live_execution_runtime.evaluate_authorized_live_runtime")
-@patch("src.evaluation.live_execution_runtime.load_production_selection")
 @patch("src.evaluation.live_execution_runtime.load_live_market_data")
 def test_live_execution_runtime_stale_data_blocked(
     mock_load_data,
-    mock_load_selection,
     mock_evaluate_runtime,
     tmp_path,
 ) -> None:
     """Verify that stale market data delegates to evaluate_authorized_live_runtime with a stale LiveMarketEvaluation."""
     df = make_buy_market_data()
     mock_load_data.return_value = df
-    mock_load_selection.return_value = {
-        "stable_strategy": "momentum",
-        "stability_score": 0.85,
-    }
 
     mock_publisher = MagicMock()
     store_path = tmp_path / "decision_history.json"
@@ -497,11 +474,9 @@ def test_live_execution_runtime_stale_data_blocked(
     assert result["contract_payload"]["signal"]["signal_label"] == "NO TRADE"
 
 
-@patch("src.evaluation.live_execution_runtime.load_production_selection")
 @patch("src.evaluation.live_execution_runtime.load_live_market_data")
 def test_live_execution_runtime_missing_invalid_timestamp_blocked(
     mock_load_data,
-    mock_load_selection,
     tmp_path,
 ) -> None:
     """Verify missing/invalid candle timestamps fail closed cleanly."""
@@ -509,10 +484,6 @@ def test_live_execution_runtime_missing_invalid_timestamp_blocked(
     # corrupt latest timestamp
     df["timestamp"] = pd.NaT
     mock_load_data.return_value = df
-    mock_load_selection.return_value = {
-        "stable_strategy": "momentum",
-        "stability_score": 0.85,
-    }
 
     mock_publisher = MagicMock()
     runtime = LiveExecutionRuntime(
@@ -531,20 +502,14 @@ def test_live_execution_runtime_missing_invalid_timestamp_blocked(
     assert result["record"]["quote_stale"] is True
 
 
-@patch("src.evaluation.live_execution_runtime.load_production_selection")
 @patch("src.evaluation.live_execution_runtime.load_live_market_data")
 def test_live_execution_runtime_future_timestamp_blocked(
     mock_load_data,
-    mock_load_selection,
     tmp_path,
 ) -> None:
     """Verify future candle timestamps fail closed with reason future_candle_timestamp."""
     df = make_buy_market_data()
     mock_load_data.return_value = df
-    mock_load_selection.return_value = {
-        "stable_strategy": "momentum",
-        "stability_score": 0.85,
-    }
 
     df_ts = pd.to_datetime(df["openTime"], utc=True, errors="coerce").iloc[-1].to_pydatetime()
     # reference_now is BEFORE candle timestamp (candle in future)
@@ -566,20 +531,14 @@ def test_live_execution_runtime_future_timestamp_blocked(
     assert result["record"]["quote_stale"] is True
 
 
-@patch("src.evaluation.live_execution_runtime.load_production_selection")
 @patch("src.evaluation.live_execution_runtime.load_live_market_data")
 def test_live_execution_runtime_freshness_boundary_conditions(
     mock_load_data,
-    mock_load_selection,
     tmp_path,
 ) -> None:
     """Verify exact boundary conditions around max_age_seconds (max_age-1 is fresh, max_age+1 is stale)."""
     df = make_buy_market_data()
     mock_load_data.return_value = df
-    mock_load_selection.return_value = {
-        "stable_strategy": "momentum",
-        "stability_score": 0.85,
-    }
 
     df_ts = pd.to_datetime(df["openTime"], utc=True, errors="coerce").iloc[-1].to_pydatetime()
     max_age = 300.0
@@ -606,23 +565,17 @@ def test_live_execution_runtime_freshness_boundary_conditions(
     assert res_stale["record"]["quote_stale"] is True
 
 
-@patch("src.evaluation.live_execution_runtime.load_production_selection")
 @patch("src.evaluation.live_execution_runtime.load_live_market_data")
 @patch("urllib.request.urlopen")
 def test_live_execution_runtime_persistence_freshness_isolation(
     mock_urlopen,
     mock_load_data,
-    mock_load_selection,
     tmp_path,
 ) -> None:
     """Verify that latest_execution.json snapshot is cleanly overwritten on every execution cycle with current publish results."""
     df = make_dummy_df()
     mock_load_data.return_value = df
     ref_now = pd.to_datetime(df["openTime"], utc=True, errors="coerce").iloc[-1].to_pydatetime()
-    mock_load_selection.return_value = {
-        "stable_strategy": "momentum",
-        "stability_score": 0.85,
-    }
 
     # Setup mock HTTP response for successful publish
     mock_resp = MagicMock()

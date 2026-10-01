@@ -11,5 +11,6 @@
     "stop_loss_pct": 0.01,
     "take_profit_pct": 0.02
   },
-  "governance_decision_fingerprint": "gov_dec_cand_momentum_5m_v1"
+  "governance_decision_fingerprint": "gov_dec_cand_momentum_5m_v1",
+  "operational_stability_score": 0.7458282289664787
 }

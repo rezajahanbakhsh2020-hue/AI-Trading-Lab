@@ -46,6 +46,7 @@ def test_authorization_success():
         evidence=ev,
         symbol="XAUUSD",
         timeframe="5m",
+        operational_stability_score=0.85,
         governance_decision_fingerprint="gov_fp_12345",
         campaign_selection_decision_fingerprint="camp_fp_67890",
     )
@@ -80,6 +81,7 @@ def test_missing_governance_fingerprint_fails():
         evidence=ev,
         symbol="XAUUSD",
         timeframe="5m",
+        operational_stability_score=0.85,
         governance_decision_fingerprint="gov_fp_valid",
     )
 
@@ -103,6 +105,7 @@ def test_mismatched_candidate_scope_fails():
         evidence=ev,
         symbol="XAUUSD",
         timeframe="5m",
+        operational_stability_score=0.85,
         governance_decision_fingerprint="gov_fp_123",
     )
 
@@ -130,6 +133,7 @@ def test_campaign_lineage_preservation_to_authorization():
         evidence=ev,
         symbol="XAUUSD",
         timeframe="5m",
+        operational_stability_score=0.85,
         governance_decision_fingerprint="gov_fp_abc",
         campaign_selection_decision_fingerprint="camp_fp_xyz",
     )
@@ -152,6 +156,7 @@ def test_deterministic_authorization_fingerprint():
         evidence=ev,
         symbol="XAUUSD",
         timeframe="5m",
+        operational_stability_score=0.85,
         governance_decision_fingerprint="gov_fp_det",
     )
 
@@ -171,6 +176,7 @@ def test_authorization_is_immutable():
         evidence=ev,
         symbol="XAUUSD",
         timeframe="5m",
+        operational_stability_score=0.85,
         governance_decision_fingerprint="gov_fp_imm",
     )
 
@@ -189,6 +195,7 @@ def test_receipt_projection_and_invariants():
         evidence=ev,
         symbol="XAUUSD",
         timeframe="5m",
+        operational_stability_score=0.85,
         governance_decision_fingerprint="gov_fp_rec",
         campaign_selection_decision_fingerprint="camp_fp_rec",
     )
@@ -225,6 +232,7 @@ def test_missing_mandatory_receipt_field_fails_closed():
         evidence=ev,
         symbol="XAUUSD",
         timeframe="5m",
+        operational_stability_score=0.85,
         governance_decision_fingerprint="gov_fp_rec",
     )
 
@@ -245,6 +253,7 @@ def test_missing_mandatory_receipt_field_fails_closed():
             authorization_policy_version=auth.authorization_policy_version,
             authorized_at_utc=auth.authorized_at_utc,
             authorization_fingerprint=auth.authorization_fingerprint,
+            operational_stability_score=auth.operational_stability_score,
         )
 
     # Missing authorization_fingerprint
@@ -261,6 +270,7 @@ def test_missing_mandatory_receipt_field_fails_closed():
             authorization_policy_version=auth.authorization_policy_version,
             authorized_at_utc=auth.authorized_at_utc,
             authorization_fingerprint="",
+            operational_stability_score=auth.operational_stability_score,
         )
 
 
@@ -273,6 +283,7 @@ def test_runtime_persistence_contains_complete_lineage(tmp_path):
         evidence=ev,
         symbol="XAUUSD",
         timeframe="5m",
+        operational_stability_score=0.85,
         governance_decision_fingerprint="gov_fp_persist",
         campaign_selection_decision_fingerprint="camp_fp_persist",
     )
@@ -280,6 +291,7 @@ def test_runtime_persistence_contains_complete_lineage(tmp_path):
     persist_promoted_candidate_binding(
         candidate_id=cand.candidate_id,
         evidence=cand.evidence,
+        operational_stability_score=0.85,
         base_dir=tmp_path,
         governance_decision=type("Gov", (), {"qualified": True, "experiment_fingerprint": cand.evidence.experiment_fingerprint, "decision_fingerprint": cand.governance_decision_fingerprint})(),
         campaign_selection_decision=type("CampSel", (), {"decision_fingerprint": "camp_fp_persist", "campaign_id": "camp_1", "decision_status": "SELECTED", "selected_candidate_ids": ("cand_persist_01",)})(),
@@ -474,12 +486,14 @@ def test_single_authorization_invocation_in_runtime(tmp_path):
         evidence=ev,
         symbol="XAUUSD",
         timeframe="5m",
+        operational_stability_score=0.85,
         governance_decision_fingerprint="gov_fp_single",
     )
     save_research_experiment(cand.evidence, base_dir=tmp_path)
     persist_promoted_candidate_binding(
         candidate_id=cand.candidate_id,
         evidence=cand.evidence,
+        operational_stability_score=0.85,
         base_dir=tmp_path,
         governance_decision=type("Gov", (), {"qualified": True, "experiment_fingerprint": cand.evidence.experiment_fingerprint, "decision_fingerprint": cand.governance_decision_fingerprint})(),
     )

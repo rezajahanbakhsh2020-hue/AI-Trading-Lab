@@ -72,7 +72,7 @@ def test_live_runtime_session_builds(tmp_path):
     session = build_live_runtime_session(
         _market_data(),
         stable_strategy="momentum",
-        stability_score=0.90,
+        stability_score=None,
         store_path=tmp_path / "store.json",
     )
 
@@ -88,7 +88,7 @@ def test_live_runtime_session_blocks_bad_market_data(tmp_path):
     session = build_live_runtime_session(
         _market_data(),
         stable_strategy="momentum",
-        stability_score=0.90,
+        stability_score=None,
         market_data_ready=False,
         store_path=tmp_path / "store.json",
     )
@@ -103,7 +103,7 @@ def test_live_runtime_session_blocks_bad_quote(tmp_path):
     session = build_live_runtime_session(
         _market_data(),
         stable_strategy="momentum",
-        stability_score=0.90,
+        stability_score=None,
         quote_ready=False,
         store_path=tmp_path / "store.json",
     )
@@ -118,7 +118,7 @@ def test_live_runtime_session_blocks_bad_timestamp(tmp_path):
     session = build_live_runtime_session(
         _market_data(),
         stable_strategy="momentum",
-        stability_score=0.90,
+        stability_score=None,
         timestamp_ready=False,
         store_path=tmp_path / "store.json",
     )
@@ -133,7 +133,7 @@ def test_session_ready_returns_boolean(tmp_path):
     result = is_live_runtime_session_ready(
         _market_data(),
         stable_strategy="momentum",
-        stability_score=0.90,
+        stability_score=None,
         store_path=tmp_path / "store.json",
     )
 
@@ -144,7 +144,7 @@ def test_session_message_contains_strategy(tmp_path):
     message = live_runtime_session_message(
         _market_data(),
         stable_strategy="momentum",
-        stability_score=0.90,
+        stability_score=None,
         store_path=tmp_path / "store.json",
     )
 
@@ -158,7 +158,7 @@ def test_session_message_reports_failed_preflight(tmp_path):
     message = live_runtime_session_message(
         _market_data(),
         stable_strategy="momentum",
-        stability_score=0.90,
+        stability_score=None,
         quote_ready=False,
         store_path=tmp_path / "store.json",
     )
@@ -174,7 +174,7 @@ def test_session_rejects_non_dataframe():
         build_live_runtime_session(
             [],
             stable_strategy="momentum",
-            stability_score=0.90,
+            stability_score=None,
         )
 
 
@@ -183,5 +183,5 @@ def test_session_rejects_empty_dataframe():
         build_live_runtime_session(
             pd.DataFrame(),
             stable_strategy="momentum",
-            stability_score=0.90,
+            stability_score=None,
         )

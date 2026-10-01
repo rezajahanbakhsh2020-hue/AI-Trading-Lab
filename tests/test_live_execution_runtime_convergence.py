@@ -36,13 +36,7 @@ def test_exact_convergence_fresh_and_stale(tmp_path):
         research_dir=tmp_path,
         production_config=config,
     )
-    with (
-        patch("src.evaluation.live_execution_runtime.load_live_market_data", return_value=df),
-        patch(
-            "src.evaluation.live_execution_runtime.load_production_selection",
-            return_value={"stability_score": 0.85, "stable_strategy": "momentum"},
-        ),
-    ):
+    with patch("src.evaluation.live_execution_runtime.load_live_market_data", return_value=df):
         res_buy = runtime_fresh.run_once(publish=False, persist=True, reference_now=df_ts)
     assert res_buy["decision"] == "BUY"
     assert res_buy["current_lifecycle_state"] == LiveDecisionLifecycleState.PERSISTED.value
@@ -56,13 +50,7 @@ def test_exact_convergence_fresh_and_stale(tmp_path):
         research_dir=tmp_path,
         production_config=config,
     )
-    with (
-        patch("src.evaluation.live_execution_runtime.load_live_market_data", return_value=df),
-        patch(
-            "src.evaluation.live_execution_runtime.load_production_selection",
-            return_value={"stability_score": 0.85, "stable_strategy": "momentum"},
-        ),
-    ):
+    with patch("src.evaluation.live_execution_runtime.load_live_market_data", return_value=df):
         res_stale = runtime_stale.run_once(
             publish=False, persist=True, reference_now=df_ts + datetime.timedelta(seconds=1000)
         )

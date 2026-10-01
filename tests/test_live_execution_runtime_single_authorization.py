@@ -84,6 +84,7 @@ def _make_dummy_candidate(
         timeframe=timeframe,
         governance_decision_fingerprint="gov_fp_1234567890",
         campaign_selection_decision_fingerprint="cs_fp_1234567890",
+        operational_stability_score=0.85,
     )
 
 
@@ -242,7 +243,7 @@ def test_build_live_runtime_bypasses_resolution_and_authorization_when_authorize
     res = build_live_runtime(
         market_df,
         stable_strategy="momentum",
-        stability_score=0.9,
+        stability_score=0.85,
         symbol="XAUUSD",
         interval="5m",
         persist=False,

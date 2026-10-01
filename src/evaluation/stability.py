@@ -1,6 +1,26 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
+import math
 import pandas as pd
+
+
+@dataclass(frozen=True)
+class CanonicalStabilityEvidence:
+    """Immutable transport container representing authoritative Walk-Forward stability evidence."""
+
+    strategy_name: str
+    stability_score: float
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.strategy_name, str) or not self.strategy_name.strip():
+            raise ValueError("canonical stability strategy_name must be non-empty string.")
+        if isinstance(self.stability_score, bool) or not isinstance(self.stability_score, (int, float)):
+            raise TypeError("canonical stability_score must be numeric float.")
+        score = float(self.stability_score)
+        if not math.isfinite(score):
+            raise ValueError("canonical stability_score must be finite.")
+        object.__setattr__(self, "stability_score", score)
 
 
 REQUIRED_COLUMNS = {

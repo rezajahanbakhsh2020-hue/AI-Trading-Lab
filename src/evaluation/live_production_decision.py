@@ -50,8 +50,15 @@ class ProductionAuthorizationReceipt:
     authorization_policy_version: str
     authorized_at_utc: str
     authorization_fingerprint: str
+    operational_stability_score: float
 
     def __post_init__(self) -> None:
+        if isinstance(self.operational_stability_score, bool) or not isinstance(self.operational_stability_score, Real):
+            raise ProductionRuntimeAuthorizationError("operational_stability_score must be a numeric float.")
+        f_stab = float(self.operational_stability_score)
+        if not math.isfinite(f_stab):
+            raise ProductionRuntimeAuthorizationError("operational_stability_score must be finite (not NaN or infinity).")
+        object.__setattr__(self, "operational_stability_score", f_stab)
         if not self.candidate_id or not str(self.candidate_id).strip():
             raise ProductionRuntimeAuthorizationError("candidate_id must be a non-empty string.")
         if not self.strategy_name or not str(self.strategy_name).strip():
@@ -115,6 +122,7 @@ class ProductionAuthorizationReceipt:
             authorization_policy_version=authorization.authorization_policy_version,
             authorized_at_utc=authorization.authorized_at_utc,
             authorization_fingerprint=authorization.authorization_fingerprint,
+            operational_stability_score=authorization.operational_stability_score,
         )
 
     def as_dict(self) -> dict[str, Any]:
@@ -130,6 +138,7 @@ class ProductionAuthorizationReceipt:
             "authorization_policy_version": self.authorization_policy_version,
             "authorized_at_utc": self.authorized_at_utc,
             "authorization_fingerprint": self.authorization_fingerprint,
+            "operational_stability_score": self.operational_stability_score,
         }
 
 
@@ -149,10 +158,17 @@ class ProductionRuntimeAuthorization:
 
     authorization_policy_version: str
     authorized_at_utc: str
+    operational_stability_score: float
 
     authorization_fingerprint: str = field(init=False)
 
     def __post_init__(self) -> None:
+        if isinstance(self.operational_stability_score, bool) or not isinstance(self.operational_stability_score, Real):
+            raise ProductionRuntimeAuthorizationError("operational_stability_score must be a numeric float.")
+        f_stab = float(self.operational_stability_score)
+        if not math.isfinite(f_stab):
+            raise ProductionRuntimeAuthorizationError("operational_stability_score must be finite (not NaN or infinity).")
+        object.__setattr__(self, "operational_stability_score", f_stab)
         if not self.candidate_id or not str(self.candidate_id).strip():
             raise ProductionRuntimeAuthorizationError("candidate_id must be a non-empty string.")
         if not self.strategy_name or not str(self.strategy_name).strip():
@@ -202,6 +218,7 @@ class ProductionRuntimeAuthorization:
             "campaign_selection_decision_fingerprint": self.campaign_selection_decision_fingerprint,
             "authorization_policy_version": self.authorization_policy_version,
             "authorized_at_utc": self.authorized_at_utc,
+            "operational_stability_score": self.operational_stability_score,
         }
         serialized = json.dumps(payload, sort_keys=True, ensure_ascii=True)
         object.__setattr__(
@@ -284,6 +301,7 @@ def authorize_production_runtime(
         campaign_selection_decision_fingerprint=promoted_candidate.campaign_selection_decision_fingerprint,
         authorization_policy_version=authorization_policy_version,
         authorized_at_utc=authorized_at.isoformat(),
+        operational_stability_score=promoted_candidate.operational_stability_score,
     )
 
 
@@ -316,6 +334,7 @@ class PromotedCandidateArtifact:
     evidence: ResearchEvidence
     symbol: str
     timeframe: str
+    operational_stability_score: float
     parameters: dict[str, Any] = field(default_factory=dict)
     policy: ProductionPromotionPolicy = field(default_factory=ProductionPromotionPolicy)
     governance_decision: Any | None = None
@@ -324,6 +343,12 @@ class PromotedCandidateArtifact:
     artifact_fingerprint: str = field(init=False)
 
     def __post_init__(self) -> None:
+        if isinstance(self.operational_stability_score, bool) or not isinstance(self.operational_stability_score, Real):
+            raise ValueError("operational_stability_score must be a numeric float.")
+        f_stab = float(self.operational_stability_score)
+        if not math.isfinite(f_stab):
+            raise ValueError("operational_stability_score must be finite (not NaN or infinity).")
+        object.__setattr__(self, "operational_stability_score", f_stab)
         if not self.candidate_id or not self.candidate_id.strip():
             raise ValueError("candidate_id must be a non-empty string.")
         if not self.strategy_name or not self.strategy_name.strip():
@@ -386,6 +411,7 @@ class PromotedCandidateArtifact:
             "policy_version": self.policy.policy_version,
             "governance_decision_fingerprint": self.governance_decision_fingerprint,
             "campaign_selection_decision_fingerprint": self.campaign_selection_decision_fingerprint,
+            "operational_stability_score": self.operational_stability_score,
         }
         serialized = json.dumps(payload, sort_keys=True, ensure_ascii=True)
         object.__setattr__(
@@ -402,6 +428,7 @@ class PromotedCandidateArtifact:
         evidence: ResearchEvidence,
         symbol: str,
         timeframe: str,
+        operational_stability_score: float,
         parameters: Optional[dict[str, Any]] = None,
         policy: Optional[ProductionPromotionPolicy] = None,
         governance_decision: Any | None = None,
@@ -427,6 +454,7 @@ class PromotedCandidateArtifact:
             governance_decision=governance_decision,
             governance_decision_fingerprint=governance_decision_fingerprint,
             campaign_selection_decision_fingerprint=campaign_selection_decision_fingerprint,
+            operational_stability_score=operational_stability_score,
         )
 
 

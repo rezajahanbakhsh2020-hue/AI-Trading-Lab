@@ -34,16 +34,11 @@ def make_market_data() -> pd.DataFrame:
     return df
 
 
-@patch("src.evaluation.live_execution_runtime.load_production_selection")
 @patch("src.evaluation.live_execution_runtime.load_live_market_data")
 @patch("urllib.request.urlopen")
-def test_end_to_end_pipeline(mock_urlopen, mock_load_data, mock_load_selection, tmp_path: Path) -> None:
+def test_end_to_end_pipeline(mock_urlopen, mock_load_data, tmp_path: Path) -> None:
     # Setup mocks
     mock_load_data.return_value = make_market_data()
-    mock_load_selection.return_value = {
-        "stable_strategy": "momentum",
-        "stability_score": 0.88,
-    }
 
     mock_resp = MagicMock()
     mock_resp.getcode.return_value = 200
@@ -129,7 +124,7 @@ def test_end_to_end_pipeline(mock_urlopen, mock_load_data, mock_load_selection, 
         promotion_status=PromotionStatus.PROMOTABLE,
         rejection_reasons=(),
     )
-    save_research_candidate(candidate_id="cand_momentum_e2e", evidence=evidence, base_dir=tmp_path)
+    save_research_candidate(candidate_id="cand_momentum_e2e", evidence=evidence, base_dir=tmp_path, operational_stability_score=0.88)
 
     runtime = LiveExecutionRuntime(
         symbol="XAUUSD",

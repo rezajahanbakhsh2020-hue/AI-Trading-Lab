@@ -236,7 +236,7 @@ def test_unqualified_evidence_cannot_be_saved_to_candidate_store(tmp_path: Path)
     evidence = make_valid_evidence(include_oos=False)
 
     with pytest.raises(PromotionEligibilityError, match="failed qualification"):
-        save_research_candidate(candidate_id="cand_bad", evidence=evidence, base_dir=tmp_path)
+        save_research_candidate(candidate_id="cand_bad", evidence=evidence, operational_stability_score=0.85, base_dir=tmp_path)
 
 
 # --- Behavioral Matrix Tests (A-AK) ---

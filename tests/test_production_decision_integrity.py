@@ -146,7 +146,7 @@ def make_promoted_evidence(
 
 def test_1_legitimately_promoted_candidate_reaches_production_decision():
     ev = make_promoted_evidence(PromotionStatus.PROMOTABLE)
-    cand = PromotedCandidateArtifact("cand_01", "momentum", "1.0", ev, "XAUUSD", "5m")
+    cand = PromotedCandidateArtifact("cand_01", "momentum", "1.0", ev, "XAUUSD", "5m", 0.85)
     data = make_market_data(trend="UP")
     dec = evaluate_production_decision(cand, data)
 
@@ -158,7 +158,7 @@ def test_1_legitimately_promoted_candidate_reaches_production_decision():
 def test_2_unpromoted_candidate_is_rejected():
     ev = make_promoted_evidence(PromotionStatus.PROPOSED)
     with pytest.raises(ValueError, match="not allowed for production"):
-        PromotedCandidateArtifact("cand_02", "momentum", "1.0", ev, "XAUUSD", "5m")
+        PromotedCandidateArtifact("cand_02", "momentum", "1.0", ev, "XAUUSD", "5m", 0.85)
 
 
 def test_3_stale_invalid_research_evidence_is_rejected():
@@ -167,12 +167,12 @@ def test_3_stale_invalid_research_evidence_is_rejected():
         rejection_reasons=(RejectionReason.FAILED_ROBUSTNESS,),
     )
     with pytest.raises(ValueError, match="not allowed for production"):
-        PromotedCandidateArtifact("cand_03", "momentum", "1.0", ev, "XAUUSD", "5m")
+        PromotedCandidateArtifact("cand_03", "momentum", "1.0", ev, "XAUUSD", "5m", 0.85)
 
 
 def test_4_stale_market_data_is_rejected():
     ev = make_promoted_evidence()
-    cand = PromotedCandidateArtifact("cand_04", "momentum", "1.0", ev, "XAUUSD", "5m")
+    cand = PromotedCandidateArtifact("cand_04", "momentum", "1.0", ev, "XAUUSD", "5m", 0.85)
     data = make_market_data(trend="UP")
     stale_time = pd.Timestamp.now(tz="UTC") + pd.Timedelta(hours=2)
 
@@ -182,7 +182,7 @@ def test_4_stale_market_data_is_rejected():
 
 def test_5_invalid_market_data_is_rejected():
     ev = make_promoted_evidence()
-    cand = PromotedCandidateArtifact("cand_05", "momentum", "1.0", ev, "XAUUSD", "5m")
+    cand = PromotedCandidateArtifact("cand_05", "momentum", "1.0", ev, "XAUUSD", "5m", 0.85)
     data = make_market_data(trend="UP")
     data.loc[data.index[-1], "close"] = -100.0  # Invalid negative price
 
@@ -193,18 +193,18 @@ def test_5_invalid_market_data_is_rejected():
 def test_6_wrong_instrument_is_rejected():
     ev = make_promoted_evidence(symbol="XAUUSD")
     with pytest.raises(ValueError, match="does not match evidence dataset symbol"):
-        PromotedCandidateArtifact("cand_06", "momentum", "1.0", ev, "BTCUSD", "5m")
+        PromotedCandidateArtifact("cand_06", "momentum", "1.0", ev, "BTCUSD", "5m", 0.85)
 
 
 def test_7_wrong_timeframe_is_rejected():
     ev = make_promoted_evidence(timeframe="5m")
     with pytest.raises(ValueError, match="does not match evidence dataset timeframe"):
-        PromotedCandidateArtifact("cand_07", "momentum", "1.0", ev, "XAUUSD", "1h")
+        PromotedCandidateArtifact("cand_07", "momentum", "1.0", ev, "XAUUSD", "1h", 0.85)
 
 
 def test_8_future_market_timestamp_is_rejected():
     ev = make_promoted_evidence()
-    cand = PromotedCandidateArtifact("cand_08", "momentum", "1.0", ev, "XAUUSD", "5m")
+    cand = PromotedCandidateArtifact("cand_08", "momentum", "1.0", ev, "XAUUSD", "5m", 0.85)
     data = make_market_data(trend="UP")
     future_time = pd.Timestamp.now(tz="UTC") - pd.Timedelta(hours=1)
 
@@ -216,7 +216,7 @@ def test_8_future_market_timestamp_is_rejected():
 
 def test_9_authoritative_strategy_decision_determines_direction():
     ev = make_promoted_evidence()
-    cand = PromotedCandidateArtifact("cand_09", "momentum", "1.0", ev, "XAUUSD", "5m")
+    cand = PromotedCandidateArtifact("cand_09", "momentum", "1.0", ev, "XAUUSD", "5m", 0.85)
     data = make_market_data(trend="UP")
     dec = evaluate_production_decision(cand, data)
 
@@ -226,7 +226,7 @@ def test_9_authoritative_strategy_decision_determines_direction():
 
 def test_10_no_hardcoded_buy_sell():
     ev = make_promoted_evidence()
-    cand = PromotedCandidateArtifact("cand_10", "momentum", "1.0", ev, "XAUUSD", "5m")
+    cand = PromotedCandidateArtifact("cand_10", "momentum", "1.0", ev, "XAUUSD", "5m", 0.85)
     data = make_market_data(trend="DOWN")
     dec = evaluate_production_decision(cand, data)
 
@@ -236,7 +236,7 @@ def test_10_no_hardcoded_buy_sell():
 
 def test_11_no_trade_remains_no_trade():
     ev = make_promoted_evidence()
-    cand = PromotedCandidateArtifact("cand_11", "momentum", "1.0", ev, "XAUUSD", "5m")
+    cand = PromotedCandidateArtifact("cand_11", "momentum", "1.0", ev, "XAUUSD", "5m", 0.85)
     data = make_market_data(trend="FLAT")
     dec = evaluate_production_decision(cand, data)
 
@@ -246,7 +246,7 @@ def test_11_no_trade_remains_no_trade():
 
 def test_12_signal_is_derived_from_production_decision():
     ev = make_promoted_evidence()
-    cand = PromotedCandidateArtifact("cand_12", "momentum", "1.0", ev, "XAUUSD", "5m")
+    cand = PromotedCandidateArtifact("cand_12", "momentum", "1.0", ev, "XAUUSD", "5m", 0.85)
     data = make_market_data(trend="UP")
     dec = evaluate_production_decision(cand, data)
     sig = ProductionSignal.from_decision(dec)
@@ -267,7 +267,7 @@ def test_13_signal_cannot_exist_without_valid_decision():
 
 def test_14_risk_is_derived_from_authoritative_project_1_risk_logic():
     ev = make_promoted_evidence()
-    cand = PromotedCandidateArtifact("cand_14", "momentum", "1.0", ev, "XAUUSD", "5m")
+    cand = PromotedCandidateArtifact("cand_14", "momentum", "1.0", ev, "XAUUSD", "5m", 0.85)
     data = make_market_data(trend="UP", start_price=2000.0)
     dec = evaluate_production_decision(cand, data)
     risk = calculate_production_risk_levels(dec, cand)
@@ -280,7 +280,7 @@ def test_14_risk_is_derived_from_authoritative_project_1_risk_logic():
 def test_15_no_hardcoded_1_percent_2_percent_fallback():
     ev = make_promoted_evidence()
     cand = PromotedCandidateArtifact(
-        "cand_15", "momentum", "1.0", ev, "XAUUSD", "5m",
+        "cand_15", "momentum", "1.0", ev, "XAUUSD", "5m", 0.85,
         parameters={"stop_loss_pct": 0.03, "take_profit_pct": 0.06}
     )
     data = make_market_data(trend="UP", start_price=1000.0)
@@ -349,7 +349,7 @@ def test_18_tp1_tp2_tp3_ordering_is_validated():
 def test_19_trailing_stop_lineage_is_preserved_where_supported():
     ev = make_promoted_evidence()
     cand = PromotedCandidateArtifact(
-        "cand_19", "momentum", "1.0", ev, "XAUUSD", "5m",
+        "cand_19", "momentum", "1.0", ev, "XAUUSD", "5m", 0.85,
         parameters={"trailing_stop_level": 1985.0}
     )
     data = make_market_data(trend="UP", start_price=2000.0)
@@ -363,7 +363,7 @@ def test_19_trailing_stop_lineage_is_preserved_where_supported():
 
 def test_20_decision_signal_risk_preserve_candidate_evidence_provenance():
     ev = make_promoted_evidence()
-    cand = PromotedCandidateArtifact("cand_20", "momentum", "1.0", ev, "XAUUSD", "5m")
+    cand = PromotedCandidateArtifact("cand_20", "momentum", "1.0", ev, "XAUUSD", "5m", 0.85)
     data = make_market_data(trend="UP")
     dec = evaluate_production_decision(cand, data)
     sig = ProductionSignal.from_decision(dec)
@@ -379,7 +379,7 @@ def test_20_decision_signal_risk_preserve_candidate_evidence_provenance():
 
 def test_21_deterministic_identity_for_identical_authoritative_inputs():
     ev = make_promoted_evidence()
-    cand = PromotedCandidateArtifact("cand_21", "momentum", "1.0", ev, "XAUUSD", "5m")
+    cand = PromotedCandidateArtifact("cand_21", "momentum", "1.0", ev, "XAUUSD", "5m", 0.85)
     data = make_market_data(trend="UP")
     market_latest_ts = data["timestamp"].iloc[-1]
 
@@ -465,7 +465,7 @@ def test_25_incomplete_persistence_cannot_produce_signal():
 
 def test_26_complete_end_to_end_production_path():
     ev = make_promoted_evidence()
-    cand = PromotedCandidateArtifact("cand_26", "momentum", "1.0", ev, "XAUUSD", "5m")
+    cand = PromotedCandidateArtifact("cand_26", "momentum", "1.0", ev, "XAUUSD", "5m", 0.85)
     data = make_market_data(trend="UP", start_price=2000.0)
 
     # 1. Authoritative decision
@@ -553,12 +553,283 @@ def test_missing_risk_parameters_fails_closed():
         robustness_verdict={"passed": True},
         promotion_status=PromotionStatus.PROMOTABLE,
     )
-    cand = PromotedCandidateArtifact("cand_no_risk", "momentum", "1.0", ev_no_risk, "XAUUSD", "5m")
+    cand = PromotedCandidateArtifact("cand_no_risk", "momentum", "1.0", ev_no_risk, "XAUUSD", "5m", 0.85)
     data = make_market_data(trend="UP")
     dec = evaluate_production_decision(cand, data)
 
     with pytest.raises(ValueError, match="missing required 'stop_loss_pct' risk parameter"):
         calculate_production_risk_levels(dec, cand)
+
+
+def test_38_promoted_candidate_operational_stability_roundtrip(tmp_path):
+    """A. Prove persisted operational stability value survives round-trip unchanged."""
+    from src.evaluation.research_store import save_research_candidate, load_candidate_binding, resolve_promoted_candidate
+
+    ev = make_promoted_evidence(symbol="XAUUSD", timeframe="5m")
+    save_research_candidate(
+        candidate_id="cand_stab_roundtrip",
+        evidence=ev,
+        base_dir=tmp_path,
+        operational_stability_score=0.825,
+    )
+
+    binding = load_candidate_binding("cand_stab_roundtrip", base_dir=tmp_path)
+    assert binding["operational_stability_score"] == 0.825
+
+    reconstituted = resolve_promoted_candidate(candidate_id="cand_stab_roundtrip", base_dir=tmp_path)
+    assert reconstituted.operational_stability_score == 0.825
+
+
+def test_39_operational_stability_score_changes_artifact_fingerprint(tmp_path):
+    """B. Prove changing the authoritative operational stability value changes the promoted artifact fingerprint."""
+    ev = make_promoted_evidence(symbol="XAUUSD", timeframe="5m")
+
+    c1 = PromotedCandidateArtifact.from_persisted_research(
+        candidate_id="cand_fp_1",
+        evidence=ev,
+        symbol="XAUUSD",
+        timeframe="5m",
+        operational_stability_score=0.75,
+    )
+
+    c2 = PromotedCandidateArtifact.from_persisted_research(
+        candidate_id="cand_fp_1",
+        evidence=ev,
+        symbol="XAUUSD",
+        timeframe="5m",
+        operational_stability_score=0.90,
+    )
+
+    assert c1.artifact_fingerprint != c2.artifact_fingerprint
+
+
+def test_40_missing_or_non_finite_operational_stability_fails_closed(tmp_path):
+    """C. Prove missing, malformed, NaN, or infinite operational stability evidence fails closed."""
+    from src.evaluation.research_store import save_research_candidate, _candidate_binding_path, resolve_promoted_candidate, PromotionIntegrityError
+    import json
+
+    ev = make_promoted_evidence(symbol="XAUUSD", timeframe="5m")
+
+    # 1. Invalid values at PromotedCandidateArtifact construction
+    for invalid_val in (float("nan"), float("inf"), float("-inf"), "invalid_str"):
+        with pytest.raises((ValueError, TypeError)):
+            PromotedCandidateArtifact.from_persisted_research(
+                candidate_id="cand_bad_stab",
+                evidence=ev,
+                symbol="XAUUSD",
+                timeframe="5m",
+                operational_stability_score=invalid_val,  # type: ignore
+            )
+
+    # 2. Corrupted binding JSON missing operational_stability_score
+    save_research_candidate(candidate_id="cand_corrupt_stab", evidence=ev, base_dir=tmp_path, operational_stability_score=0.8)
+    b_path = _candidate_binding_path("cand_corrupt_stab", tmp_path)
+    b_data = json.loads(b_path.read_text(encoding="utf-8"))
+    del b_data["operational_stability_score"]
+    b_path.write_text(json.dumps(b_data), encoding="utf-8")
+
+    with pytest.raises(PromotionIntegrityError, match="missing required operational_stability_score"):
+        resolve_promoted_candidate(candidate_id="cand_corrupt_stab", base_dir=tmp_path)
+
+
+def test_41_conflicting_caller_stability_score_rejected():
+    """D. Prove conflicting caller-supplied stability_score cannot override candidate's authoritative value."""
+    from src.evaluation.live_runtime import evaluate_authorized_live_runtime
+    from src.evaluation.live_runtime_context import create_authorized_runtime_context
+    from src.evaluation.live_market_evaluation import create_live_market_evaluation
+    from src.evaluation.live_production_decision import authorize_production_runtime, ProductionAuthorizationReceipt
+
+    ev = make_promoted_evidence(symbol="XAUUSD", timeframe="5m")
+    cand = PromotedCandidateArtifact.from_persisted_research(
+        candidate_id="cand_auth_stab",
+        evidence=ev,
+        symbol="XAUUSD",
+        timeframe="5m",
+        governance_decision_fingerprint="gov_fp_test_123",
+        operational_stability_score=0.88,
+    )
+    data = make_market_data(rows=80, trend="UP")
+    ref_now = pd.to_datetime(data["timestamp"], utc=True).iloc[-1].to_pydatetime()
+
+    auth = authorize_production_runtime(cand, symbol="XAUUSD", timeframe="5m", now=ref_now)
+    receipt = ProductionAuthorizationReceipt.from_authorization(auth)
+    context = create_authorized_runtime_context(cand, auth, receipt)
+
+    eval_obj = create_live_market_evaluation(data, context=context, reference_now=ref_now)
+
+    # Conflicting caller-supplied score (0.20 != 0.88) MUST raise ValueError
+    with pytest.raises(ValueError, match="conflicts with authoritative candidate operational_stability_score"):
+        evaluate_authorized_live_runtime(
+            data,
+            evaluation=eval_obj,
+            context=context,
+            stable_strategy="momentum",
+            stability_score=0.20,
+            min_stability_score=0.50,
+        )
+
+    # Matching caller-supplied score (0.88 == 0.88) MUST succeed
+    res = evaluate_authorized_live_runtime(
+        data,
+        evaluation=eval_obj,
+        context=context,
+        stable_strategy="momentum",
+        stability_score=0.88,
+        min_stability_score=0.50,
+    )
+    assert res.decision["decision"] == "BUY"
+    assert res.decision["stability_score"] == 0.88
+
+
+def test_42_raw_production_selection_isolation(tmp_path, monkeypatch):
+    """E. Prove modifying load_production_selection() output does not alter live decisions."""
+    from unittest.mock import patch
+    from src.evaluation.research_store import save_research_candidate
+    from src.evaluation.live_execution_runtime import LiveExecutionRuntime, ProductionRuntimeConfig
+
+    ev = make_promoted_evidence(symbol="XAUUSD", timeframe="5m")
+    save_research_candidate(candidate_id="cand_isolation", evidence=ev, base_dir=tmp_path, operational_stability_score=0.92)
+
+    config = ProductionRuntimeConfig(symbol="XAUUSD", timeframe="5m", candidate_id="cand_isolation", strategy_id="momentum", research_dir=tmp_path)
+
+    # Mock load_production_selection to return conflicting/garbage data
+    monkeypatch.setattr(
+        "src.evaluation.production_live_bridge.load_production_selection",
+        lambda *args, **kwargs: {"stability_score": 0.10, "stable_strategy": "bogus_strategy"},
+    )
+
+    data = make_market_data(trend="UP")
+    df_ts = pd.to_datetime(data["timestamp"], utc=True).iloc[-1].to_pydatetime()
+
+    runtime = LiveExecutionRuntime(
+        symbol="XAUUSD",
+        interval="5m",
+        store_path=tmp_path / "store.json",
+        snapshot_path=tmp_path / "snap.json",
+        research_dir=tmp_path,
+        production_config=config,
+    )
+
+    with patch("src.evaluation.live_execution_runtime.load_live_market_data", return_value=data):
+        res = runtime.run_once(publish=False, persist=True, reference_now=df_ts)
+
+    # Live decision MUST succeed using candidate's authoritative stability_score (0.92) and strategy ("momentum")
+    assert res["decision"] == "BUY"
+    assert res["stability_score"] == 0.92
+    assert res["strategy"] == "momentum"
+
+
+def test_43_fresh_and_stale_convergence_lineage_preserved(tmp_path):
+    """F. Prove fresh and stale LiveMarketEvaluation enter same canonical downstream lifecycle with operational stability lineage."""
+    from unittest.mock import patch
+    from src.evaluation.research_store import save_research_candidate
+    from src.evaluation.live_execution_runtime import LiveExecutionRuntime, ProductionRuntimeConfig
+    from src.evaluation.live_decision_lifecycle import LiveDecisionLifecycleState
+
+    ev = make_promoted_evidence(symbol="XAUUSD", timeframe="5m")
+    save_research_candidate(candidate_id="cand_conv", evidence=ev, base_dir=tmp_path, operational_stability_score=0.84)
+
+    config = ProductionRuntimeConfig(symbol="XAUUSD", timeframe="5m", candidate_id="cand_conv", strategy_id="momentum", research_dir=tmp_path)
+    data = make_market_data(trend="UP")
+    df_ts = pd.to_datetime(data["timestamp"], utc=True).iloc[-1].to_pydatetime()
+
+    runtime = LiveExecutionRuntime(
+        symbol="XAUUSD",
+        interval="5m",
+        store_path=tmp_path / "store.json",
+        snapshot_path=tmp_path / "snap.json",
+        research_dir=tmp_path,
+        production_config=config,
+    )
+
+    from datetime import timedelta
+    with patch("src.evaluation.live_execution_runtime.load_live_market_data", return_value=data):
+        res_fresh = runtime.run_once(publish=False, persist=True, reference_now=df_ts)
+        res_stale = runtime.run_once(publish=False, persist=True, reference_now=df_ts + timedelta(seconds=1000))
+
+    assert res_fresh["decision"] == "BUY"
+    assert res_fresh["current_lifecycle_state"] == LiveDecisionLifecycleState.PERSISTED.value
+    assert res_fresh["record"]["stability_score"] == 0.84
+
+    assert res_stale["decision"] == "NO TRADE"
+    assert res_stale["current_lifecycle_state"] == LiveDecisionLifecycleState.PERSISTED.value
+    assert res_stale["record"]["stability_score"] == 0.84
+
+
+def test_44_repository_invariant_runtime_isolated_from_production_json_and_fails_closed_when_missing(tmp_path, monkeypatch):
+    """Invariant test proving live production decision cannot obtain operational_stability_score from production selection JSON.
+
+    1. Even if production JSON exists and contains a conflicting score (0.10) and strategy ('bogus'),
+       the authoritative candidate lineage (strategy 'momentum', score 0.92) is used.
+    2. If candidate binding stability is missing, runtime fails closed and cannot reach decision execution.
+    """
+    from unittest.mock import patch
+    import json
+    from src.evaluation.research_store import save_research_candidate, _candidate_binding_path, PromotionIntegrityError
+    from src.evaluation.live_execution_runtime import LiveExecutionRuntime, ProductionRuntimeConfig, resolve_authoritative_promoted_candidate
+
+    ev = make_promoted_evidence(symbol="XAUUSD", timeframe="5m")
+
+    # Part 1: Prove production selection JSON cannot affect runtime decision or stability score
+    save_research_candidate(candidate_id="cand_inv_01", evidence=ev, base_dir=tmp_path, operational_stability_score=0.92)
+    config = ProductionRuntimeConfig(symbol="XAUUSD", timeframe="5m", candidate_id="cand_inv_01", strategy_id="momentum", research_dir=tmp_path)
+
+    # Mock load_production_selection to return conflicting production JSON state
+    monkeypatch.setattr(
+        "src.evaluation.production_live_bridge.load_production_selection",
+        lambda *args, **kwargs: {"stability_score": 0.10, "stable_strategy": "bogus_strategy"},
+    )
+
+    data = make_market_data(rows=80, trend="UP")
+    df_ts = pd.to_datetime(data["timestamp"], utc=True).iloc[-1].to_pydatetime()
+
+    runtime = LiveExecutionRuntime(
+        symbol="XAUUSD",
+        interval="5m",
+        store_path=tmp_path / "store.json",
+        snapshot_path=tmp_path / "snap.json",
+        research_dir=tmp_path,
+        production_config=config,
+    )
+
+    with patch("src.evaluation.live_execution_runtime.load_live_market_data", return_value=data):
+        res = runtime.run_once(publish=False, persist=True, reference_now=df_ts)
+
+    assert res["blocked"] is False
+    assert res["decision"] == "BUY"
+    assert res["stability_score"] == 0.92
+    assert res["strategy"] == "momentum"
+
+    # Part 2: Prove missing candidate binding stability score fails closed before reaching decision execution
+    save_research_candidate(candidate_id="cand_inv_missing", evidence=ev, base_dir=tmp_path, operational_stability_score=0.88)
+    b_path = _candidate_binding_path("cand_inv_missing", tmp_path)
+    b_data = json.loads(b_path.read_text(encoding="utf-8"))
+    del b_data["operational_stability_score"]
+    b_path.write_text(json.dumps(b_data), encoding="utf-8")
+
+    config_missing = ProductionRuntimeConfig(symbol="XAUUSD", timeframe="5m", candidate_id="cand_inv_missing", strategy_id="momentum", research_dir=tmp_path)
+
+    # Candidate resolution MUST fail closed with PromotionIntegrityError
+    from src.evaluation.research_store import resolve_promoted_candidate
+    with pytest.raises(PromotionIntegrityError, match="missing required operational_stability_score"):
+        resolve_promoted_candidate(candidate_id="cand_inv_missing", base_dir=tmp_path)
+
+    blocked = resolve_authoritative_promoted_candidate(config_missing)
+    assert blocked.reason == "PromotionIntegrityError"
+
+    runtime_missing = LiveExecutionRuntime(
+        symbol="XAUUSD",
+        interval="5m",
+        store_path=tmp_path / "store.json",
+        snapshot_path=tmp_path / "snap.json",
+        research_dir=tmp_path,
+        production_config=config_missing,
+    )
+
+    # Runtime MUST block execution before decision execution
+    res_missing = runtime_missing.run_once(publish=False, persist=True, reference_now=df_ts)
+    assert res_missing["blocked"] is True
+    assert res_missing["decision"] == "NO TRADE"
 
 
 def test_missing_strategy_window_parameter_fails_closed():
@@ -581,7 +852,7 @@ def test_missing_strategy_window_parameter_fails_closed():
         robustness_verdict={"passed": True},
         promotion_status=PromotionStatus.PROMOTABLE,
     )
-    cand = PromotedCandidateArtifact("cand_no_window", "momentum", "1.0", ev_no_window, "XAUUSD", "5m")
+    cand = PromotedCandidateArtifact("cand_no_window", "momentum", "1.0", ev_no_window, "XAUUSD", "5m", 0.85)
     data = make_market_data(trend="UP")
 
     with pytest.raises(ValueError, match="missing required 'momentum_window' or 'window' parameter"):
@@ -591,7 +862,7 @@ def test_missing_strategy_window_parameter_fails_closed():
 def test_candidate_tp_multipliers_override_defaults():
     ev = make_promoted_evidence()
     cand = PromotedCandidateArtifact(
-        "cand_tp_mult", "momentum", "1.0", ev, "XAUUSD", "5m",
+        "cand_tp_mult", "momentum", "1.0", ev, "XAUUSD", "5m", 0.85,
         parameters={"tp1_multiplier": 1.5, "tp2_multiplier": 2.5, "tp3_multiplier": 3.5}
     )
     data = make_market_data(trend="UP", start_price=1000.0)
@@ -616,7 +887,7 @@ def test_30_no_promoted_candidate_fails_closed():
 def test_31_dataset_scope_mismatch_fails_closed():
     ev = make_promoted_evidence(symbol="XAUUSD", timeframe="5m")
     with pytest.raises(ValueError, match="does not match evidence dataset symbol"):
-        PromotedCandidateArtifact("cand_mismatch_scope", "momentum", "1.0", ev, "EURUSD", "5m")
+        PromotedCandidateArtifact("cand_mismatch_scope", "momentum", "1.0", ev, "EURUSD", "5m", 0.85)
 
 
 def test_32_execution_assumptions_mismatch_fails_closed():
@@ -645,7 +916,7 @@ def test_33_lineage_fingerprint_mismatch_fails_closed():
 def test_34_independently_supplied_parameters_disagree_with_authoritative():
     ev = make_promoted_evidence()
     cand = PromotedCandidateArtifact(
-        "cand_override", "momentum", "1.0", ev, "XAUUSD", "5m",
+        "cand_override", "momentum", "1.0", ev, "XAUUSD", "5m", 0.85,
         parameters={"stop_loss_pct": 0.05, "take_profit_pct": 0.10}
     )
     data = make_market_data(trend="UP", start_price=1000.0)
@@ -682,7 +953,7 @@ def test_36_operational_wrapper_delegates_to_authoritative_chain(monkeypatch, tm
 
     ev = make_promoted_evidence(symbol="XAUUSD", timeframe="5m")
     save_research_experiment(ev, base_dir=tmp_path)
-    persist_promoted_candidate_binding(candidate_id="cand_auth_test", evidence=ev, base_dir=tmp_path)
+    persist_promoted_candidate_binding(candidate_id="cand_auth_test", evidence=ev, operational_stability_score=0.85, base_dir=tmp_path)
 
     data = make_market_data(trend="UP")
 
@@ -722,7 +993,7 @@ def test_37_missing_risk_parameter_fails_closed():
         robustness_verdict={"passed": True},
         promotion_status=PromotionStatus.PROMOTABLE,
     )
-    cand = PromotedCandidateArtifact("cand_no_sl", "momentum", "1.0", ev_no_sl, "XAUUSD", "5m")
+    cand = PromotedCandidateArtifact("cand_no_sl", "momentum", "1.0", ev_no_sl, "XAUUSD", "5m", 0.85)
     data = make_market_data(trend="UP")
     dec = evaluate_production_decision(cand, data)
 

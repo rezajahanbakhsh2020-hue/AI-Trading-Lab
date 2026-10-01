@@ -120,7 +120,7 @@ def make_test_promoted_evidence() -> ResearchEvidence:
 
 def make_test_artifacts():
     ev = make_test_promoted_evidence()
-    cand = PromotedCandidateArtifact("cand_pub_01", "momentum", "1.0", ev, "XAUUSD", "5m")
+    cand = PromotedCandidateArtifact("cand_pub_01", "momentum", "1.0", ev, "XAUUSD", "5m", 0.85)
     now_iso = datetime.now(timezone.utc).isoformat()
     dec = ProductionDecision(
         candidate_id=cand.candidate_id,

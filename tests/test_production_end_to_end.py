@@ -37,106 +37,68 @@ def _rising_data(rows: int = 80) -> pd.DataFrame:
     )
 
 
-def test_production_end_to_end_uses_saved_selection(
+def test_production_end_to_end_uses_candidate_lineage(
     tmp_path,
 ):
+    # Conflicting production.json file MUST NOT affect the decision or stability authority
     result_file = tmp_path / "production.json"
-
     result_file.write_text(
         json.dumps(
             {
-                "stable_strategy": "momentum",
-                "stability_score": 0.80,
+                "stable_strategy": "bogus_strategy",
+                "stability_score": 0.10,
             }
         ),
         encoding="utf-8",
     )
 
     data = _rising_data()
-    ref_now = pd.to_datetime(data["timestamp"], utc=True).iloc[-1].to_pydatetime()
 
     result = run_production_end_to_end(
         data,
         results_dir=tmp_path,
+        symbol="XAUUSD",
+        interval="1d",
+        min_stability_score=0.40,
         store_path=tmp_path / "store.json",
     )
 
     assert result["end_to_end_ready"] is True
-    assert (
-        result["production_selection"][
-            "stable_strategy"
-        ]
-        == "momentum"
-    )
-    assert result["production_selection"][
-        "stability_score"
-    ] == pytest.approx(0.80)
+    assert result["production_selection"]["stable_strategy"] == "momentum"
+    assert result["production_selection"]["stability_score"] == pytest.approx(0.7458282289664787)
+    assert result["production_selection"]["source"] == "promoted_candidate_binding"
 
     assert result["decision"]["decision"] == "BUY"
     assert result["overlay"]["decision"] == "BUY"
-    assert result["release_gate"][
-        "release_ready"
-    ] is True
+    assert result["release_gate"]["release_ready"] is True
 
 
-def test_production_end_to_end_rejects_low_saved_stability(
+def test_production_end_to_end_rejects_low_min_stability(
     tmp_path,
 ):
-    result_file = tmp_path / "production.json"
-
-    result_file.write_text(
-        json.dumps(
-            {
-                "stable_strategy": "momentum",
-                "stability_score": 0.20,
-            }
-        ),
-        encoding="utf-8",
-    )
-
     result = run_production_end_to_end(
         _rising_data(),
+        symbol="XAUUSD",
+        interval="1d",
+        min_stability_score=0.90,
         results_dir=tmp_path,
         store_path=tmp_path / "store.json",
     )
 
     assert result["end_to_end_ready"] is False
-    assert result["release_gate"][
-        "release_ready"
-    ] is False
+    assert result["release_gate"]["release_ready"] is False
 
 
-def test_production_end_to_end_preserves_production_source(
+def test_production_end_to_end_rejects_missing_candidate(
     tmp_path,
 ):
-    result_file = tmp_path / "production.json"
-
-    result_file.write_text(
-        json.dumps(
-            {
-                "stable_strategy": "momentum",
-                "stability_score": 0.80,
-            }
-        ),
-        encoding="utf-8",
-    )
-
-    result = run_production_end_to_end(
-        _rising_data(),
-        results_dir=tmp_path,
-        symbol="XAUUSD",
-        interval="1d",
-        store_path=tmp_path / "store.json",
-    )
-
-    source = result["production_selection"][
-        "source_path"
-    ]
-
-    assert source is not None
-    assert source.endswith("production.json")
-    assert result["decision"]["symbol"] == "XAUUSD"
-    assert result["decision"]["interval"] == "1d"
+    with pytest.raises(ValueError, match="No promoted candidate found"):
+        run_production_end_to_end(
+            _rising_data(),
+            symbol="EURUSD",
+            interval="1d",
+            research_dir=tmp_path,
+        )
 
 
 def test_load_production_market_data(tmp_path):

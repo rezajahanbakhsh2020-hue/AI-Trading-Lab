@@ -94,6 +94,30 @@ def evaluate_authorized_live_runtime(
     symbol = context.symbol
     interval = context.timeframe
 
+    # Strategy identity consistency check
+    if str(stable_strategy).strip() != resolved_candidate.strategy_name:
+        raise ValueError(
+            f"stable_strategy '{stable_strategy}' conflicts with candidate's authoritative strategy_name '{resolved_candidate.strategy_name}'."
+        )
+
+    # Authoritative stability score strictly from candidate lineage (caller-supplied value cannot override)
+    authoritative_score = resolved_candidate.operational_stability_score
+
+    if stability_score is not None:
+        if isinstance(stability_score, bool) or not isinstance(stability_score, (int, float)):
+            raise ValueError("stability_score must be a numeric float.")
+        supplied_score = float(stability_score)
+        import math
+        if not math.isfinite(supplied_score):
+            raise ValueError("stability_score must be finite (not NaN or infinity).")
+        if abs(supplied_score - authoritative_score) > 1e-9:
+            raise ValueError(
+                f"Caller-supplied stability_score ({supplied_score}) conflicts with authoritative "
+                f"candidate operational_stability_score ({authoritative_score})."
+            )
+
+    effective_stability_score = authoritative_score
+
     ts_now = evaluation.reference_timestamp_utc
     try:
         ref_now = datetime.fromisoformat(ts_now.replace("Z", "+00:00"))
@@ -125,10 +149,7 @@ def evaluate_authorized_live_runtime(
         trend_val = trend_snap["trend"]
 
         # Operational gating criteria
-        if stability_score is None:
-            reason = "missing_stability_score"
-            final_direction = Direction.NO_TRADE
-        elif stability_score < min_stability_score:
+        if effective_stability_score < min_stability_score:
             reason = "stability_score_below_threshold"
             final_direction = Direction.NO_TRADE
         elif stable_strategy != "momentum":
@@ -160,7 +181,7 @@ def evaluate_authorized_live_runtime(
             reason=reason,
             entry_price=close_price if final_direction == Direction.BUY else None,
             invalidation_condition="Close below stop_loss or trend turns DOWN" if final_direction == Direction.BUY else None,
-            confidence=stability_score,
+            confidence=effective_stability_score,
             parameters=resolved_candidate.parameters,
         )
     else:
@@ -184,7 +205,7 @@ def evaluate_authorized_live_runtime(
             reason=evaluation.freshness_reason,
             entry_price=None,
             invalidation_condition=None,
-            confidence=stability_score,
+            confidence=effective_stability_score,
             parameters=resolved_candidate.parameters,
         )
 
@@ -270,7 +291,7 @@ def evaluate_authorized_live_runtime(
             data,
             canonical_decision=final_cld,
             stable_strategy=stable_strategy,
-            stability_score=stability_score,
+            stability_score=effective_stability_score,
             min_stability_score=min_stability_score,
             symbol=symbol,
             interval=interval,
@@ -284,7 +305,7 @@ def evaluate_authorized_live_runtime(
             "decision": "NO TRADE",
             "reason": evaluation.freshness_reason,
             "stable_strategy": str(stable_strategy),
-            "stability_score": stability_score,
+            "stability_score": effective_stability_score,
             "strategy_supported": str(stable_strategy) == "momentum",
             "signal": 0,
             "signal_label": "NO TRADE",
@@ -320,7 +341,7 @@ def evaluate_authorized_live_runtime(
         "decision": final_decision_obj.direction.value,
         "reason": final_decision_obj.reason,
         "stable_strategy": stable_strategy,
-        "stability_score": stability_score,
+        "stability_score": effective_stability_score,
         "min_stability_score": min_stability_score,
         "strategy_supported": stable_strategy == "momentum",
         "signal": sig_val if (evaluation.fresh and stable_strategy == "momentum") else 0,

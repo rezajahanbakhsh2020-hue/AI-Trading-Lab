@@ -370,6 +370,8 @@ def persist_promoted_candidate_binding(
     *,
     candidate_id: str,
     evidence: ResearchEvidence,
+    canonical_stability: Any = None,
+    operational_stability_score: float | None = None,
     base_dir: str | Path = DEFAULT_RESEARCH_DIR,
     policy: Any | None = None,
     robustness_assessment: Any | None = None,
@@ -460,6 +462,26 @@ def persist_promoted_candidate_binding(
         campaign_sel_fp = cs_fp.strip()
 
     spec = evidence.spec
+
+    from src.evaluation.stability import CanonicalStabilityEvidence
+
+    if canonical_stability is not None:
+        if not isinstance(canonical_stability, CanonicalStabilityEvidence):
+            raise PromotionIntegrityError("promoted binding requires canonical stability evidence (CanonicalStabilityEvidence).")
+        if canonical_stability.strategy_name != spec.strategy_name:
+            raise PromotionIntegrityError(
+                f"canonical stability strategy '{canonical_stability.strategy_name}' does not match "
+                f"evidence strategy '{spec.strategy_name}'."
+            )
+        f_stab_score = canonical_stability.stability_score
+    else:
+        if operational_stability_score is None or isinstance(operational_stability_score, bool) or not isinstance(operational_stability_score, (int, float)):
+            raise PromotionIntegrityError("operational_stability_score must be a numeric float or CanonicalStabilityEvidence.")
+        f_stab_score = float(operational_stability_score)
+        import math
+        if not math.isfinite(f_stab_score):
+            raise PromotionIntegrityError("operational_stability_score must be finite (not NaN or infinity).")
+
     binding = {
         "candidate_id": candidate_id,
         "strategy_name": spec.strategy_name,
@@ -471,6 +493,7 @@ def persist_promoted_candidate_binding(
         "parameters": spec.parameters,
         "governance_decision_fingerprint": gov_fp,
         "campaign_selection_decision_fingerprint": campaign_sel_fp,
+        "operational_stability_score": f_stab_score,
     }
 
     binding_path = _candidate_binding_path(candidate_id, base_dir)
@@ -493,6 +516,8 @@ def save_research_candidate(
     *,
     candidate_id: str,
     evidence: ResearchEvidence,
+    canonical_stability: Any = None,
+    operational_stability_score: float | None = None,
     base_dir: str | Path = DEFAULT_RESEARCH_DIR,
     governance_decision: Any | None = None,
     campaign_selection_decision: Any | None = None,
@@ -502,6 +527,8 @@ def save_research_candidate(
     return persist_promoted_candidate_binding(
         candidate_id=candidate_id,
         evidence=evidence,
+        canonical_stability=canonical_stability,
+        operational_stability_score=operational_stability_score,
         base_dir=base_dir,
         governance_decision=governance_decision,
         campaign_selection_decision=campaign_selection_decision,
@@ -591,6 +618,22 @@ def _reconstitute_promoted_candidate_from_binding(
             f"persisted evidence strategy_version '{evidence.spec.strategy_version}'."
         )
 
+    if "operational_stability_score" not in binding:
+        raise PromotionIntegrityError(
+            f"Candidate '{candidate_id}' binding is missing required operational_stability_score."
+        )
+    raw_stab = binding["operational_stability_score"]
+    if raw_stab is None or isinstance(raw_stab, bool) or not isinstance(raw_stab, (int, float)):
+        raise PromotionIntegrityError(
+            f"Candidate '{candidate_id}' binding has invalid operational_stability_score."
+        )
+    f_stab = float(raw_stab)
+    import math
+    if not math.isfinite(f_stab):
+        raise PromotionIntegrityError(
+            f"Candidate '{candidate_id}' operational_stability_score must be finite (got {raw_stab})."
+        )
+
     reconstitution_policy = policy if policy is not None else ProductionPromotionPolicy()
     gov_fp = binding.get("governance_decision_fingerprint")
     campaign_sel_fp = binding.get("campaign_selection_decision_fingerprint")
@@ -605,6 +648,7 @@ def _reconstitute_promoted_candidate_from_binding(
             policy=reconstitution_policy,
             governance_decision_fingerprint=gov_fp,
             campaign_selection_decision_fingerprint=campaign_sel_fp,
+            operational_stability_score=f_stab,
         )
     except PromotionEligibilityError:
         raise

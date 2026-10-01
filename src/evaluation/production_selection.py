@@ -65,9 +65,17 @@ def select_production_strategy(
         selected.iloc[0]["stability_score"]
     )
 
+    from src.evaluation.stability import CanonicalStabilityEvidence
+
+    canonical = CanonicalStabilityEvidence(
+        strategy_name=str(stable_strategy),
+        stability_score=score,
+    )
+
     return {
         "strategy": stable_strategy,
         "stability_score": score,
+        "canonical_stability": canonical,
         "stability_report": stability_report,
     }
 

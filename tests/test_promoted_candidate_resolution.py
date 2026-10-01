@@ -132,10 +132,11 @@ def persist_test_candidate(
     base_dir: Path,
     *,
     candidate_id: str = "cand_momentum_auth",
+    operational_stability_score: float = 0.85,
     **evidence_kwargs,
 ) -> tuple[str, ResearchEvidence]:
     evidence = make_research_evidence(**evidence_kwargs)
-    save_research_candidate(candidate_id=candidate_id, evidence=evidence, base_dir=base_dir)
+    save_research_candidate(candidate_id=candidate_id, evidence=evidence, operational_stability_score=operational_stability_score, base_dir=base_dir)
     return candidate_id, evidence
 
 
@@ -196,6 +197,7 @@ def test_evidence_missing_is_blocked(tmp_path: Path) -> None:
     persist_promoted_candidate_binding(
         candidate_id="cand_orphan",
         evidence=evidence,
+        operational_stability_score=0.85,
         base_dir=tmp_path,
     )
     with pytest.raises(PromotionIntegrityError, match="Evidence missing"):
@@ -208,7 +210,7 @@ def test_evidence_not_promoted_is_blocked(tmp_path: Path) -> None:
         hypothesis="Unpromoted proposed candidate",
     )
     with pytest.raises(PromotionEligibilityError, match="failed qualification"):
-        save_research_candidate(candidate_id="cand_proposed", evidence=evidence, base_dir=tmp_path)
+        save_research_candidate(candidate_id="cand_proposed", evidence=evidence, operational_stability_score=0.85, base_dir=tmp_path)
 
 
 def test_fingerprint_mismatch_is_blocked(tmp_path: Path) -> None:
@@ -223,6 +225,7 @@ def test_fingerprint_mismatch_is_blocked(tmp_path: Path) -> None:
     persist_promoted_candidate_binding(
         candidate_id="cand_mismatch_fp",
         evidence=decoy,
+        operational_stability_score=0.85,
         base_dir=tmp_path,
     )
     with pytest.raises(PromotionIntegrityError, match="research fingerprint"):
@@ -291,7 +294,7 @@ def test_stale_invalid_evidence_is_blocked(tmp_path: Path) -> None:
         robustness_passed=False,
     )
     with pytest.raises(PromotionEligibilityError, match="failed qualification"):
-        save_research_candidate(candidate_id="cand_rejected", evidence=rejected_evidence, base_dir=tmp_path)
+        save_research_candidate(candidate_id="cand_rejected", evidence=rejected_evidence, operational_stability_score=0.85, base_dir=tmp_path)
 
 
 def test_configuration_selecting_unpromoted_candidate_is_blocked(tmp_path: Path) -> None:
@@ -303,6 +306,7 @@ def test_configuration_selecting_unpromoted_candidate_is_blocked(tmp_path: Path)
         save_research_candidate(
             candidate_id="cand_experimental",
             evidence=exp_evidence,
+            operational_stability_score=0.85,
             base_dir=tmp_path,
         )
 
@@ -348,16 +352,13 @@ def test_restart_resolves_identical_authoritative_candidate(tmp_path: Path) -> N
     assert first.artifact_fingerprint == second.artifact_fingerprint
 
 
-@patch("src.evaluation.live_execution_runtime.load_production_selection")
 @patch("src.evaluation.live_execution_runtime.load_live_market_data")
 def test_production_lineage_preserved_through_decision_signal_risk_publication(
     mock_load_data,
-    mock_load_selection,
     tmp_path: Path,
 ) -> None:
     candidate_id, evidence = persist_test_candidate(tmp_path, candidate_id="cand_lineage")
     mock_load_data.return_value = make_buy_market_data()
-    mock_load_selection.return_value = {"stability_score": 0.85, "stable_strategy": "momentum"}
     ref_now = mock_load_data.return_value["timestamp"].iloc[-1].to_pydatetime()
     runtime = LiveExecutionRuntime(
         symbol="XAUUSD",

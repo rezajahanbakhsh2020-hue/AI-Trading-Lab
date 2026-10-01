@@ -906,12 +906,23 @@ class ResearchCandidate:
         self,
         symbol: str,
         timeframe: str,
+        canonical_stability: Any,
         policy: Any | None = None,
     ) -> Any:
         """Convert a qualified ResearchCandidate into a PromotedCandidateArtifact for production.
 
-        Fails closed if the candidate is unvalidated, rejected, or unqualified.
+        Fails closed if canonical_stability is not a CanonicalStabilityEvidence instance or if
+        strategy name conflicts with candidate hypothesis strategy name.
         """
+        from src.evaluation.stability import CanonicalStabilityEvidence
+        if not isinstance(canonical_stability, CanonicalStabilityEvidence):
+            raise TypeError("promotion requires canonical stability evidence (CanonicalStabilityEvidence).")
+        if canonical_stability.strategy_name != self.hypothesis.strategy_name:
+            raise ValueError(
+                f"canonical stability strategy '{canonical_stability.strategy_name}' does not match "
+                f"candidate strategy '{self.hypothesis.strategy_name}'."
+            )
+
         if self.evidence is None:
             raise ValueError(
                 f"Cannot promote ResearchCandidate '{self.candidate_id}': evidence is missing."
@@ -924,6 +935,7 @@ class ResearchCandidate:
             timeframe=timeframe,
             parameters=dict(self.hypothesis.parameters),
             policy=policy,
+            operational_stability_score=canonical_stability.stability_score,
         )
 
     def as_dict(self) -> dict[str, Any]:

@@ -182,6 +182,18 @@ class AuthorizedProductionRuntimeContext:
                 f"campaign_selection_decision_fingerprint '{self.campaign_selection_decision_fingerprint}' does not match authorization campaign selection fingerprint '{self.authorization.campaign_selection_decision_fingerprint}'."
             )
 
+        # Operational stability score matching across candidate, authorization, and receipt
+        if abs(self.candidate.operational_stability_score - self.authorization.operational_stability_score) > 1e-9:
+            raise RuntimeContextValidationError(
+                f"Candidate operational_stability_score ({self.candidate.operational_stability_score}) "
+                f"does not match authorization operational_stability_score ({self.authorization.operational_stability_score})."
+            )
+        if abs(self.authorization_receipt.operational_stability_score - self.authorization.operational_stability_score) > 1e-9:
+            raise RuntimeContextValidationError(
+                f"Receipt operational_stability_score ({self.authorization_receipt.operational_stability_score}) "
+                f"does not match authorization operational_stability_score ({self.authorization.operational_stability_score})."
+            )
+
         # Receipt matching
         if self.authorization_receipt.authorization_fingerprint != self.authorization.authorization_fingerprint:
             raise RuntimeContextValidationError(
@@ -208,6 +220,7 @@ class AuthorizedProductionRuntimeContext:
             "campaign_selection_decision_fingerprint": self.campaign_selection_decision_fingerprint,
             "authorization_fingerprint": self.authorization_fingerprint,
             "authorization_policy_version": self.authorization_policy_version,
+            "operational_stability_score": self.candidate.operational_stability_score,
         }
         serialized = json.dumps(payload, sort_keys=True, ensure_ascii=True)
         object.__setattr__(
@@ -228,6 +241,7 @@ class AuthorizedProductionRuntimeContext:
             "campaign_selection_decision_fingerprint": self.campaign_selection_decision_fingerprint,
             "authorization_fingerprint": self.authorization_fingerprint,
             "authorization_policy_version": self.authorization_policy_version,
+            "operational_stability_score": self.candidate.operational_stability_score,
             "context_fingerprint": self.context_fingerprint,
         }
 

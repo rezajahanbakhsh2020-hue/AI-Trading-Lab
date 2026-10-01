@@ -152,6 +152,7 @@ def test_A_governance_fingerprint_round_trip(tmp_path: Path):
     binding_path = persist_promoted_candidate_binding(
         candidate_id=cand_id,
         evidence=evidence,
+        operational_stability_score=0.85,
         governance_decision=gov_dec,
         base_dir=tmp_path,
     )
@@ -191,6 +192,7 @@ def test_B_campaign_selection_fingerprint_round_trip(tmp_path: Path):
     persist_promoted_candidate_binding(
         candidate_id=cand_id,
         evidence=evidence,
+        operational_stability_score=0.85,
         campaign_selection_decision=sel_dec,
         base_dir=tmp_path,
     )
@@ -233,6 +235,7 @@ def test_C_wrong_candidate_rejected(tmp_path: Path):
         persist_promoted_candidate_binding(
             candidate_id=cand_id,
             evidence=evidence,
+            operational_stability_score=0.85,
             campaign_selection_decision=sel_dec,
             base_dir=tmp_path,
         )
@@ -273,6 +276,7 @@ def test_D_non_selected_decision_rejected(tmp_path: Path):
         persist_promoted_candidate_binding(
             candidate_id=cand_id,
             evidence=evidence,
+            operational_stability_score=0.85,
             campaign_selection_decision=no_eligible_dec,
             base_dir=tmp_path,
         )
@@ -299,6 +303,7 @@ def test_D_non_selected_decision_rejected(tmp_path: Path):
         persist_promoted_candidate_binding(
             candidate_id=cand_id,
             evidence=evidence,
+            operational_stability_score=0.85,
             campaign_selection_decision=tie_dec,
             base_dir=tmp_path,
         )
@@ -316,6 +321,7 @@ def test_E_conflicting_persisted_lineage(tmp_path: Path):
     binding_path = persist_promoted_candidate_binding(
         candidate_id=cand_id,
         evidence=evidence,
+        operational_stability_score=0.85,
         governance_decision=gov_dec_1,
         base_dir=tmp_path,
     )
@@ -326,6 +332,7 @@ def test_E_conflicting_persisted_lineage(tmp_path: Path):
         persist_promoted_candidate_binding(
             candidate_id=cand_id,
             evidence=evidence,
+            operational_stability_score=0.85,
             governance_decision=gov_dec_2,
             base_dir=tmp_path,
         )
@@ -372,6 +379,7 @@ def test_E_conflicting_persisted_lineage(tmp_path: Path):
     binding_path_2 = persist_promoted_candidate_binding(
         candidate_id="cand_E2",
         evidence=evidence,
+        operational_stability_score=0.85,
         campaign_selection_decision=sel_dec_1,
         base_dir=tmp_path,
     )
@@ -382,6 +390,7 @@ def test_E_conflicting_persisted_lineage(tmp_path: Path):
         persist_promoted_candidate_binding(
             candidate_id="cand_E2",
             evidence=evidence,
+            operational_stability_score=0.85,
             campaign_selection_decision=sel_dec_2,
             base_dir=tmp_path,
         )
@@ -398,6 +407,7 @@ def test_F_artifact_fingerprint_changes_with_lineage():
         evidence=evidence,
         symbol="XAUUSD",
         timeframe="5m",
+        operational_stability_score=0.85,
         governance_decision_fingerprint="gov_fp_1",
         campaign_selection_decision_fingerprint="cs_fp_1",
     )
@@ -407,6 +417,7 @@ def test_F_artifact_fingerprint_changes_with_lineage():
         evidence=evidence,
         symbol="XAUUSD",
         timeframe="5m",
+        operational_stability_score=0.85,
         governance_decision_fingerprint="gov_fp_2",
         campaign_selection_decision_fingerprint="cs_fp_1",
     )
@@ -416,6 +427,7 @@ def test_F_artifact_fingerprint_changes_with_lineage():
         evidence=evidence,
         symbol="XAUUSD",
         timeframe="5m",
+        operational_stability_score=0.85,
         governance_decision_fingerprint="gov_fp_1",
         campaign_selection_decision_fingerprint="cs_fp_2",
     )
@@ -453,6 +465,7 @@ def test_G_idempotency(tmp_path: Path):
     path1 = persist_promoted_candidate_binding(
         candidate_id=cand_id,
         evidence=evidence,
+        operational_stability_score=0.85,
         governance_decision=gov_dec,
         campaign_selection_decision=sel_dec,
         base_dir=tmp_path,
@@ -461,6 +474,7 @@ def test_G_idempotency(tmp_path: Path):
     path2 = persist_promoted_candidate_binding(
         candidate_id=cand_id,
         evidence=evidence,
+        operational_stability_score=0.85,
         governance_decision=gov_dec,
         campaign_selection_decision=sel_dec,
         base_dir=tmp_path,
@@ -482,6 +496,7 @@ def test_H_no_production_authority(tmp_path: Path):
     binding_path = persist_promoted_candidate_binding(
         candidate_id=cand_id,
         evidence=evidence,
+        operational_stability_score=0.85,
         base_dir=tmp_path,
     )
 

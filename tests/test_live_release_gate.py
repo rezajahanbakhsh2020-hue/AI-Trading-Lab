@@ -38,7 +38,7 @@ def _runtime(store_path=None):
     return build_live_runtime(
         data,
         stable_strategy="momentum",
-        stability_score=0.80,
+        stability_score=None,
         symbol="XAUUSD",
         interval="1d",
         reference_now=ref_now,
@@ -66,7 +66,7 @@ def test_release_gate_rejects_low_stability(tmp_path):
     runtime = build_live_runtime(
         data,
         stable_strategy="momentum",
-        stability_score=0.20,
+        min_stability_score=0.90,
         symbol="XAUUSD",
         interval="1d",
         reference_now=ref_now,
@@ -76,6 +76,7 @@ def test_release_gate_rejects_low_stability(tmp_path):
     result = validate_live_release(
         decision=runtime.decision,
         display=runtime.display,
+        min_stability_score=0.90,
     )
 
     assert result["release_ready"] is False
@@ -88,7 +89,7 @@ def test_release_gate_accepts_no_trade_with_valid_levels_state(tmp_path):
     runtime = build_live_runtime(
         data,
         stable_strategy="momentum",
-        stability_score=0.80,
+        stability_score=None,
         symbol="XAUUSD",
         interval="1d",
         reference_now=ref_now,
