@@ -481,18 +481,16 @@ def test_live_execution_runtime_missing_invalid_timestamp_blocked(
     mock_load_data,
     tmp_path,
 ) -> None:
-    """Verify missing/invalid candle timestamps fail closed cleanly in market evaluation stage."""
-    df = make_buy_market_data()
-    # corrupt latest timestamp
-    df["timestamp"] = pd.NaT
-    mock_load_data.return_value = df
+    """Verify missing/invalid candle timestamps fail closed cleanly in market data validation stage."""
+    mock_load_data.side_effect = ValueError("No valid live market data available for XAUUSD.")
 
     mock_publisher = MagicMock()
+    store_file = tmp_path / "store.json"
     runtime = LiveExecutionRuntime(
         symbol="XAUUSD",
         interval="5m",
         publisher=mock_publisher,
-        store_path=tmp_path / "store.json",
+        store_path=store_file,
         snapshot_path=tmp_path / "snap.json",
         research_dir=tmp_path,
         production_config=production_config_for(tmp_path),
@@ -500,9 +498,12 @@ def test_live_execution_runtime_missing_invalid_timestamp_blocked(
 
     res = runtime.run_once(publish=False, persist=True)
     assert res["blocked"] is True
-    assert res["reason"] == "PUBLICATION_ARTIFACT_CONSTRUCTION_FAILED"
+    assert res["reason"] == "MARKET_DATA_VALIDATION_FAILED"
+    assert res["detail"] == "No valid live market data available for XAUUSD."
     assert res["decision"] == "NO TRADE"
     assert res["market_data"] is None
+    assert not store_file.exists()
+    assert mock_publisher.publish.call_count == 0
 
 
 @patch("src.evaluation.live_execution_runtime.load_live_market_data")
