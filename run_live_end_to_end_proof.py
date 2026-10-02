@@ -44,8 +44,6 @@ def run_live_end_to_end_proof(
         research_dir=Path(research_dir),
     )
 
-    quote = fetch_xauusd_quote()
-
     runtime = LiveExecutionRuntime(
         symbol=SYMBOL,
         interval=INTERVAL,
@@ -67,6 +65,9 @@ def run_live_end_to_end_proof(
         raise RuntimeError(
             f"Live execution runtime blocked: {reason} - {detail}"
         )
+
+    # Fetch display quote metadata ONLY AFTER runtime completes successfully (outside authorization/decision authority path)
+    quote = fetch_xauusd_quote()
 
     # Retrieve canonical market data snapshot directly from runtime result
     data = runtime_res.get("market_data")

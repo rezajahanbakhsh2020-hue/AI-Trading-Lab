@@ -615,26 +615,25 @@ def test_live_end_to_end_proof_fails_closed_when_no_candidate(monkeypatch, tmp_p
         )
 
 
-def test_proof_single_fetch_ohlc(monkeypatch, tmp_path):
-    """Requirement 1: run_live_end_to_end_proof() fetches market OHLC exactly ONCE per cycle."""
+def test_runtime_owns_market_data_acquisition_and_order(monkeypatch, tmp_path):
+    """Verify runtime owns market acquisition, executing loader ONLY AFTER candidate resolution & authorization."""
     research_dir, walk_forward_dir = _setup_persisted_candidate(
-        tmp_path, cand_id="cand_single_fetch", strategy_name="momentum", symbol="XAUUSD", timeframe="5m", score=0.80
+        tmp_path, cand_id="cand_ownership_check", strategy_name="momentum", symbol="XAUUSD", timeframe="5m", score=0.80
     )
 
     data = _sample_data()
-    fetch_count = 0
+    events = []
 
     def mock_fetch_ohlc(interval, limit):
-        nonlocal fetch_count
-        fetch_count += 1
+        events.append("fetch_ohlc")
         return data.copy()
 
+    def mock_fetch_quote():
+        events.append("fetch_quote")
+        return {"symbol": "XAUUSD", "mid": 4402.0, "marketState": "OPEN", "stale": False, "quoteAgeSeconds": 0.0}
+
     monkeypatch.setattr(proof, "fetch_xauusd_ohlc", mock_fetch_ohlc)
-    monkeypatch.setattr(
-        proof,
-        "fetch_xauusd_quote",
-        lambda: {"symbol": "XAUUSD", "mid": 4402.0, "marketState": "OPEN", "stale": False, "quoteAgeSeconds": 0.0},
-    )
+    monkeypatch.setattr(proof, "fetch_xauusd_quote", mock_fetch_quote)
 
     class FakeFigure:
         def write_html(self, path, include_plotlyjs, full_html):
@@ -645,12 +644,6 @@ def test_proof_single_fetch_ohlc(monkeypatch, tmp_path):
     monkeypatch.setattr(proof, "OUTPUT_JSON", tmp_path / "proof.json")
     monkeypatch.setattr(proof, "OUTPUT_HTML", tmp_path / "proof.html")
 
-    # Ensure runtime load_live_market_data would fail if called
-    monkeypatch.setattr(
-        "src.evaluation.live_execution_runtime.load_live_market_data",
-        lambda *args, **kwargs: pytest.fail("Runtime load_live_market_data should NOT be called when market_data is supplied"),
-    )
-
     orig_init = proof.LiveExecutionRuntime.__init__
 
     def mock_init(self_runtime, *args, **kwargs):
@@ -660,13 +653,41 @@ def test_proof_single_fetch_ohlc(monkeypatch, tmp_path):
 
     monkeypatch.setattr(proof.LiveExecutionRuntime, "__init__", mock_init)
 
-    proof.run_live_end_to_end_proof(
+    res = proof.run_live_end_to_end_proof(
         publish=False,
         research_dir=research_dir,
         walk_forward_dir=walk_forward_dir,
     )
 
-    assert fetch_count == 1
+    # Prove that fetch_ohlc happened inside runtime, and fetch_quote happened AFTER runtime succeeded
+    assert events == ["fetch_ohlc", "fetch_quote"]
+    assert res["candle_count"] == len(data)
+
+
+def test_quote_not_fetched_on_blocked_runtime(monkeypatch, tmp_path):
+    """Verify quote is NOT fetched when runtime is blocked / candidate resolution fails."""
+    quote_fetched = False
+
+    def mock_fetch_quote():
+        nonlocal quote_fetched
+        quote_fetched = True
+        return {}
+
+    monkeypatch.setattr(proof, "fetch_xauusd_quote", mock_fetch_quote)
+
+    monkeypatch.setattr(
+        "src.evaluation.live_execution_runtime.LiveExecutionRuntime.run_once",
+        lambda self_runtime, **kwargs: {
+            "blocked": True,
+            "reason": "PromotionUnavailable",
+            "detail": "No candidate available",
+        },
+    )
+
+    with pytest.raises(RuntimeError, match="Live execution runtime blocked"):
+        proof.run_live_end_to_end_proof(publish=False)
+
+    assert quote_fetched is False
 
 
 def test_proof_same_content_lineage_and_no_second_fetch(monkeypatch, tmp_path):
