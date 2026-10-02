@@ -460,6 +460,7 @@ class LiveExecutionRuntime:
         persist: bool = True,
         reference_now: datetime.datetime | None = None,
         max_age_seconds: float | None = None,
+        market_data: pd.DataFrame | None = None,
     ) -> dict[str, Any]:
         """Execute one full cycle: resolve persisted promotion -> authorize context -> evaluate market data -> canonical downstream runtime."""
         max_age = max_age_seconds if max_age_seconds is not None else self.max_age_seconds
@@ -525,35 +526,53 @@ class LiveExecutionRuntime:
         stable_strategy = candidate.strategy_name
         stability_score = candidate.operational_stability_score
 
-        # 3. Fetch market data
-        try:
-            data = load_live_market_data(
-                symbol=self.symbol,
-                interval=self.interval,
-                limit=self.limit,
-            )
-        except UnsupportedInstrumentError as exc:
-            blocked = ProductionBlocked(
-                reason="UNSUPPORTED_INSTRUMENT",
-                detail=str(exc),
-                candidate_id=candidate.candidate_id,
-                strategy_id=candidate.strategy_name,
-                symbol=self.symbol,
-                timeframe=self.interval,
-            )
-            res = self._blocked_result(
-                blocked,
-                persist=persist,
-                publish=publish,
-                skip_if_no_trade=skip_if_no_trade,
-                reference_now=ref_now,
-            )
-            res["blocked_state"]["code"] = "UNSUPPORTED_INSTRUMENT"
-            res["blocked_state"]["error"] = {
-                "code": "UNSUPPORTED_INSTRUMENT",
-                "message": str(exc),
-            }
-            return res
+        # 3. Market data: fetch if market_data is None, otherwise validate and defensive-copy supplied snapshot
+        if market_data is None:
+            try:
+                data = load_live_market_data(
+                    symbol=self.symbol,
+                    interval=self.interval,
+                    limit=self.limit,
+                )
+            except UnsupportedInstrumentError as exc:
+                blocked = ProductionBlocked(
+                    reason="UNSUPPORTED_INSTRUMENT",
+                    detail=str(exc),
+                    candidate_id=candidate.candidate_id,
+                    strategy_id=candidate.strategy_name,
+                    symbol=self.symbol,
+                    timeframe=self.interval,
+                )
+                res = self._blocked_result(
+                    blocked,
+                    persist=persist,
+                    publish=publish,
+                    skip_if_no_trade=skip_if_no_trade,
+                    reference_now=ref_now,
+                )
+                res["blocked_state"]["code"] = "UNSUPPORTED_INSTRUMENT"
+                res["blocked_state"]["error"] = {
+                    "code": "UNSUPPORTED_INSTRUMENT",
+                    "message": str(exc),
+                }
+                return res
+        else:
+            if not isinstance(market_data, pd.DataFrame) or market_data.empty:
+                raise ValueError("Supplied market_data must be a non-empty pandas DataFrame.")
+            required = {"openTime", "open", "high", "low", "close"}
+            missing = required.difference(market_data.columns)
+            if missing:
+                raise ValueError(
+                    f"Missing required live columns for {self.symbol}: " + ", ".join(sorted(missing))
+                )
+            data = market_data.copy()
+            data["timestamp"] = pd.to_datetime(data["openTime"], utc=True, errors="coerce")
+            for col in ("open", "high", "low", "close"):
+                data[col] = pd.to_numeric(data[col], errors="coerce")
+            data = data.dropna(subset=["timestamp", "open", "high", "low", "close"])
+            if data.empty:
+                raise ValueError(f"No valid live market data available in supplied DataFrame for {self.symbol}.")
+            data = data.reset_index(drop=True)
 
         # 4. Create authoritative LiveMarketEvaluation
         evaluation = create_live_market_evaluation(

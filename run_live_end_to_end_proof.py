@@ -14,7 +14,9 @@ from app_live import (
 from app_live_trade_display import _build_chart
 from src.evaluation.live_execution_runtime import (
     LiveExecutionRuntime,
+    ProductionBlocked,
     ProductionRuntimeConfig,
+    resolve_authoritative_promoted_candidate,
 )
 from src.evaluation.research_store import DEFAULT_RESEARCH_DIR
 from src.visualization.live_trade_overlay import build_live_trade_overlay
@@ -36,18 +38,26 @@ def run_live_end_to_end_proof(
 ) -> dict[str, Any]:
     """Run the complete real-data live trading proof."""
 
+    config = ProductionRuntimeConfig(
+        symbol=SYMBOL,
+        timeframe=INTERVAL,
+        research_dir=Path(research_dir),
+    )
+
+    # Candidate resolution authority check before fetching market snapshot
+    promoted = resolve_authoritative_promoted_candidate(config)
+    if isinstance(promoted, ProductionBlocked):
+        raise RuntimeError(
+            f"Live execution runtime blocked: {promoted.reason} - {promoted.detail}"
+        )
+
+    # Fetch exactly ONE OHLC market snapshot and metadata quote
     data = fetch_xauusd_ohlc(
         interval=INTERVAL,
         limit=LIMIT,
     )
 
     quote = fetch_xauusd_quote()
-
-    config = ProductionRuntimeConfig(
-        symbol=SYMBOL,
-        timeframe=INTERVAL,
-        research_dir=Path(research_dir),
-    )
 
     runtime = LiveExecutionRuntime(
         symbol=SYMBOL,
@@ -57,9 +67,11 @@ def run_live_end_to_end_proof(
         production_config=config,
     )
 
+    # Pass the exact same market snapshot into canonical runtime
     runtime_res = runtime.run_once(
         publish=publish,
         persist=True,
+        market_data=data,
     )
 
     if runtime_res.get("blocked"):

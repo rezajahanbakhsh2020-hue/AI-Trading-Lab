@@ -668,3 +668,90 @@ def test_main_cli_misconfigured_exit_code(mock_runtime_cls) -> None:
             from src.evaluation.live_execution_runtime import main
             main()
         assert exc.value.code == 2
+
+
+def test_runtime_injected_snapshot_without_market_provider(tmp_path) -> None:
+    """Requirement 3: run_once(market_data=...) evaluates injected snapshot without calling market-data provider."""
+    config = production_config_for(tmp_path)
+    runtime = LiveExecutionRuntime(
+        symbol="XAUUSD",
+        interval="5m",
+        store_path=tmp_path / "store.json",
+        snapshot_path=tmp_path / "snap.json",
+        research_dir=tmp_path,
+        production_config=config,
+    )
+
+    injected_df = make_buy_market_data()
+    ref_now = pd.to_datetime(injected_df["openTime"], utc=True).iloc[-1].to_pydatetime()
+
+    with patch("src.evaluation.live_execution_runtime.load_live_market_data") as mock_load:
+        mock_load.side_effect = AssertionError("load_live_market_data must NOT be called when market_data is supplied")
+
+        res = runtime.run_once(
+            publish=False,
+            persist=True,
+            reference_now=ref_now,
+            market_data=injected_df,
+        )
+
+        assert res["blocked"] is False
+        assert res["decision"] == "BUY"
+        assert res["strategy"] == "momentum"
+        assert res["candidate_id"] == "cand_momentum_live"
+        assert mock_load.call_count == 0
+
+
+def test_normal_runtime_path_fetches_once(tmp_path) -> None:
+    """Requirement 4: When market_data=None, runtime calls load_live_market_data() exactly once."""
+    config = production_config_for(tmp_path)
+    runtime = LiveExecutionRuntime(
+        symbol="XAUUSD",
+        interval="5m",
+        store_path=tmp_path / "store.json",
+        snapshot_path=tmp_path / "snap.json",
+        research_dir=tmp_path,
+        production_config=config,
+    )
+
+    df = make_buy_market_data()
+    ref_now = pd.to_datetime(df["openTime"], utc=True).iloc[-1].to_pydatetime()
+
+    with patch("src.evaluation.live_execution_runtime.load_live_market_data", return_value=df) as mock_load:
+        res = runtime.run_once(
+            publish=False,
+            persist=True,
+            reference_now=ref_now,
+            market_data=None,
+        )
+
+        assert res["blocked"] is False
+        assert mock_load.call_count == 1
+
+
+def test_blocked_before_fetch(tmp_path) -> None:
+    """Requirement 5: When promoted candidate is missing/corrupt, market data loader is not called."""
+    # ProductionRuntimeConfig pointing to non-existent candidate ID
+    config = ProductionRuntimeConfig(
+        symbol="XAUUSD",
+        timeframe="5m",
+        candidate_id="cand_nonexistent_999",
+        strategy_id="momentum",
+        research_dir=tmp_path,
+    )
+
+    runtime = LiveExecutionRuntime(
+        symbol="XAUUSD",
+        interval="5m",
+        store_path=tmp_path / "store.json",
+        snapshot_path=tmp_path / "snap.json",
+        research_dir=tmp_path,
+        production_config=config,
+    )
+
+    with patch("src.evaluation.live_execution_runtime.load_live_market_data") as mock_load:
+        res = runtime.run_once(publish=False, persist=True)
+
+        assert res["blocked"] is True
+        assert res["reason"] == "PromotionUnavailable"
+        assert mock_load.call_count == 0
