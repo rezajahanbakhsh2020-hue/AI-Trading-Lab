@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 import json
+import os
+import tempfile
+import fcntl
 from collections.abc import Iterable, Mapping
+from contextlib import contextmanager
 from pathlib import Path
-from typing import Any
-
-from typing import Optional
+from typing import Any, Optional
 
 from src.evaluation.live_decision_lifecycle import (
     CanonicalLiveDecision,
@@ -21,6 +23,54 @@ from src.evaluation.live_decision_record import (
 from src.evaluation.live_production_decision import Direction
 
 DEFAULT_STORE_PATH = Path("results/live/decision_history.json")
+
+
+@contextmanager
+def _file_lock(lock_path: Path):
+    """
+    Inter-process file lock using fcntl.flock for Linux/Unix environments.
+    """
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    fd = os.open(str(lock_path), os.O_RDWR | os.O_CREAT, 0o666)
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX)
+        yield
+    finally:
+        try:
+            fcntl.flock(fd, fcntl.LOCK_UN)
+        finally:
+            os.close(fd)
+
+
+def _atomic_write_json(records: list[dict[str, Any]], target: Path) -> None:
+    """
+    Crash-safe atomic JSON write to target path.
+
+    Writes to a temporary file in the same directory, flushes and fsyncs,
+    and replaces the target atomically using os.replace(). Cleans up the
+    temporary file on error.
+    """
+    target.parent.mkdir(parents=True, exist_ok=True)
+    temp_fd, temp_path_str = tempfile.mkstemp(
+        dir=target.parent,
+        prefix=f"{target.name}.",
+        suffix=".tmp",
+    )
+    temp_path = Path(temp_path_str)
+    try:
+        content = json.dumps(records, ensure_ascii=False, indent=2).encode("utf-8")
+        with os.fdopen(temp_fd, "wb") as f:
+            f.write(content)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(temp_path, target)
+    except Exception:
+        if temp_path.exists():
+            try:
+                temp_path.unlink()
+            except OSError:
+                pass
+        raise
 
 
 def save_live_decision_history(
@@ -49,16 +99,7 @@ def save_live_decision_history(
         records.append(record)
 
     target = Path(path)
-    target.parent.mkdir(parents=True, exist_ok=True)
-
-    target.write_text(
-        json.dumps(
-            records,
-            ensure_ascii=False,
-            indent=2,
-        ),
-        encoding="utf-8",
-    )
+    _atomic_write_json(records, target)
 
     return target
 
@@ -117,86 +158,88 @@ def append_live_decision_to_store(
     validate_live_decision_record(new_record)
 
     target = Path(path)
+    lock_path = target.parent / f"{target.name}.lock"
 
-    if target.exists():
-        history = load_live_decision_history(target)
-    else:
-        history = []
+    with _file_lock(lock_path):
+        if target.exists():
+            history = load_live_decision_history(target)
+        else:
+            history = []
 
-    if enforce_idempotency:
-        new_dec_id = new_record.get("decision_id")
-        new_sig_id = new_record.get("signal_id")
+        if enforce_idempotency:
+            new_dec_id = new_record.get("decision_id")
+            new_sig_id = new_record.get("signal_id")
 
-        for existing in history:
-            ext_dec_id = existing.get("decision_id")
-            ext_sig_id = existing.get("signal_id")
+            for existing in history:
+                ext_dec_id = existing.get("decision_id")
+                ext_sig_id = existing.get("signal_id")
 
-            id_match = (new_dec_id and new_dec_id == ext_dec_id) or (new_sig_id and new_sig_id == ext_sig_id)
-            if id_match:
-                # Compare authorization fingerprint explicitly for conflict detection
-                new_raw_auth = new_record.get("runtime_authorization_fingerprint")
-                ext_raw_auth = existing.get("runtime_authorization_fingerprint")
+                id_match = (new_dec_id and new_dec_id == ext_dec_id) or (new_sig_id and new_sig_id == ext_sig_id)
+                if id_match:
+                    # Compare authorization fingerprint explicitly for conflict detection
+                    new_raw_auth = new_record.get("runtime_authorization_fingerprint")
+                    ext_raw_auth = existing.get("runtime_authorization_fingerprint")
 
-                new_auth_fp = str(new_raw_auth).strip() if new_raw_auth is not None and str(new_raw_auth).strip() != "" else None
-                ext_auth_fp = str(ext_raw_auth).strip() if ext_raw_auth is not None and str(ext_raw_auth).strip() != "" else None
+                    new_auth_fp = str(new_raw_auth).strip() if new_raw_auth is not None and str(new_raw_auth).strip() != "" else None
+                    ext_auth_fp = str(ext_raw_auth).strip() if ext_raw_auth is not None and str(ext_raw_auth).strip() != "" else None
 
-                existing_has_auth = ext_auth_fp is not None
-                new_has_auth = new_auth_fp is not None
+                    existing_has_auth = ext_auth_fp is not None
+                    new_has_auth = new_auth_fp is not None
 
-                if existing_has_auth != new_has_auth:
-                    raise ValueError(
-                        f"Conflicting replay detected for decision/signal identity '{new_dec_id or new_sig_id}': "
-                        "authorization lineage presence mismatch."
-                    )
+                    if existing_has_auth != new_has_auth:
+                        raise ValueError(
+                            f"Conflicting replay detected for decision/signal identity '{new_dec_id or new_sig_id}': "
+                            "authorization lineage presence mismatch."
+                        )
 
-                if existing_has_auth and new_has_auth and ext_auth_fp != new_auth_fp:
-                    raise ValueError(
-                        f"Conflicting replay detected for decision/signal identity '{new_dec_id or new_sig_id}': "
-                        f"runtime_authorization_fingerprint mismatch ('{ext_auth_fp}' vs '{new_auth_fp}')."
-                    )
+                    if existing_has_auth and new_has_auth and ext_auth_fp != new_auth_fp:
+                        raise ValueError(
+                            f"Conflicting replay detected for decision/signal identity '{new_dec_id or new_sig_id}': "
+                            f"runtime_authorization_fingerprint mismatch ('{ext_auth_fp}' vs '{new_auth_fp}')."
+                        )
 
-                # Compare canonical live decision fingerprint explicitly for conflict detection
-                new_cld_fp = new_record.get("canonical_live_decision_fingerprint")
-                ext_cld_fp = existing.get("canonical_live_decision_fingerprint")
+                    # Compare canonical live decision fingerprint explicitly for conflict detection
+                    new_cld_fp = new_record.get("canonical_live_decision_fingerprint")
+                    ext_cld_fp = existing.get("canonical_live_decision_fingerprint")
 
-                new_cld_str = str(new_cld_fp).strip() if new_cld_fp is not None and str(new_cld_fp).strip() != "" else None
-                ext_cld_str = str(ext_cld_fp).strip() if ext_cld_fp is not None and str(ext_cld_fp).strip() != "" else None
+                    new_cld_str = str(new_cld_fp).strip() if new_cld_fp is not None and str(new_cld_fp).strip() != "" else None
+                    ext_cld_str = str(ext_cld_fp).strip() if ext_cld_fp is not None and str(ext_cld_fp).strip() != "" else None
 
-                if (ext_cld_str is not None) != (new_cld_str is not None):
-                    raise ValueError(
-                        f"Conflicting replay detected for decision/signal identity '{new_dec_id or new_sig_id}': "
-                        "canonical_live_decision_fingerprint presence mismatch."
-                    )
+                    if (ext_cld_str is not None) != (new_cld_str is not None):
+                        raise ValueError(
+                            f"Conflicting replay detected for decision/signal identity '{new_dec_id or new_sig_id}': "
+                            "canonical_live_decision_fingerprint presence mismatch."
+                        )
 
-                if ext_cld_str is not None and new_cld_str is not None and ext_cld_str != new_cld_str:
-                    raise ValueError(
-                        f"Conflicting replay detected for decision/signal identity '{new_dec_id or new_sig_id}': "
-                        f"canonical_live_decision_fingerprint mismatch ('{ext_cld_str}' vs '{new_cld_str}')."
-                    )
+                    if ext_cld_str is not None and new_cld_str is not None and ext_cld_str != new_cld_str:
+                        raise ValueError(
+                            f"Conflicting replay detected for decision/signal identity '{new_dec_id or new_sig_id}': "
+                            f"canonical_live_decision_fingerprint mismatch ('{ext_cld_str}' vs '{new_cld_str}')."
+                        )
 
-                # Compare canonical content
-                # Exclude runtime volatile timestamps if present
-                keys_to_compare = [k for k in new_record if k not in ("recorded_at", "created_at")]
-                match_all = True
-                for k in keys_to_compare:
-                    if existing.get(k) != new_record.get(k):
-                        match_all = False
-                        break
+                    # Compare canonical content
+                    # Exclude runtime volatile timestamps if present
+                    keys_to_compare = [k for k in new_record if k not in ("recorded_at", "created_at")]
+                    match_all = True
+                    for k in keys_to_compare:
+                        if existing.get(k) != new_record.get(k):
+                            match_all = False
+                            break
 
-                if match_all:
-                    # Idempotent replay: record already exists identically
-                    return history
-                else:
-                    # Conflicting replay for same identity -> fail closed
-                    raise ValueError(
-                        f"Conflicting replay detected for decision/signal identity '{new_dec_id or new_sig_id}'. "
-                        "Existing record differs from new record."
-                    )
+                    if match_all:
+                        # Idempotent replay: record already exists identically
+                        return history
+                    else:
+                        # Conflicting replay for same identity -> fail closed
+                        raise ValueError(
+                            f"Conflicting replay detected for decision/signal identity '{new_dec_id or new_sig_id}'. "
+                            "Existing record differs from new record."
+                        )
 
-    history.append(new_record)
-    save_live_decision_history(history, target)
+        history.append(new_record)
+        _atomic_write_json(history, target)
 
-    return history
+        return history
 
 
 def persist_canonical_live_decision(
