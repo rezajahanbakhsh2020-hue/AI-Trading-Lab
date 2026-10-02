@@ -16,7 +16,6 @@ from src.evaluation.live_execution_runtime import (
     LiveExecutionRuntime,
     ProductionRuntimeConfig,
 )
-from src.evaluation.production_selection import select_production_strategy
 from src.evaluation.research_store import DEFAULT_RESEARCH_DIR
 from src.visualization.live_trade_overlay import build_live_trade_overlay
 
@@ -33,7 +32,7 @@ LIMIT = DEFAULT_LIMIT
 def run_live_end_to_end_proof(
     publish: bool = False,
     research_dir: Path | str = DEFAULT_RESEARCH_DIR,
-    walk_forward_dir: Path | str | None = None,
+    walk_forward_dir: Path | str | None = None,  # Preserved for signature compatibility; deprecated/unused
 ) -> dict[str, Any]:
     """Run the complete real-data live trading proof."""
 
@@ -44,15 +43,9 @@ def run_live_end_to_end_proof(
 
     quote = fetch_xauusd_quote()
 
-    if walk_forward_dir is not None:
-        selection = select_production_strategy(results_dir=walk_forward_dir)
-    else:
-        selection = select_production_strategy()
-
-    config = ProductionRuntimeConfig.from_runtime(
+    config = ProductionRuntimeConfig(
         symbol=SYMBOL,
         timeframe=INTERVAL,
-        selection=selection,
         research_dir=Path(research_dir),
     )
 

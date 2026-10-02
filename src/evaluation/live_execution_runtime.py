@@ -221,13 +221,6 @@ def resolve_authoritative_promoted_candidate(
     config: ProductionRuntimeConfig,
 ) -> PromotedCandidateArtifact | ProductionBlocked:
     """Resolve a persisted promoted candidate. Never manufactures promotion or substitutes a default."""
-    if config.candidate_id is None and config.strategy_id is None:
-        return ProductionBlocked(
-            reason="PromotionUnavailable",
-            detail="Production configuration is missing candidate_id and strategy_id.",
-            symbol=config.symbol,
-            timeframe=config.timeframe,
-        )
     try:
         promoted = resolve_promoted_candidate(
             candidate_id=config.candidate_id,

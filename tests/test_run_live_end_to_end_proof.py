@@ -761,11 +761,96 @@ def test_live_end_to_end_proof_fails_closed_on_symbol_timeframe_mismatch(monkeyp
 
 
 def test_no_legacy_bypass_references_in_proof_or_runtime():
-    """Regression test: Ensure load_production_selection and production_live_bridge are completely absent."""
+    """Regression test: Ensure load_production_selection, production_live_bridge, and select_production_strategy are not used in proof."""
     import run_live_end_to_end_proof as p
     import src.evaluation.live_execution_runtime as ler
 
     assert not hasattr(p, "load_production_selection")
     assert not hasattr(p, "production_live_bridge")
+    assert not hasattr(p, "select_production_strategy")
     assert not hasattr(ler, "load_production_selection")
     assert not hasattr(ler, "production_live_bridge")
+
+
+def test_stability_report_changes_do_not_affect_proof_resolution(monkeypatch, tmp_path):
+    """Test that altering a Walk-Forward stability report does not alter proof candidate identity."""
+    research_dir, walk_forward_dir = _setup_persisted_candidate(
+        tmp_path, cand_id="cand_fixed_1", strategy_name="momentum", symbol="XAUUSD", timeframe="5m", score=0.82
+    )
+
+    # Put a different strategy in walk_forward_dir stability report
+    report_df = pd.DataFrame([{"strategy": "fake_override_strategy", "stability_score": 0.99}])
+    report_df.to_csv(walk_forward_dir / "stability_report.csv", index=False)
+
+    data = _sample_data()
+    monkeypatch.setattr(proof, "fetch_xauusd_ohlc", lambda interval, limit: data.copy())
+    monkeypatch.setattr(
+        proof,
+        "fetch_xauusd_quote",
+        lambda: {"symbol": "XAUUSD", "mid": 4402.0, "marketState": "OPEN", "stale": False, "quoteAgeSeconds": 0.0},
+    )
+
+    class FakeFigure:
+        def write_html(self, path, include_plotlyjs, full_html):
+            (tmp_path / "proof.html").write_text("<html>LIVE PROOF</html>", encoding="utf-8")
+
+    monkeypatch.setattr(proof, "_build_chart", lambda data, overlay: FakeFigure())
+    monkeypatch.setattr(proof, "OUTPUT_DIR", tmp_path)
+    monkeypatch.setattr(proof, "OUTPUT_JSON", tmp_path / "proof.json")
+    monkeypatch.setattr(proof, "OUTPUT_HTML", tmp_path / "proof.html")
+
+    monkeypatch.setattr(
+        "src.evaluation.live_execution_runtime.load_live_market_data",
+        lambda symbol, interval, limit: data.copy(),
+    )
+
+    orig_init = proof.LiveExecutionRuntime.__init__
+
+    def mock_init(self_runtime, *args, **kwargs):
+        kwargs["store_path"] = tmp_path / "live_decision_history.json"
+        kwargs["snapshot_path"] = tmp_path / "latest_execution.json"
+        orig_init(self_runtime, *args, **kwargs)
+
+    monkeypatch.setattr(proof.LiveExecutionRuntime, "__init__", mock_init)
+
+    result = proof.run_live_end_to_end_proof(
+        publish=False,
+        research_dir=research_dir,
+        walk_forward_dir=walk_forward_dir,
+    )
+
+    # Resolved strategy MUST come from persisted candidate (momentum), NOT from fake_override_strategy
+    assert result["candidate_id"] == "cand_fixed_1"
+    assert result["stable_strategy"] == "momentum"
+    assert result["stability_score"] == 0.82
+
+
+def test_corrupted_candidate_binding_fails_closed(monkeypatch, tmp_path):
+    """Test that corrupted candidate binding json triggers PromotionIntegrityError and fails closed."""
+    research_dir, walk_forward_dir = _setup_persisted_candidate(
+        tmp_path, cand_id="cand_corrupt", strategy_name="momentum", symbol="XAUUSD", timeframe="5m", score=0.82
+    )
+
+    # Corrupt the binding JSON
+    from src.evaluation.research_store import _candidate_binding_path
+    binding_path = _candidate_binding_path("cand_corrupt", research_dir)
+    binding_path.write_text("{corrupted_json...", encoding="utf-8")
+
+    data = _sample_data()
+    monkeypatch.setattr(proof, "fetch_xauusd_ohlc", lambda interval, limit: data.copy())
+    monkeypatch.setattr(
+        proof,
+        "fetch_xauusd_quote",
+        lambda: {"symbol": "XAUUSD", "mid": 4402.0, "marketState": "OPEN", "stale": False, "quoteAgeSeconds": 0.0},
+    )
+
+    monkeypatch.setattr(proof, "OUTPUT_DIR", tmp_path)
+    monkeypatch.setattr(proof, "OUTPUT_JSON", tmp_path / "proof.json")
+    monkeypatch.setattr(proof, "OUTPUT_HTML", tmp_path / "proof.html")
+
+    with pytest.raises(RuntimeError, match="Live execution runtime blocked: PromotionIntegrityError"):
+        proof.run_live_end_to_end_proof(
+            publish=False,
+            research_dir=research_dir,
+            walk_forward_dir=walk_forward_dir,
+        )
