@@ -733,10 +733,7 @@ def resolve_promoted_candidate(
 
         return artifact
 
-    if strategy_id is None or not str(strategy_id).strip():
-        return None
-
-    requested_strategy = str(strategy_id).strip()
+    requested_strategy = str(strategy_id).strip() if strategy_id is not None and str(strategy_id).strip() else None
     matches: list[Any] = []
     index_root = _candidate_index_dir(base_dir)
     if not index_root.exists():
@@ -751,7 +748,7 @@ def resolve_promoted_candidate(
             ) from exc
         if not isinstance(binding, dict):
             raise PromotionIntegrityError(f"Candidate binding at {binding_path} is not a dictionary.")
-        if binding.get("strategy_name") != requested_strategy:
+        if requested_strategy is not None and binding.get("strategy_name") != requested_strategy:
             continue
         if strategy_version is not None and str(strategy_version).strip():
             if binding.get("strategy_version") != str(strategy_version).strip():

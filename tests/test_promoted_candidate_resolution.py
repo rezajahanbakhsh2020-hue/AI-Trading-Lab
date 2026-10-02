@@ -432,13 +432,21 @@ def test_runtime_does_not_manufacture_promoted_candidate(tmp_path: Path) -> None
     assert result["contract_payload"] is None
 
 
-def test_missing_production_candidate_configuration_blocks(tmp_path: Path) -> None:
-    persist_test_candidate(tmp_path)
+def test_missing_production_candidate_configuration_resolves_or_blocks(tmp_path: Path) -> None:
+    # 1. When no candidate exists in research_dir, resolution returns ProductionBlocked(reason='PromotionUnavailable')
+    empty_dir = tmp_path / "empty_research"
+    empty_dir.mkdir()
     blocked = resolve_authoritative_promoted_candidate(
-        ProductionRuntimeConfig(symbol="XAUUSD", timeframe="5m", research_dir=tmp_path)
+        ProductionRuntimeConfig(symbol="XAUUSD", timeframe="5m", research_dir=empty_dir)
     )
     assert blocked.reason == "PromotionUnavailable"
-    assert "missing candidate_id and strategy_id" in blocked.detail
+
+    # 2. When exactly 1 valid candidate exists for XAUUSD/5m, scope-based resolution succeeds
+    candidate_id, evidence = persist_test_candidate(tmp_path)
+    resolved = resolve_authoritative_promoted_candidate(
+        ProductionRuntimeConfig(symbol="XAUUSD", timeframe="5m", research_dir=tmp_path)
+    )
+    assert resolved.candidate_id == candidate_id
 
 
 def test_validate_promotion_eligibility_rejects_unpromoted_evidence() -> None:
