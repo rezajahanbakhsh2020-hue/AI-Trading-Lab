@@ -360,3 +360,412 @@ def test_live_end_to_end_proof_lineage_passthrough(
     assert result["canonical_live_decision_fingerprint"] == "custom_cld_fp"
     assert result["publication_id"] == "custom_pub_id"
     assert result["delivery_receipt_fingerprint"] == "custom_receipt_fp"
+
+
+# Helper fixture setup for real candidate persistence tests
+def _setup_persisted_candidate(
+    tmp_path,
+    cand_id="cand_real_001",
+    strategy_name="momentum",
+    symbol="XAUUSD",
+    timeframe="5m",
+    score=0.75,
+):
+    from src.evaluation.research_constitution import (
+        CodeProvenance,
+        DatasetScope,
+        EvidencePartition,
+        EvidencePartitionRole,
+        ExecutionAssumptions,
+        PromotionStatus,
+        ResearchEvidence,
+        ResearchExperimentSpec,
+    )
+    from src.evaluation.research_qualification import (
+        ResearchQualificationPolicy,
+        qualify_research_evidence,
+    )
+    from src.evaluation.research_robustness import assess_research_robustness
+    from src.evaluation.research_store import save_research_candidate
+
+    research_dir = tmp_path / "research_experiments"
+    walk_forward_dir = tmp_path / "walk_forward"
+    research_dir.mkdir(parents=True, exist_ok=True)
+    walk_forward_dir.mkdir(parents=True, exist_ok=True)
+
+    # Save walk forward experiment run dir in walk_forward_dir for select_production_strategy
+    run_dir = walk_forward_dir / "run_001"
+    run_dir.mkdir(parents=True, exist_ok=True)
+
+    report_df = pd.DataFrame(
+        [
+            {
+                "strategy": strategy_name,
+                "rank": 1,
+                "total_return": 0.20,
+                "max_drawdown": 0.05,
+                "sharpe_ratio": 2.0,
+                "sortino_ratio": 2.5,
+                "calmar_ratio": 4.0,
+                "positive_window_rate": 0.80,
+            }
+        ]
+    )
+    report_df.to_csv(run_dir / "final_report.csv", index=False)
+
+    eligible_df = pd.DataFrame([{"strategy": strategy_name}])
+    eligible_df.to_csv(run_dir / "eligible_strategies.csv", index=False)
+
+    meta = {
+        "created_at_utc": "2026-01-01T00:00:00+00:00",
+        "best_strategy": strategy_name,
+    }
+    (run_dir / "metadata.json").write_text(json.dumps(meta), encoding="utf-8")
+
+    spec = ResearchExperimentSpec(
+        hypothesis="Real candidate integration hypothesis",
+        methodology_version="1.0",
+        strategy_name=strategy_name,
+        strategy_version="1.0.0",
+        dataset_scope=DatasetScope(
+            dataset_id="ds_real",
+            symbol=symbol,
+            timeframe=timeframe,
+            start_date="2026-01-01",
+            end_date="2026-06-01",
+        ),
+        execution_assumptions=ExecutionAssumptions(
+            transaction_cost=0.0001,
+            slippage=0.0001,
+            latency_ms=10.0,
+        ),
+        code_provenance=CodeProvenance(
+            commit_sha="a" * 40,
+            repository_status="clean",
+            author="tester",
+        ),
+        benchmark_reference="benchmark_v1",
+        parameters={"rsi_period": 14, "trend_sma_period": 50},
+    )
+
+    part_is = EvidencePartition(
+        role=EvidencePartitionRole.IN_SAMPLE,
+        start_date="2026-01-01",
+        end_date="2026-03-01",
+        total_return=0.15,
+        max_drawdown=0.05,
+        sharpe_ratio=1.8,
+        observations=50,
+        start_timestamp_utc="2026-01-01T00:00:00+00:00",
+        end_timestamp_utc="2026-03-01T00:00:00+00:00",
+    )
+    part_oos = EvidencePartition(
+        role=EvidencePartitionRole.OUT_OF_SAMPLE,
+        start_date="2026-03-02",
+        end_date="2026-06-01",
+        total_return=0.12,
+        max_drawdown=0.04,
+        sharpe_ratio=1.6,
+        observations=30,
+        start_timestamp_utc="2026-03-02T00:00:00+00:00",
+        end_timestamp_utc="2026-06-01T00:00:00+00:00",
+    )
+    part_wf = EvidencePartition(
+        role=EvidencePartitionRole.WALK_FORWARD,
+        start_date="2026-01-01",
+        end_date="2026-06-01",
+        total_return=0.10,
+        max_drawdown=0.05,
+        sharpe_ratio=1.5,
+        observations=30,
+        start_timestamp_utc="2026-01-01T00:00:00+00:00",
+        end_timestamp_utc="2026-06-01T00:00:00+00:00",
+    )
+
+    evidence = ResearchEvidence(
+        experiment_fingerprint=spec.fingerprint,
+        spec=spec,
+        partitions=(part_is, part_oos, part_wf),
+        robustness_verdict={
+            "passed": True,
+            "is_robust": True,
+            "parameter_sensitivity": {"passed": True},
+            "subsample_stability": {"passed": True},
+            "execution_cost_stress": {"passed": True},
+            "statistical_validation": {"passed": True},
+            "anti_overfitting": {"passed": True},
+        },
+        benchmark_comparison={"outperformed": True},
+        promotion_status=PromotionStatus.PROMOTABLE,
+        created_at_utc="2026-01-01T00:00:00+00:00",
+    )
+
+    rob_assessment = assess_research_robustness(evidence)
+    gov_dec = qualify_research_evidence(
+        evidence,
+        policy=ResearchQualificationPolicy(max_evidence_age_days=999999),
+        robustness_assessment=rob_assessment,
+    )
+
+    save_research_candidate(
+        candidate_id=cand_id,
+        evidence=evidence,
+        operational_stability_score=score,
+        base_dir=research_dir,
+        governance_decision=gov_dec,
+    )
+
+    return research_dir, walk_forward_dir
+
+
+def test_live_end_to_end_proof_with_real_persisted_candidate(monkeypatch, tmp_path):
+    """Regression test: Proof resolves real persisted candidate from research store without mocking run_once."""
+    research_dir, walk_forward_dir = _setup_persisted_candidate(
+        tmp_path, cand_id="cand_real_100", strategy_name="momentum", symbol="XAUUSD", timeframe="5m", score=0.82
+    )
+
+    data = _sample_data()
+    monkeypatch.setattr(proof, "fetch_xauusd_ohlc", lambda interval, limit: data.copy())
+    monkeypatch.setattr(
+        proof,
+        "fetch_xauusd_quote",
+        lambda: {"symbol": "XAUUSD", "mid": 4402.0, "marketState": "OPEN", "stale": False, "quoteAgeSeconds": 0.0},
+    )
+
+    class FakeFigure:
+        def write_html(self, path, include_plotlyjs, full_html):
+            path_obj = tmp_path / "proof.html"
+            path_obj.write_text("<html>LIVE PROOF REAL CANDIDATE</html>", encoding="utf-8")
+
+    monkeypatch.setattr(proof, "_build_chart", lambda data, overlay: FakeFigure())
+    monkeypatch.setattr(proof, "OUTPUT_DIR", tmp_path)
+    monkeypatch.setattr(proof, "OUTPUT_JSON", tmp_path / "proof.json")
+    monkeypatch.setattr(proof, "OUTPUT_HTML", tmp_path / "proof.html")
+
+    # Mock live market data fetching inside runtime to use sample data
+    monkeypatch.setattr(
+        "src.evaluation.live_execution_runtime.load_live_market_data",
+        lambda symbol, interval, limit: data.copy(),
+    )
+
+    # Isolated store path to prevent decision store replay collisions
+    orig_init = proof.LiveExecutionRuntime.__init__
+
+    def mock_init(self_runtime, *args, **kwargs):
+        kwargs["store_path"] = tmp_path / "live_decision_history.json"
+        kwargs["snapshot_path"] = tmp_path / "latest_execution.json"
+        orig_init(self_runtime, *args, **kwargs)
+
+    monkeypatch.setattr(proof.LiveExecutionRuntime, "__init__", mock_init)
+
+    result = proof.run_live_end_to_end_proof(
+        publish=False,
+        research_dir=research_dir,
+        walk_forward_dir=walk_forward_dir,
+    )
+
+    assert result["candidate_id"] == "cand_real_100"
+    assert result["stable_strategy"] == "momentum"
+    assert result["stability_score"] == 0.82
+    assert result["evidence_id"] is not None
+    assert result["runtime_authorization_fingerprint"] is not None
+    assert result["promoted_artifact_fingerprint"] is not None
+    assert result["governance_decision_fingerprint"] is not None
+
+    json_data = json.loads(proof.OUTPUT_JSON.read_text(encoding="utf-8"))
+    assert json_data["candidate_id"] == "cand_real_100"
+    assert json_data["stable_strategy"] == "momentum"
+    assert json_data["stability_score"] == 0.82
+
+
+def test_live_end_to_end_proof_fails_closed_when_no_candidate(monkeypatch, tmp_path):
+    """Regression test: Proof fails closed when no candidate matches the selected strategy."""
+    research_dir = tmp_path / "research_experiments"
+    walk_forward_dir = tmp_path / "walk_forward"
+    research_dir.mkdir(parents=True, exist_ok=True)
+    walk_forward_dir.mkdir(parents=True, exist_ok=True)
+
+    report_df = pd.DataFrame([{"strategy": "momentum", "stability_score": 0.80}])
+    report_df.to_csv(walk_forward_dir / "stability_report.csv", index=False)
+
+    data = _sample_data()
+    monkeypatch.setattr(proof, "fetch_xauusd_ohlc", lambda interval, limit: data.copy())
+    monkeypatch.setattr(
+        proof,
+        "fetch_xauusd_quote",
+        lambda: {"symbol": "XAUUSD", "mid": 4402.0, "marketState": "OPEN", "stale": False, "quoteAgeSeconds": 0.0},
+    )
+
+    monkeypatch.setattr(proof, "OUTPUT_DIR", tmp_path)
+    monkeypatch.setattr(proof, "OUTPUT_JSON", tmp_path / "proof.json")
+    monkeypatch.setattr(proof, "OUTPUT_HTML", tmp_path / "proof.html")
+
+    with pytest.raises(RuntimeError, match="Live execution runtime blocked: PromotionUnavailable"):
+        proof.run_live_end_to_end_proof(
+            publish=False,
+            research_dir=research_dir,
+            walk_forward_dir=walk_forward_dir,
+        )
+
+
+def test_live_end_to_end_proof_fails_closed_on_ambiguous_candidates(monkeypatch, tmp_path):
+    """Regression test: Proof fails closed when multiple candidates exist for the strategy."""
+    research_dir, walk_forward_dir = _setup_persisted_candidate(
+        tmp_path, cand_id="cand_ambig_1", strategy_name="momentum", symbol="XAUUSD", timeframe="5m", score=0.80
+    )
+    # Add second candidate for same strategy
+    from src.evaluation.research_constitution import (
+        CodeProvenance,
+        DatasetScope,
+        EvidencePartition,
+        EvidencePartitionRole,
+        ExecutionAssumptions,
+        PromotionStatus,
+        ResearchEvidence,
+        ResearchExperimentSpec,
+    )
+    from src.evaluation.research_qualification import (
+        ResearchQualificationPolicy,
+        qualify_research_evidence,
+    )
+    from src.evaluation.research_robustness import assess_research_robustness
+    from src.evaluation.research_store import save_research_candidate
+
+    spec2 = ResearchExperimentSpec(
+        hypothesis="Second candidate hypothesis",
+        methodology_version="1.0",
+        strategy_name="momentum",
+        strategy_version="1.0.0",
+        dataset_scope=DatasetScope(
+            dataset_id="ds_real",
+            symbol="XAUUSD",
+            timeframe="5m",
+            start_date="2026-01-01",
+            end_date="2026-06-01",
+        ),
+        execution_assumptions=ExecutionAssumptions(transaction_cost=0.0001, slippage=0.0001, latency_ms=10.0),
+        code_provenance=CodeProvenance(commit_sha="b" * 40, repository_status="clean", author="tester"),
+        benchmark_reference="benchmark_v1",
+        parameters={"rsi_period": 21, "trend_sma_period": 50},
+    )
+    part_is2 = EvidencePartition(
+        role=EvidencePartitionRole.IN_SAMPLE,
+        start_date="2026-01-01",
+        end_date="2026-03-01",
+        total_return=0.15,
+        max_drawdown=0.05,
+        sharpe_ratio=1.8,
+        observations=50,
+        start_timestamp_utc="2026-01-01T00:00:00+00:00",
+        end_timestamp_utc="2026-03-01T00:00:00+00:00",
+    )
+    part_oos2 = EvidencePartition(
+        role=EvidencePartitionRole.OUT_OF_SAMPLE,
+        start_date="2026-03-02",
+        end_date="2026-06-01",
+        total_return=0.12,
+        max_drawdown=0.04,
+        sharpe_ratio=1.6,
+        observations=30,
+        start_timestamp_utc="2026-03-02T00:00:00+00:00",
+        end_timestamp_utc="2026-06-01T00:00:00+00:00",
+    )
+    part_wf2 = EvidencePartition(
+        role=EvidencePartitionRole.WALK_FORWARD,
+        start_date="2026-01-01",
+        end_date="2026-06-01",
+        total_return=0.10,
+        max_drawdown=0.05,
+        sharpe_ratio=1.5,
+        observations=30,
+        start_timestamp_utc="2026-01-01T00:00:00+00:00",
+        end_timestamp_utc="2026-06-01T00:00:00+00:00",
+    )
+
+    ev2 = ResearchEvidence(
+        experiment_fingerprint=spec2.fingerprint,
+        spec=spec2,
+        partitions=(part_is2, part_oos2, part_wf2),
+        robustness_verdict={
+            "passed": True,
+            "is_robust": True,
+            "parameter_sensitivity": {"passed": True},
+            "subsample_stability": {"passed": True},
+            "execution_cost_stress": {"passed": True},
+            "statistical_validation": {"passed": True},
+            "anti_overfitting": {"passed": True},
+        },
+        benchmark_comparison={"outperformed": True},
+        promotion_status=PromotionStatus.PROMOTABLE,
+        created_at_utc="2026-01-01T00:00:00+00:00",
+    )
+    rob2 = assess_research_robustness(ev2)
+    gov2 = qualify_research_evidence(
+        ev2,
+        policy=ResearchQualificationPolicy(max_evidence_age_days=999999),
+        robustness_assessment=rob2,
+    )
+    save_research_candidate(
+        candidate_id="cand_ambig_2",
+        evidence=ev2,
+        operational_stability_score=0.80,
+        base_dir=research_dir,
+        governance_decision=gov2,
+    )
+
+    data = _sample_data()
+    monkeypatch.setattr(proof, "fetch_xauusd_ohlc", lambda interval, limit: data.copy())
+    monkeypatch.setattr(
+        proof,
+        "fetch_xauusd_quote",
+        lambda: {"symbol": "XAUUSD", "mid": 4402.0, "marketState": "OPEN", "stale": False, "quoteAgeSeconds": 0.0},
+    )
+
+    monkeypatch.setattr(proof, "OUTPUT_DIR", tmp_path)
+    monkeypatch.setattr(proof, "OUTPUT_JSON", tmp_path / "proof.json")
+    monkeypatch.setattr(proof, "OUTPUT_HTML", tmp_path / "proof.html")
+
+    with pytest.raises(RuntimeError, match="Live execution runtime blocked: PromotionIntegrityError"):
+        proof.run_live_end_to_end_proof(
+            publish=False,
+            research_dir=research_dir,
+            walk_forward_dir=walk_forward_dir,
+        )
+
+
+def test_live_end_to_end_proof_fails_closed_on_symbol_timeframe_mismatch(monkeypatch, tmp_path):
+    """Regression test: Proof fails closed when candidate symbol/timeframe does not match runtime config."""
+    # Create candidate with timeframe '15m' while runtime asks for '5m'
+    research_dir, walk_forward_dir = _setup_persisted_candidate(
+        tmp_path, cand_id="cand_mismatch", strategy_name="momentum", symbol="XAUUSD", timeframe="15m", score=0.80
+    )
+
+    data = _sample_data()
+    monkeypatch.setattr(proof, "fetch_xauusd_ohlc", lambda interval, limit: data.copy())
+    monkeypatch.setattr(
+        proof,
+        "fetch_xauusd_quote",
+        lambda: {"symbol": "XAUUSD", "mid": 4402.0, "marketState": "OPEN", "stale": False, "quoteAgeSeconds": 0.0},
+    )
+
+    monkeypatch.setattr(proof, "OUTPUT_DIR", tmp_path)
+    monkeypatch.setattr(proof, "OUTPUT_JSON", tmp_path / "proof.json")
+    monkeypatch.setattr(proof, "OUTPUT_HTML", tmp_path / "proof.html")
+
+    with pytest.raises(RuntimeError, match="Live execution runtime blocked: PromotionUnavailable"):
+        proof.run_live_end_to_end_proof(
+            publish=False,
+            research_dir=research_dir,
+            walk_forward_dir=walk_forward_dir,
+        )
+
+
+def test_no_legacy_bypass_references_in_proof_or_runtime():
+    """Regression test: Ensure load_production_selection and production_live_bridge are completely absent."""
+    import run_live_end_to_end_proof as p
+    import src.evaluation.live_execution_runtime as ler
+
+    assert not hasattr(p, "load_production_selection")
+    assert not hasattr(p, "production_live_bridge")
+    assert not hasattr(ler, "load_production_selection")
+    assert not hasattr(ler, "production_live_bridge")
