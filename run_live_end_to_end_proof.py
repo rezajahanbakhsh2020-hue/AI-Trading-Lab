@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import argparse
 import json
 from pathlib import Path
 from typing import Any
@@ -27,7 +28,7 @@ INTERVAL = DEFAULT_INTERVAL
 LIMIT = DEFAULT_LIMIT
 
 
-def run_live_end_to_end_proof() -> dict[str, Any]:
+def run_live_end_to_end_proof(publish: bool = False) -> dict[str, Any]:
     """Run the complete real-data live trading proof."""
 
     data = fetch_xauusd_ohlc(
@@ -50,7 +51,7 @@ def run_live_end_to_end_proof() -> dict[str, Any]:
     )
 
     runtime_res = runtime.run_once(
-        publish=False,
+        publish=publish,
         persist=True,
     )
 
@@ -63,6 +64,14 @@ def run_live_end_to_end_proof() -> dict[str, Any]:
 
     record = runtime_res.get("record") or {}
     publication = runtime_res.get("publication") or {}
+    pub_res = runtime_res.get("publish_result") or {}
+
+    pub_status = pub_res.get("status") if publish else (pub_res.get("status") or "SKIPPED_DISABLED")
+    is_published = bool(pub_res.get("published", False)) if publish else False
+    pub_id = pub_res.get("publication_id") or pub_res.get("event_id") or publication.get("publication_id")
+    delivery_receipt_fp = pub_res.get("delivery_receipt_fingerprint") or runtime_res.get("delivery_receipt_fingerprint")
+
+    end_to_end_passed = bool(publish and pub_status == "PUBLISHED" and is_published)
 
     display_dict = {
         "decision": runtime_res.get("decision"),
@@ -130,7 +139,13 @@ def run_live_end_to_end_proof() -> dict[str, Any]:
         "quote_stale": quote.get("stale"),
         "quote_age_seconds": quote.get("quoteAgeSeconds"),
         "html_path": str(OUTPUT_HTML),
-        "end_to_end_passed": True,
+        "publication_requested": publish,
+        "publication_status": pub_status,
+        "publication_id": pub_id,
+        "event_id": pub_id,
+        "delivery_receipt_fingerprint": delivery_receipt_fp,
+        "published": is_published,
+        "end_to_end_passed": end_to_end_passed,
         "candidate_id": runtime_res.get("candidate_id"),
         "evidence_id": runtime_res.get("evidence_id"),
         "decision_id": record.get("decision_id"),
@@ -143,6 +158,10 @@ def run_live_end_to_end_proof() -> dict[str, Any]:
         "evaluation_fingerprint": runtime_res.get("evaluation_fingerprint"),
     }
 
+    if publish and not end_to_end_passed:
+        reason = pub_res.get("reason") or pub_res.get("error") or pub_res.get("detail") or f"status={pub_status}"
+        result["error"] = str(reason)
+
     OUTPUT_JSON.write_text(
         json.dumps(
             result,
@@ -152,11 +171,21 @@ def run_live_end_to_end_proof() -> dict[str, Any]:
         encoding="utf-8",
     )
 
+    if publish and not end_to_end_passed:
+        reason = pub_res.get("reason") or pub_res.get("error") or pub_res.get("detail") or f"status={pub_status}"
+        raise RuntimeError(
+            f"Live end-to-end publication failed: publication_status='{pub_status}' - {reason}"
+        )
+
     return result
 
 
 if __name__ == "__main__":
-    result = run_live_end_to_end_proof()
+    parser = argparse.ArgumentParser(description="AI-Trading-Lab Live End-to-End Proof")
+    parser.add_argument("--publish", action="store_true", help="Enable outbound publishing to Project 2 Gateway")
+    args = parser.parse_args()
+
+    result = run_live_end_to_end_proof(publish=args.publish)
 
     print("=== AI-TRADING-LAB LIVE END-TO-END PROOF ===")
 
