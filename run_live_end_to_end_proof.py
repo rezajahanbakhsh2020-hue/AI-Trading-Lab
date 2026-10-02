@@ -5,6 +5,8 @@ import json
 from pathlib import Path
 from typing import Any
 
+import pandas as pd
+
 from app_live import (
     DEFAULT_INTERVAL,
     DEFAULT_LIMIT,
@@ -36,13 +38,6 @@ def run_live_end_to_end_proof(
 ) -> dict[str, Any]:
     """Run the complete real-data live trading proof."""
 
-    data = fetch_xauusd_ohlc(
-        interval=INTERVAL,
-        limit=LIMIT,
-    )
-
-    quote = fetch_xauusd_quote()
-
     config = ProductionRuntimeConfig(
         symbol=SYMBOL,
         timeframe=INTERVAL,
@@ -57,9 +52,11 @@ def run_live_end_to_end_proof(
         production_config=config,
     )
 
+    # Invoke runtime with market_data_loader: runtime manages candidate resolution, authorization, and single market fetch
     runtime_res = runtime.run_once(
         publish=publish,
         persist=True,
+        market_data_loader=lambda: fetch_xauusd_ohlc(interval=INTERVAL, limit=LIMIT),
     )
 
     if runtime_res.get("blocked"):
@@ -68,6 +65,14 @@ def run_live_end_to_end_proof(
         raise RuntimeError(
             f"Live execution runtime blocked: {reason} - {detail}"
         )
+
+    # Fetch display quote metadata ONLY AFTER runtime completes successfully (outside authorization/decision authority path)
+    quote = fetch_xauusd_quote()
+
+    # Retrieve canonical market data snapshot directly from runtime result
+    data = runtime_res.get("market_data")
+    if data is None or not isinstance(data, pd.DataFrame) or data.empty:
+        raise RuntimeError("Canonical market data snapshot missing from runtime result.")
 
     record = runtime_res.get("record") or {}
     publication = runtime_res.get("publication") or {}

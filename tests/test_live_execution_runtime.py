@@ -668,3 +668,163 @@ def test_main_cli_misconfigured_exit_code(mock_runtime_cls) -> None:
             from src.evaluation.live_execution_runtime import main
             main()
         assert exc.value.code == 2
+
+
+def test_runtime_injected_snapshot_without_market_provider(tmp_path) -> None:
+    """Requirement 3: run_once(market_data=...) evaluates injected snapshot without calling market-data provider."""
+    config = production_config_for(tmp_path)
+    runtime = LiveExecutionRuntime(
+        symbol="XAUUSD",
+        interval="5m",
+        store_path=tmp_path / "store.json",
+        snapshot_path=tmp_path / "snap.json",
+        research_dir=tmp_path,
+        production_config=config,
+    )
+
+    injected_df = make_buy_market_data()
+    ref_now = pd.to_datetime(injected_df["openTime"], utc=True).iloc[-1].to_pydatetime()
+
+    with patch("src.evaluation.live_execution_runtime.load_live_market_data") as mock_load:
+        mock_load.side_effect = AssertionError("load_live_market_data must NOT be called when market_data is supplied")
+
+        res = runtime.run_once(
+            publish=False,
+            persist=True,
+            reference_now=ref_now,
+            market_data=injected_df,
+        )
+
+        assert res["blocked"] is False
+        assert res["decision"] == "BUY"
+        assert res["strategy"] == "momentum"
+        assert res["candidate_id"] == "cand_momentum_live"
+        assert res["market_data"] is not None
+        assert mock_load.call_count == 0
+
+
+def test_normal_runtime_path_fetches_once(tmp_path) -> None:
+    """Requirement 4: When market_data=None and market_data_loader=None, runtime calls load_live_market_data() exactly once."""
+    config = production_config_for(tmp_path)
+    runtime = LiveExecutionRuntime(
+        symbol="XAUUSD",
+        interval="5m",
+        store_path=tmp_path / "store.json",
+        snapshot_path=tmp_path / "snap.json",
+        research_dir=tmp_path,
+        production_config=config,
+    )
+
+    df = make_buy_market_data()
+    ref_now = pd.to_datetime(df["openTime"], utc=True).iloc[-1].to_pydatetime()
+
+    with patch("src.evaluation.live_execution_runtime.load_live_market_data", return_value=df) as mock_load:
+        res = runtime.run_once(
+            publish=False,
+            persist=True,
+            reference_now=ref_now,
+            market_data=None,
+        )
+
+        assert res["blocked"] is False
+        assert res["market_data"] is not None
+        assert mock_load.call_count == 1
+
+
+def test_blocked_before_fetch(tmp_path) -> None:
+    """Requirement 5 & C: When promoted candidate is missing/corrupt, market data loader is not called."""
+    config = ProductionRuntimeConfig(
+        symbol="XAUUSD",
+        timeframe="5m",
+        candidate_id="cand_nonexistent_999",
+        strategy_id="momentum",
+        research_dir=tmp_path,
+    )
+
+    runtime = LiveExecutionRuntime(
+        symbol="XAUUSD",
+        interval="5m",
+        store_path=tmp_path / "store.json",
+        snapshot_path=tmp_path / "snap.json",
+        research_dir=tmp_path,
+        production_config=config,
+    )
+
+    mock_loader = MagicMock()
+    with patch("src.evaluation.live_execution_runtime.load_live_market_data") as mock_load:
+        res = runtime.run_once(publish=False, persist=True, market_data_loader=mock_loader)
+
+        assert res["blocked"] is True
+        assert res["reason"] == "PromotionUnavailable"
+        assert res["market_data"] is None
+        assert mock_load.call_count == 0
+        assert mock_loader.call_count == 0
+
+
+def test_market_data_and_loader_mutually_exclusive(tmp_path) -> None:
+    """Requirement 1: Passing both market_data and market_data_loader fails closed with ValueError."""
+    config = production_config_for(tmp_path)
+    runtime = LiveExecutionRuntime(
+        symbol="XAUUSD",
+        interval="5m",
+        store_path=tmp_path / "store.json",
+        snapshot_path=tmp_path / "snap.json",
+        research_dir=tmp_path,
+        production_config=config,
+    )
+
+    df = make_buy_market_data()
+    with pytest.raises(ValueError, match="Cannot supply both market_data and market_data_loader"):
+        runtime.run_once(
+            publish=False,
+            market_data=df,
+            market_data_loader=lambda: df,
+        )
+
+
+def test_mutation_isolation_on_injected_snapshot(tmp_path) -> None:
+    """Requirement G: Mutation on injected DataFrame after invocation does not affect canonical result snapshot."""
+    config = production_config_for(tmp_path)
+    runtime = LiveExecutionRuntime(
+        symbol="XAUUSD",
+        interval="5m",
+        store_path=tmp_path / "store.json",
+        snapshot_path=tmp_path / "snap.json",
+        research_dir=tmp_path,
+        production_config=config,
+    )
+
+    df = make_buy_market_data()
+    ref_now = pd.to_datetime(df["openTime"], utc=True).iloc[-1].to_pydatetime()
+    original_close = df["close"].iloc[-1]
+
+    res = runtime.run_once(publish=False, persist=True, reference_now=ref_now, market_data=df)
+
+    # Mutate original DataFrame on caller side
+    df["close"] = 9999.0
+
+    assert res["market_data"]["close"].iloc[-1] == original_close
+    assert res["market_data"]["close"].iloc[-1] != 9999.0
+
+
+def test_invalid_injected_snapshot_fails_closed(tmp_path) -> None:
+    """Requirement H: Invalid/empty injected snapshot fails closed without executing evaluation."""
+    config = production_config_for(tmp_path)
+    runtime = LiveExecutionRuntime(
+        symbol="XAUUSD",
+        interval="5m",
+        store_path=tmp_path / "store.json",
+        snapshot_path=tmp_path / "snap.json",
+        research_dir=tmp_path,
+        production_config=config,
+    )
+
+    # Empty DataFrame
+    empty_df = pd.DataFrame()
+    with pytest.raises(ValueError, match="must be a non-empty pandas DataFrame"):
+        runtime.run_once(publish=False, market_data=empty_df)
+
+    # Missing OHLC columns
+    invalid_cols_df = pd.DataFrame({"openTime": ["2025-01-01T10:00:00+00:00"]})
+    with pytest.raises(ValueError, match="Missing required live columns"):
+        runtime.run_once(publish=False, market_data=invalid_cols_df)

@@ -103,9 +103,11 @@ def test_live_end_to_end_proof_publication_disabled(
 
     recorded_publish = []
 
-    def mock_run_once(self_runtime, publish=False, persist=True):
+    def mock_run_once(self_runtime, publish=False, persist=True, market_data=None, market_data_loader=None):
         recorded_publish.append(publish)
-        return _mock_runtime_res()
+        res = _mock_runtime_res()
+        res["market_data"] = data.copy()
+        return res
 
     monkeypatch.setattr(
         "src.evaluation.live_execution_runtime.LiveExecutionRuntime.run_once",
@@ -167,9 +169,9 @@ def test_live_end_to_end_proof_publication_enabled_success(
 
     recorded_publish = []
 
-    def mock_run_once(self_runtime, publish=False, persist=True):
+    def mock_run_once(self_runtime, publish=False, persist=True, market_data=None, market_data_loader=None):
         recorded_publish.append(publish)
-        return _mock_runtime_res(
+        res = _mock_runtime_res(
             publish_res={
                 "status": "PUBLISHED",
                 "published": True,
@@ -181,6 +183,8 @@ def test_live_end_to_end_proof_publication_enabled_success(
                 "delivery_receipt_fingerprint": "del_receipt_fp_999",
             }
         )
+        res["market_data"] = data.copy()
+        return res
 
     monkeypatch.setattr("src.evaluation.live_execution_runtime.LiveExecutionRuntime.run_once", mock_run_once)
 
@@ -237,8 +241,8 @@ def test_live_end_to_end_proof_publication_enabled_gateway_failures(
         lambda: {"symbol": "XAUUSD", "mid": 4402.0, "marketState": "OPEN", "stale": False, "quoteAgeSeconds": 0.0},
     )
 
-    def mock_run_once(self_runtime, publish=False, persist=True):
-        return _mock_runtime_res(
+    def mock_run_once(self_runtime, publish=False, persist=True, market_data=None, market_data_loader=None):
+        res = _mock_runtime_res(
             publish_res={
                 "status": status,
                 "published": False,
@@ -246,6 +250,8 @@ def test_live_end_to_end_proof_publication_enabled_gateway_failures(
                 "error": reason,
             }
         )
+        res["market_data"] = data.copy()
+        return res
 
     monkeypatch.setattr("src.evaluation.live_execution_runtime.LiveExecutionRuntime.run_once", mock_run_once)
 
@@ -298,7 +304,7 @@ def test_live_end_to_end_proof_fails_closed_when_blocked(
 
     monkeypatch.setattr(
         "src.evaluation.live_execution_runtime.LiveExecutionRuntime.run_once",
-        lambda self_runtime, publish=False, persist=True: {
+        lambda self_runtime, publish=False, persist=True, market_data=None, market_data_loader=None: {
             "blocked": True,
             "reason": "PromotionUnavailable",
             "detail": "No candidate available for strategy",
@@ -335,10 +341,11 @@ def test_live_end_to_end_proof_lineage_passthrough(
     custom_runtime_res["runtime_authorization_fingerprint"] = "custom_auth_fp"
     custom_runtime_res["record"]["decision_id"] = "custom_dec_id"
     custom_runtime_res["record"]["canonical_live_decision_fingerprint"] = "custom_cld_fp"
+    custom_runtime_res["market_data"] = data.copy()
 
     monkeypatch.setattr(
         "src.evaluation.live_execution_runtime.LiveExecutionRuntime.run_once",
-        lambda self_runtime, publish=False, persist=True: custom_runtime_res,
+        lambda self_runtime, publish=False, persist=True, market_data=None, market_data_loader=None: custom_runtime_res,
     )
 
     class FakeFigure:
@@ -606,6 +613,194 @@ def test_live_end_to_end_proof_fails_closed_when_no_candidate(monkeypatch, tmp_p
             research_dir=research_dir,
             walk_forward_dir=walk_forward_dir,
         )
+
+
+def test_runtime_owns_market_data_acquisition_and_order(monkeypatch, tmp_path):
+    """Verify runtime owns market acquisition, executing loader ONLY AFTER candidate resolution & authorization."""
+    research_dir, walk_forward_dir = _setup_persisted_candidate(
+        tmp_path, cand_id="cand_ownership_check", strategy_name="momentum", symbol="XAUUSD", timeframe="5m", score=0.80
+    )
+
+    data = _sample_data()
+    events = []
+
+    def mock_fetch_ohlc(interval, limit):
+        events.append("fetch_ohlc")
+        return data.copy()
+
+    def mock_fetch_quote():
+        events.append("fetch_quote")
+        return {"symbol": "XAUUSD", "mid": 4402.0, "marketState": "OPEN", "stale": False, "quoteAgeSeconds": 0.0}
+
+    monkeypatch.setattr(proof, "fetch_xauusd_ohlc", mock_fetch_ohlc)
+    monkeypatch.setattr(proof, "fetch_xauusd_quote", mock_fetch_quote)
+
+    class FakeFigure:
+        def write_html(self, path, include_plotlyjs, full_html):
+            (tmp_path / "proof.html").write_text("<html>PROOF</html>", encoding="utf-8")
+
+    monkeypatch.setattr(proof, "_build_chart", lambda data, overlay: FakeFigure())
+    monkeypatch.setattr(proof, "OUTPUT_DIR", tmp_path)
+    monkeypatch.setattr(proof, "OUTPUT_JSON", tmp_path / "proof.json")
+    monkeypatch.setattr(proof, "OUTPUT_HTML", tmp_path / "proof.html")
+
+    orig_init = proof.LiveExecutionRuntime.__init__
+
+    def mock_init(self_runtime, *args, **kwargs):
+        kwargs["store_path"] = tmp_path / "live_decision_history.json"
+        kwargs["snapshot_path"] = tmp_path / "latest_execution.json"
+        orig_init(self_runtime, *args, **kwargs)
+
+    monkeypatch.setattr(proof.LiveExecutionRuntime, "__init__", mock_init)
+
+    res = proof.run_live_end_to_end_proof(
+        publish=False,
+        research_dir=research_dir,
+        walk_forward_dir=walk_forward_dir,
+    )
+
+    # Prove that fetch_ohlc happened inside runtime, and fetch_quote happened AFTER runtime succeeded
+    assert events == ["fetch_ohlc", "fetch_quote"]
+    assert res["candle_count"] == len(data)
+
+
+def test_quote_not_fetched_on_blocked_runtime(monkeypatch, tmp_path):
+    """Verify quote is NOT fetched when runtime is blocked / candidate resolution fails."""
+    quote_fetched = False
+
+    def mock_fetch_quote():
+        nonlocal quote_fetched
+        quote_fetched = True
+        return {}
+
+    monkeypatch.setattr(proof, "fetch_xauusd_quote", mock_fetch_quote)
+
+    monkeypatch.setattr(
+        "src.evaluation.live_execution_runtime.LiveExecutionRuntime.run_once",
+        lambda self_runtime, **kwargs: {
+            "blocked": True,
+            "reason": "PromotionUnavailable",
+            "detail": "No candidate available",
+        },
+    )
+
+    with pytest.raises(RuntimeError, match="Live execution runtime blocked"):
+        proof.run_live_end_to_end_proof(publish=False)
+
+    assert quote_fetched is False
+
+
+def test_proof_same_content_lineage_and_no_second_fetch(monkeypatch, tmp_path):
+    """Requirement 2: Prove that snapshot used for chart is identical to evaluated snapshot and no 2nd fetch occurs."""
+    research_dir, walk_forward_dir = _setup_persisted_candidate(
+        tmp_path, cand_id="cand_lineage", strategy_name="momentum", symbol="XAUUSD", timeframe="5m", score=0.80
+    )
+
+    data_v1 = _sample_data()
+    data_v2 = _sample_data().copy()
+    data_v2["close"] = [9999.0, 9999.0]
+
+    fetch_calls = 0
+
+    def mock_fetch_ohlc(interval, limit):
+        nonlocal fetch_calls
+        fetch_calls += 1
+        if fetch_calls == 1:
+            return data_v1.copy()
+        return data_v2.copy()
+
+    monkeypatch.setattr(proof, "fetch_xauusd_ohlc", mock_fetch_ohlc)
+    monkeypatch.setattr(
+        proof,
+        "fetch_xauusd_quote",
+        lambda: {"symbol": "XAUUSD", "mid": 4402.0, "marketState": "OPEN", "stale": False, "quoteAgeSeconds": 0.0},
+    )
+
+    chart_received_data = []
+
+    def mock_build_chart(data, overlay):
+        chart_received_data.append(data.copy())
+
+        class FakeFigure:
+            def write_html(self, path, include_plotlyjs, full_html):
+                (tmp_path / "proof.html").write_text("<html>PROOF</html>", encoding="utf-8")
+
+        return FakeFigure()
+
+    monkeypatch.setattr(proof, "_build_chart", mock_build_chart)
+    monkeypatch.setattr(proof, "OUTPUT_DIR", tmp_path)
+    monkeypatch.setattr(proof, "OUTPUT_JSON", tmp_path / "proof.json")
+    monkeypatch.setattr(proof, "OUTPUT_HTML", tmp_path / "proof.html")
+
+    # Ensure runtime load_live_market_data would fail if called
+    monkeypatch.setattr(
+        "src.evaluation.live_execution_runtime.load_live_market_data",
+        lambda *args, **kwargs: pytest.fail("Runtime should not fetch market data"),
+    )
+
+    orig_init = proof.LiveExecutionRuntime.__init__
+
+    def mock_init(self_runtime, *args, **kwargs):
+        kwargs["store_path"] = tmp_path / "live_decision_history.json"
+        kwargs["snapshot_path"] = tmp_path / "latest_execution.json"
+        orig_init(self_runtime, *args, **kwargs)
+
+    monkeypatch.setattr(proof.LiveExecutionRuntime, "__init__", mock_init)
+
+    res = proof.run_live_end_to_end_proof(
+        publish=False,
+        research_dir=research_dir,
+        walk_forward_dir=walk_forward_dir,
+    )
+
+    assert fetch_calls == 1
+    assert len(chart_received_data) == 1
+    assert chart_received_data[0]["close"].iloc[0] == 4401.0
+    assert chart_received_data[0]["close"].iloc[0] != 9999.0
+    assert res["candle_count"] == len(data_v1)
+
+
+def test_proof_output_consistency(monkeypatch, tmp_path):
+    """Requirement 6: candle_count and evaluation_fingerprint match canonical snapshot."""
+    research_dir, walk_forward_dir = _setup_persisted_candidate(
+        tmp_path, cand_id="cand_output_consistency", strategy_name="momentum", symbol="XAUUSD", timeframe="5m", score=0.80
+    )
+
+    data = _sample_data()
+    monkeypatch.setattr(proof, "fetch_xauusd_ohlc", lambda interval, limit: data.copy())
+    monkeypatch.setattr(
+        proof,
+        "fetch_xauusd_quote",
+        lambda: {"symbol": "XAUUSD", "mid": 4402.0, "marketState": "OPEN", "stale": False, "quoteAgeSeconds": 0.0},
+    )
+
+    class FakeFigure:
+        def write_html(self, path, include_plotlyjs, full_html):
+            (tmp_path / "proof.html").write_text("<html>PROOF</html>", encoding="utf-8")
+
+    monkeypatch.setattr(proof, "_build_chart", lambda data, overlay: FakeFigure())
+    monkeypatch.setattr(proof, "OUTPUT_DIR", tmp_path)
+    monkeypatch.setattr(proof, "OUTPUT_JSON", tmp_path / "proof.json")
+    monkeypatch.setattr(proof, "OUTPUT_HTML", tmp_path / "proof.html")
+
+    orig_init = proof.LiveExecutionRuntime.__init__
+
+    def mock_init(self_runtime, *args, **kwargs):
+        kwargs["store_path"] = tmp_path / "live_decision_history.json"
+        kwargs["snapshot_path"] = tmp_path / "latest_execution.json"
+        orig_init(self_runtime, *args, **kwargs)
+
+    monkeypatch.setattr(proof.LiveExecutionRuntime, "__init__", mock_init)
+
+    res = proof.run_live_end_to_end_proof(
+        publish=False,
+        research_dir=research_dir,
+        walk_forward_dir=walk_forward_dir,
+    )
+
+    assert res["candle_count"] == len(data)
+    assert res["evaluation_fingerprint"] is not None
+    assert len(res["evaluation_fingerprint"]) == 64
 
 
 def test_live_end_to_end_proof_fails_closed_on_ambiguous_candidates(monkeypatch, tmp_path):
