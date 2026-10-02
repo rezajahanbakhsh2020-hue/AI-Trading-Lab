@@ -2,6 +2,7 @@
 
 from datetime import datetime, timezone
 import json
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 import urllib.error
 
@@ -478,3 +479,9 @@ def test_http_redirect_disallowed(mock_urlopen) -> None:
     assert res["status"] in ("UNAVAILABLE", "FAILED", "REJECTED")
     assert res["published"] is False
     assert "secret-key" not in str(res)
+
+
+def test_project2_publish_example_points_to_canonical_p2_ingest_endpoint() -> None:
+    env_example = Path(".env.example").read_text(encoding="utf-8")
+    assert "PROJECT2_PUBLISH_URL=http://localhost:8000/api/v1/integration/project1/ingest" in env_example
+    assert "/api/v1/signals" not in env_example
