@@ -8,7 +8,7 @@ import logging
 import sys
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 import pandas as pd
 
@@ -176,6 +176,33 @@ def get_live_data_adapter(symbol: str) -> Any:
     return adapter
 
 
+def validate_and_prepare_market_snapshot(
+    data: pd.DataFrame,
+    symbol: str = "XAUUSD",
+) -> pd.DataFrame:
+    """Centralized validation and defensive copy helper for live OHLC market snapshots."""
+    if data is None or not isinstance(data, pd.DataFrame) or data.empty:
+        raise ValueError(f"Supplied market data for {symbol} must be a non-empty pandas DataFrame.")
+
+    required = {"openTime", "open", "high", "low", "close"}
+    missing = required.difference(data.columns)
+    if missing:
+        raise ValueError(
+            f"Missing required live columns for {symbol}: " + ", ".join(sorted(missing))
+        )
+
+    data_copy = data.copy()
+    data_copy["timestamp"] = pd.to_datetime(data_copy["openTime"], utc=True, errors="coerce")
+    for col in ("open", "high", "low", "close"):
+        data_copy[col] = pd.to_numeric(data_copy[col], errors="coerce")
+
+    data_copy = data_copy.dropna(subset=["timestamp", "open", "high", "low", "close"])
+    if data_copy.empty:
+        raise ValueError(f"No valid live market data available for {symbol}.")
+
+    return data_copy.reset_index(drop=True)
+
+
 def load_live_market_data(
     symbol: str = "XAUUSD",
     interval: str = DEFAULT_INTERVAL,
@@ -198,23 +225,7 @@ def load_live_market_data(
         limit=limit,
     )
 
-    required = {"openTime", "open", "high", "low", "close"}
-    missing = required.difference(data.columns)
-    if missing:
-        raise ValueError(
-            f"Missing required live columns for {canonical_symbol}: " + ", ".join(sorted(missing))
-        )
-
-    data = data.copy()
-    data["timestamp"] = pd.to_datetime(data["openTime"], utc=True, errors="coerce")
-    for col in ("open", "high", "low", "close"):
-        data[col] = pd.to_numeric(data[col], errors="coerce")
-
-    data = data.dropna(subset=["timestamp", "open", "high", "low", "close"])
-    if data.empty:
-        raise ValueError(f"No valid live market data available for {canonical_symbol}.")
-
-    return data.reset_index(drop=True)
+    return validate_and_prepare_market_snapshot(data, symbol=canonical_symbol)
 
 
 def resolve_authoritative_promoted_candidate(
@@ -436,11 +447,13 @@ class LiveExecutionRuntime:
             "candidate_id": blocked.candidate_id,
             "blocked_state": blocked.as_dict(),
             "timestamp": now_iso,
+            "market_data": None,
         }
         if persist:
             self.snapshot_path.parent.mkdir(parents=True, exist_ok=True)
+            snap_dict = {k: v for k, v in execution_result.items() if k != "market_data"}
             self.snapshot_path.write_text(
-                json.dumps(execution_result, ensure_ascii=False, indent=2),
+                json.dumps(snap_dict, ensure_ascii=False, indent=2),
                 encoding="utf-8",
             )
         if publish:
@@ -461,8 +474,11 @@ class LiveExecutionRuntime:
         reference_now: datetime.datetime | None = None,
         max_age_seconds: float | None = None,
         market_data: pd.DataFrame | None = None,
+        market_data_loader: Callable[[], pd.DataFrame] | None = None,
     ) -> dict[str, Any]:
         """Execute one full cycle: resolve persisted promotion -> authorize context -> evaluate market data -> canonical downstream runtime."""
+        if market_data is not None and market_data_loader is not None:
+            raise ValueError("Cannot supply both market_data and market_data_loader to run_once().")
         max_age = max_age_seconds if max_age_seconds is not None else self.max_age_seconds
         ref_now = reference_now if reference_now is not None else datetime.datetime.now(datetime.timezone.utc)
         if ref_now.tzinfo is None:
@@ -526,8 +542,13 @@ class LiveExecutionRuntime:
         stable_strategy = candidate.strategy_name
         stability_score = candidate.operational_stability_score
 
-        # 3. Market data: fetch if market_data is None, otherwise validate and defensive-copy supplied snapshot
-        if market_data is None:
+        # 3. Acquire market data snapshot STRICTLY AFTER candidate resolution and runtime authorization
+        if market_data is not None:
+            data = validate_and_prepare_market_snapshot(market_data, symbol=self.symbol)
+        elif market_data_loader is not None:
+            raw_data = market_data_loader()
+            data = validate_and_prepare_market_snapshot(raw_data, symbol=self.symbol)
+        else:
             try:
                 data = load_live_market_data(
                     symbol=self.symbol,
@@ -556,23 +577,6 @@ class LiveExecutionRuntime:
                     "message": str(exc),
                 }
                 return res
-        else:
-            if not isinstance(market_data, pd.DataFrame) or market_data.empty:
-                raise ValueError("Supplied market_data must be a non-empty pandas DataFrame.")
-            required = {"openTime", "open", "high", "low", "close"}
-            missing = required.difference(market_data.columns)
-            if missing:
-                raise ValueError(
-                    f"Missing required live columns for {self.symbol}: " + ", ".join(sorted(missing))
-                )
-            data = market_data.copy()
-            data["timestamp"] = pd.to_datetime(data["openTime"], utc=True, errors="coerce")
-            for col in ("open", "high", "low", "close"):
-                data[col] = pd.to_numeric(data[col], errors="coerce")
-            data = data.dropna(subset=["timestamp", "open", "high", "low", "close"])
-            if data.empty:
-                raise ValueError(f"No valid live market data available in supplied DataFrame for {self.symbol}.")
-            data = data.reset_index(drop=True)
 
         # 4. Create authoritative LiveMarketEvaluation
         evaluation = create_live_market_evaluation(
@@ -657,12 +661,14 @@ class LiveExecutionRuntime:
             "publication": publication.as_dict(),
             "contract_payload": contract_payload,
             "publish_result": pub_res,
+            "market_data": data.copy(),
         }
 
         if persist:
             self.snapshot_path.parent.mkdir(parents=True, exist_ok=True)
+            snap_dict = {k: v for k, v in execution_result.items() if k != "market_data"}
             self.snapshot_path.write_text(
-                json.dumps(execution_result, ensure_ascii=False, indent=2),
+                json.dumps(snap_dict, ensure_ascii=False, indent=2),
                 encoding="utf-8",
             )
 

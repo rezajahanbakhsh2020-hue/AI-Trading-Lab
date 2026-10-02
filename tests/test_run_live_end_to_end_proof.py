@@ -85,12 +85,6 @@ def test_live_end_to_end_proof_publication_disabled(
 
     monkeypatch.setattr(
         proof,
-        "resolve_authoritative_promoted_candidate",
-        lambda config: object(),
-    )
-
-    monkeypatch.setattr(
-        proof,
         "fetch_xauusd_ohlc",
         lambda interval, limit: data.copy(),
     )
@@ -109,9 +103,11 @@ def test_live_end_to_end_proof_publication_disabled(
 
     recorded_publish = []
 
-    def mock_run_once(self_runtime, publish=False, persist=True, market_data=None):
+    def mock_run_once(self_runtime, publish=False, persist=True, market_data=None, market_data_loader=None):
         recorded_publish.append(publish)
-        return _mock_runtime_res()
+        res = _mock_runtime_res()
+        res["market_data"] = data.copy()
+        return res
 
     monkeypatch.setattr(
         "src.evaluation.live_execution_runtime.LiveExecutionRuntime.run_once",
@@ -164,11 +160,6 @@ def test_live_end_to_end_proof_publication_enabled_success(
 ):
     data = _sample_data()
 
-    monkeypatch.setattr(
-        proof,
-        "resolve_authoritative_promoted_candidate",
-        lambda config: object(),
-    )
     monkeypatch.setattr(proof, "fetch_xauusd_ohlc", lambda interval, limit: data.copy())
     monkeypatch.setattr(
         proof,
@@ -178,9 +169,9 @@ def test_live_end_to_end_proof_publication_enabled_success(
 
     recorded_publish = []
 
-    def mock_run_once(self_runtime, publish=False, persist=True, market_data=None):
+    def mock_run_once(self_runtime, publish=False, persist=True, market_data=None, market_data_loader=None):
         recorded_publish.append(publish)
-        return _mock_runtime_res(
+        res = _mock_runtime_res(
             publish_res={
                 "status": "PUBLISHED",
                 "published": True,
@@ -192,6 +183,8 @@ def test_live_end_to_end_proof_publication_enabled_success(
                 "delivery_receipt_fingerprint": "del_receipt_fp_999",
             }
         )
+        res["market_data"] = data.copy()
+        return res
 
     monkeypatch.setattr("src.evaluation.live_execution_runtime.LiveExecutionRuntime.run_once", mock_run_once)
 
@@ -241,11 +234,6 @@ def test_live_end_to_end_proof_publication_enabled_gateway_failures(
 ):
     data = _sample_data()
 
-    monkeypatch.setattr(
-        proof,
-        "resolve_authoritative_promoted_candidate",
-        lambda config: object(),
-    )
     monkeypatch.setattr(proof, "fetch_xauusd_ohlc", lambda interval, limit: data.copy())
     monkeypatch.setattr(
         proof,
@@ -253,8 +241,8 @@ def test_live_end_to_end_proof_publication_enabled_gateway_failures(
         lambda: {"symbol": "XAUUSD", "mid": 4402.0, "marketState": "OPEN", "stale": False, "quoteAgeSeconds": 0.0},
     )
 
-    def mock_run_once(self_runtime, publish=False, persist=True, market_data=None):
-        return _mock_runtime_res(
+    def mock_run_once(self_runtime, publish=False, persist=True, market_data=None, market_data_loader=None):
+        res = _mock_runtime_res(
             publish_res={
                 "status": status,
                 "published": False,
@@ -262,6 +250,8 @@ def test_live_end_to_end_proof_publication_enabled_gateway_failures(
                 "error": reason,
             }
         )
+        res["market_data"] = data.copy()
+        return res
 
     monkeypatch.setattr("src.evaluation.live_execution_runtime.LiveExecutionRuntime.run_once", mock_run_once)
 
@@ -292,17 +282,6 @@ def test_live_end_to_end_proof_fails_closed_when_blocked(
     monkeypatch,
     tmp_path,
 ):
-    from src.evaluation.live_execution_runtime import ProductionBlocked
-
-    monkeypatch.setattr(
-        proof,
-        "resolve_authoritative_promoted_candidate",
-        lambda config: ProductionBlocked(
-            reason="PromotionUnavailable",
-            detail="No candidate available for strategy",
-        ),
-    )
-
     data = _sample_data()
 
     monkeypatch.setattr(
@@ -323,6 +302,15 @@ def test_live_end_to_end_proof_fails_closed_when_blocked(
         },
     )
 
+    monkeypatch.setattr(
+        "src.evaluation.live_execution_runtime.LiveExecutionRuntime.run_once",
+        lambda self_runtime, publish=False, persist=True, market_data=None, market_data_loader=None: {
+            "blocked": True,
+            "reason": "PromotionUnavailable",
+            "detail": "No candidate available for strategy",
+        },
+    )
+
     with pytest.raises(RuntimeError, match="Live execution runtime blocked: PromotionUnavailable"):
         proof.run_live_end_to_end_proof(publish=True)
 
@@ -333,11 +321,6 @@ def test_live_end_to_end_proof_lineage_passthrough(
 ):
     data = _sample_data()
 
-    monkeypatch.setattr(
-        proof,
-        "resolve_authoritative_promoted_candidate",
-        lambda config: object(),
-    )
     monkeypatch.setattr(proof, "fetch_xauusd_ohlc", lambda interval, limit: data.copy())
     monkeypatch.setattr(
         proof,
@@ -358,10 +341,11 @@ def test_live_end_to_end_proof_lineage_passthrough(
     custom_runtime_res["runtime_authorization_fingerprint"] = "custom_auth_fp"
     custom_runtime_res["record"]["decision_id"] = "custom_dec_id"
     custom_runtime_res["record"]["canonical_live_decision_fingerprint"] = "custom_cld_fp"
+    custom_runtime_res["market_data"] = data.copy()
 
     monkeypatch.setattr(
         "src.evaluation.live_execution_runtime.LiveExecutionRuntime.run_once",
-        lambda self_runtime, publish=False, persist=True, market_data=None: custom_runtime_res,
+        lambda self_runtime, publish=False, persist=True, market_data=None, market_data_loader=None: custom_runtime_res,
     )
 
     class FakeFigure:

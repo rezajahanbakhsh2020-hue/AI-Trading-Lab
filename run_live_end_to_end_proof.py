@@ -5,6 +5,8 @@ import json
 from pathlib import Path
 from typing import Any
 
+import pandas as pd
+
 from app_live import (
     DEFAULT_INTERVAL,
     DEFAULT_LIMIT,
@@ -14,9 +16,7 @@ from app_live import (
 from app_live_trade_display import _build_chart
 from src.evaluation.live_execution_runtime import (
     LiveExecutionRuntime,
-    ProductionBlocked,
     ProductionRuntimeConfig,
-    resolve_authoritative_promoted_candidate,
 )
 from src.evaluation.research_store import DEFAULT_RESEARCH_DIR
 from src.visualization.live_trade_overlay import build_live_trade_overlay
@@ -44,19 +44,6 @@ def run_live_end_to_end_proof(
         research_dir=Path(research_dir),
     )
 
-    # Candidate resolution authority check before fetching market snapshot
-    promoted = resolve_authoritative_promoted_candidate(config)
-    if isinstance(promoted, ProductionBlocked):
-        raise RuntimeError(
-            f"Live execution runtime blocked: {promoted.reason} - {promoted.detail}"
-        )
-
-    # Fetch exactly ONE OHLC market snapshot and metadata quote
-    data = fetch_xauusd_ohlc(
-        interval=INTERVAL,
-        limit=LIMIT,
-    )
-
     quote = fetch_xauusd_quote()
 
     runtime = LiveExecutionRuntime(
@@ -67,11 +54,11 @@ def run_live_end_to_end_proof(
         production_config=config,
     )
 
-    # Pass the exact same market snapshot into canonical runtime
+    # Invoke runtime with market_data_loader: runtime manages candidate resolution, authorization, and single market fetch
     runtime_res = runtime.run_once(
         publish=publish,
         persist=True,
-        market_data=data,
+        market_data_loader=lambda: fetch_xauusd_ohlc(interval=INTERVAL, limit=LIMIT),
     )
 
     if runtime_res.get("blocked"):
@@ -80,6 +67,11 @@ def run_live_end_to_end_proof(
         raise RuntimeError(
             f"Live execution runtime blocked: {reason} - {detail}"
         )
+
+    # Retrieve canonical market data snapshot directly from runtime result
+    data = runtime_res.get("market_data")
+    if data is None or not isinstance(data, pd.DataFrame) or data.empty:
+        raise RuntimeError("Canonical market data snapshot missing from runtime result.")
 
     record = runtime_res.get("record") or {}
     publication = runtime_res.get("publication") or {}
