@@ -11,6 +11,7 @@ from src.data.provider import (
     resolve_provider_for_symbol,
     resolve_requested_symbol,
 )
+import src.evaluation.live_execution_runtime as runtime_module
 from src.evaluation.live_execution_runtime import (
     LIVE_DATA_PROVIDERS,
     LiveExecutionRuntime,
@@ -821,10 +822,216 @@ def test_invalid_injected_snapshot_fails_closed(tmp_path) -> None:
 
     # Empty DataFrame
     empty_df = pd.DataFrame()
-    with pytest.raises(ValueError, match="must be a non-empty pandas DataFrame"):
-        runtime.run_once(publish=False, market_data=empty_df)
+    res_empty = runtime.run_once(publish=False, market_data=empty_df)
+    assert res_empty["blocked"] is True
+    assert res_empty["reason"] == "MARKET_DATA_VALIDATION_FAILED"
+    assert res_empty["market_data"] is None
 
     # Missing OHLC columns
     invalid_cols_df = pd.DataFrame({"openTime": ["2025-01-01T10:00:00+00:00"]})
-    with pytest.raises(ValueError, match="Missing required live columns"):
-        runtime.run_once(publish=False, market_data=invalid_cols_df)
+    res_cols = runtime.run_once(publish=False, market_data=invalid_cols_df)
+    assert res_cols["blocked"] is True
+    assert res_cols["reason"] == "MARKET_DATA_VALIDATION_FAILED"
+    assert res_cols["market_data"] is None
+
+
+def test_acquisition_boundary_loader_success_and_ordering(tmp_path) -> None:
+    """Scenario 1 & Ordering Proof: market_data_loader success follows exact required sequence."""
+    config = production_config_for(tmp_path)
+    runtime = LiveExecutionRuntime(
+        symbol="XAUUSD",
+        interval="5m",
+        store_path=tmp_path / "store.json",
+        snapshot_path=tmp_path / "snap.json",
+        research_dir=tmp_path,
+        production_config=config,
+    )
+
+    df = make_buy_market_data()
+    ref_now = pd.to_datetime(df["openTime"], utc=True).iloc[-1].to_pydatetime()
+
+    event_log: list[str] = []
+
+    def loader_with_event():
+        event_log.append("3. acquire_market_snapshot")
+        return df
+
+    orig_resolve = runtime_module.resolve_authoritative_promoted_candidate
+    orig_auth = runtime_module.authorize_production_runtime
+    orig_eval = runtime_module.create_live_market_evaluation
+    orig_eval_rt = runtime_module.evaluate_authorized_live_runtime
+
+    def side_resolve(*args, **kwargs):
+        event_log.append("1. resolve_candidate")
+        return orig_resolve(*args, **kwargs)
+
+    def side_auth(*args, **kwargs):
+        event_log.append("2. authorize_runtime")
+        return orig_auth(*args, **kwargs)
+
+    def side_eval(*args, **kwargs):
+        event_log.append("4. create_live_market_evaluation")
+        return orig_eval(*args, **kwargs)
+
+    def side_eval_rt(*args, **kwargs):
+        event_log.append("5. evaluate_authorized_live_runtime")
+        return orig_eval_rt(*args, **kwargs)
+
+    with patch("src.evaluation.live_execution_runtime.resolve_authoritative_promoted_candidate", side_effect=side_resolve), \
+         patch("src.evaluation.live_execution_runtime.authorize_production_runtime", side_effect=side_auth), \
+         patch("src.evaluation.live_execution_runtime.create_live_market_evaluation", side_effect=side_eval), \
+         patch("src.evaluation.live_execution_runtime.evaluate_authorized_live_runtime", side_effect=side_eval_rt):
+
+        res = runtime.run_once(
+            publish=False,
+            persist=True,
+            reference_now=ref_now,
+            market_data_loader=loader_with_event,
+        )
+
+        assert res["blocked"] is False
+        assert res["decision"] == "BUY"
+        assert res["market_data"] is not None
+
+        expected_sequence = [
+            "1. resolve_candidate",
+            "2. authorize_runtime",
+            "3. acquire_market_snapshot",
+            "4. create_live_market_evaluation",
+            "5. evaluate_authorized_live_runtime",
+        ]
+        assert event_log == expected_sequence
+
+
+def test_acquisition_boundary_loader_exception_blocked(tmp_path) -> None:
+    """Scenario 2 & 7 & 8: market_data_loader exception converts to blocked=True, no decision, no persistence."""
+    config = production_config_for(tmp_path)
+    store_file = tmp_path / "store.json"
+    runtime = LiveExecutionRuntime(
+        symbol="XAUUSD",
+        interval="5m",
+        store_path=store_file,
+        snapshot_path=tmp_path / "snap.json",
+        research_dir=tmp_path,
+        production_config=config,
+    )
+
+    event_log: list[str] = []
+
+    def failing_loader():
+        event_log.append("acquire_market_snapshot_fail")
+        raise RuntimeError("Provider connection failed")
+
+    mock_publisher = MagicMock()
+
+    runtime.publisher = mock_publisher
+    with patch("src.evaluation.live_execution_runtime.evaluate_authorized_live_runtime") as mock_eval_rt:
+        res = runtime.run_once(
+            publish=True,
+            persist=True,
+            market_data_loader=failing_loader,
+        )
+
+        assert res["blocked"] is True
+        assert res["reason"] == "MARKET_DATA_ACQUISITION_FAILED"
+        assert res["detail"] == "Provider connection failed"
+        assert res["decision"] == "NO TRADE"
+        assert res["market_data"] is None
+        assert mock_eval_rt.call_count == 0
+        assert mock_publisher.publish.call_count == 0
+
+        # Verify no canonical decision record was appended to decision history store
+        assert not store_file.exists()
+
+
+def test_acquisition_boundary_loader_invalid_dataframe_blocked(tmp_path) -> None:
+    """Scenario 3: market_data_loader returning invalid DataFrame converts to blocked=True."""
+    config = production_config_for(tmp_path)
+    runtime = LiveExecutionRuntime(
+        symbol="XAUUSD",
+        interval="5m",
+        store_path=tmp_path / "store.json",
+        snapshot_path=tmp_path / "snap.json",
+        research_dir=tmp_path,
+        production_config=config,
+    )
+
+    # Loader returns empty DataFrame
+    res = runtime.run_once(publish=False, market_data_loader=lambda: pd.DataFrame())
+    assert res["blocked"] is True
+    assert res["reason"] == "MARKET_DATA_VALIDATION_FAILED"
+    assert res["decision"] == "NO TRADE"
+    assert res["market_data"] is None
+
+    # Loader returns DataFrame missing OHLC columns
+    res_bad_cols = runtime.run_once(publish=False, market_data_loader=lambda: pd.DataFrame({"foo": [1]}))
+    assert res_bad_cols["blocked"] is True
+    assert res_bad_cols["reason"] == "MARKET_DATA_VALIDATION_FAILED"
+    assert res_bad_cols["market_data"] is None
+
+
+def test_candidate_resolution_failure_prevents_loader_call(tmp_path) -> None:
+    """Scenario 5: Candidate resolution failure prevents loader execution."""
+    config = ProductionRuntimeConfig(
+        symbol="XAUUSD",
+        timeframe="5m",
+        candidate_id="nonexistent_candidate",
+        strategy_id="momentum",
+        research_dir=tmp_path,
+    )
+
+    runtime = LiveExecutionRuntime(
+        symbol="XAUUSD",
+        interval="5m",
+        store_path=tmp_path / "store.json",
+        snapshot_path=tmp_path / "snap.json",
+        research_dir=tmp_path,
+        production_config=config,
+    )
+
+    loader_called = False
+
+    def spy_loader():
+        nonlocal loader_called
+        loader_called = True
+        return make_buy_market_data()
+
+    res = runtime.run_once(publish=False, market_data_loader=spy_loader)
+
+    assert res["blocked"] is True
+    assert res["reason"] == "PromotionUnavailable"
+    assert loader_called is False
+    assert res["market_data"] is None
+
+
+def test_production_authorization_failure_prevents_loader_call(tmp_path) -> None:
+    """Scenario 6: Production authorization failure prevents loader execution."""
+    config = production_config_for(tmp_path)
+    runtime = LiveExecutionRuntime(
+        symbol="XAUUSD",
+        interval="5m",
+        store_path=tmp_path / "store.json",
+        snapshot_path=tmp_path / "snap.json",
+        research_dir=tmp_path,
+        production_config=config,
+    )
+
+    loader_called = False
+
+    def spy_loader():
+        nonlocal loader_called
+        loader_called = True
+        return make_buy_market_data()
+
+    from src.evaluation.live_production_decision import ProductionRuntimeAuthorizationError
+
+    with patch("src.evaluation.live_execution_runtime.authorize_production_runtime") as mock_auth:
+        mock_auth.side_effect = ProductionRuntimeAuthorizationError("Authorization rejected")
+
+        res = runtime.run_once(publish=False, market_data_loader=spy_loader)
+
+        assert res["blocked"] is True
+        assert res["reason"] == "ProductionRuntimeAuthorizationError"
+        assert res["detail"] == "Authorization rejected"
+        assert loader_called is False
+        assert res["market_data"] is None

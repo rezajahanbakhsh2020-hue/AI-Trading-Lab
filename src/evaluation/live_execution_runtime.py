@@ -544,10 +544,61 @@ class LiveExecutionRuntime:
 
         # 3. Acquire market data snapshot STRICTLY AFTER candidate resolution and runtime authorization
         if market_data is not None:
-            data = validate_and_prepare_market_snapshot(market_data, symbol=self.symbol)
+            try:
+                data = validate_and_prepare_market_snapshot(market_data, symbol=self.symbol)
+            except Exception as exc:
+                blocked = ProductionBlocked(
+                    reason="MARKET_DATA_VALIDATION_FAILED",
+                    detail=str(exc),
+                    candidate_id=candidate.candidate_id,
+                    strategy_id=candidate.strategy_name,
+                    symbol=self.symbol,
+                    timeframe=self.interval,
+                )
+                return self._blocked_result(
+                    blocked,
+                    persist=persist,
+                    publish=publish,
+                    skip_if_no_trade=skip_if_no_trade,
+                    reference_now=ref_now,
+                )
         elif market_data_loader is not None:
-            raw_data = market_data_loader()
-            data = validate_and_prepare_market_snapshot(raw_data, symbol=self.symbol)
+            try:
+                raw_data = market_data_loader()
+            except Exception as exc:
+                blocked = ProductionBlocked(
+                    reason="MARKET_DATA_ACQUISITION_FAILED",
+                    detail=str(exc),
+                    candidate_id=candidate.candidate_id,
+                    strategy_id=candidate.strategy_name,
+                    symbol=self.symbol,
+                    timeframe=self.interval,
+                )
+                return self._blocked_result(
+                    blocked,
+                    persist=persist,
+                    publish=publish,
+                    skip_if_no_trade=skip_if_no_trade,
+                    reference_now=ref_now,
+                )
+            try:
+                data = validate_and_prepare_market_snapshot(raw_data, symbol=self.symbol)
+            except Exception as exc:
+                blocked = ProductionBlocked(
+                    reason="MARKET_DATA_VALIDATION_FAILED",
+                    detail=str(exc),
+                    candidate_id=candidate.candidate_id,
+                    strategy_id=candidate.strategy_name,
+                    symbol=self.symbol,
+                    timeframe=self.interval,
+                )
+                return self._blocked_result(
+                    blocked,
+                    persist=persist,
+                    publish=publish,
+                    skip_if_no_trade=skip_if_no_trade,
+                    reference_now=ref_now,
+                )
         else:
             try:
                 data = load_live_market_data(
@@ -577,6 +628,38 @@ class LiveExecutionRuntime:
                     "message": str(exc),
                 }
                 return res
+            except ValueError as exc:
+                blocked = ProductionBlocked(
+                    reason="MARKET_DATA_VALIDATION_FAILED",
+                    detail=str(exc),
+                    candidate_id=candidate.candidate_id,
+                    strategy_id=candidate.strategy_name,
+                    symbol=self.symbol,
+                    timeframe=self.interval,
+                )
+                return self._blocked_result(
+                    blocked,
+                    persist=persist,
+                    publish=publish,
+                    skip_if_no_trade=skip_if_no_trade,
+                    reference_now=ref_now,
+                )
+            except Exception as exc:
+                blocked = ProductionBlocked(
+                    reason="MARKET_DATA_ACQUISITION_FAILED",
+                    detail=str(exc),
+                    candidate_id=candidate.candidate_id,
+                    strategy_id=candidate.strategy_name,
+                    symbol=self.symbol,
+                    timeframe=self.interval,
+                )
+                return self._blocked_result(
+                    blocked,
+                    persist=persist,
+                    publish=publish,
+                    skip_if_no_trade=skip_if_no_trade,
+                    reference_now=ref_now,
+                )
 
         # 4. Create authoritative LiveMarketEvaluation
         evaluation = create_live_market_evaluation(
