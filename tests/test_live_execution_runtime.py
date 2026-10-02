@@ -481,25 +481,29 @@ def test_live_execution_runtime_missing_invalid_timestamp_blocked(
     mock_load_data,
     tmp_path,
 ) -> None:
-    """Verify missing/invalid candle timestamps fail closed cleanly."""
-    df = make_buy_market_data()
-    # corrupt latest timestamp
-    df["timestamp"] = pd.NaT
-    mock_load_data.return_value = df
+    """Verify missing/invalid candle timestamps fail closed cleanly in market data validation stage."""
+    mock_load_data.side_effect = ValueError("No valid live market data available for XAUUSD.")
 
     mock_publisher = MagicMock()
+    store_file = tmp_path / "store.json"
     runtime = LiveExecutionRuntime(
         symbol="XAUUSD",
         interval="5m",
         publisher=mock_publisher,
-        store_path=tmp_path / "store.json",
+        store_path=store_file,
         snapshot_path=tmp_path / "snap.json",
         research_dir=tmp_path,
         production_config=production_config_for(tmp_path),
     )
 
-    with pytest.raises(ValueError, match="market_data_timestamp is required"):
-        runtime.run_once(publish=False, persist=True)
+    res = runtime.run_once(publish=False, persist=True)
+    assert res["blocked"] is True
+    assert res["reason"] == "MARKET_DATA_VALIDATION_FAILED"
+    assert res["detail"] == "No valid live market data available for XAUUSD."
+    assert res["decision"] == "NO TRADE"
+    assert res["market_data"] is None
+    assert not store_file.exists()
+    assert mock_publisher.publish.call_count == 0
 
 
 @patch("src.evaluation.live_execution_runtime.load_live_market_data")
@@ -1035,3 +1039,99 @@ def test_production_authorization_failure_prevents_loader_call(tmp_path) -> None
         assert res["detail"] == "Authorization rejected"
         assert loader_called is False
         assert res["market_data"] is None
+
+
+def test_market_evaluation_exception_blocked(tmp_path) -> None:
+    """Requirement 1 & 2 & 7: Exception in create_live_market_evaluation yields blocked=True, decision='NO TRADE', market_data=None, and evaluate_authorized_live_runtime is not reached."""
+    config = production_config_for(tmp_path)
+    store_file = tmp_path / "store.json"
+    runtime = LiveExecutionRuntime(
+        symbol="XAUUSD",
+        interval="5m",
+        store_path=store_file,
+        snapshot_path=tmp_path / "snap.json",
+        research_dir=tmp_path,
+        production_config=config,
+    )
+
+    df = make_buy_market_data()
+    mock_publisher = MagicMock()
+    runtime.publisher = mock_publisher
+
+    with patch("src.evaluation.live_execution_runtime.create_live_market_evaluation") as mock_create_eval, \
+         patch("src.evaluation.live_execution_runtime.evaluate_authorized_live_runtime") as mock_eval_rt:
+        mock_create_eval.side_effect = RuntimeError("Market evaluation error")
+
+        res = runtime.run_once(publish=True, persist=True, market_data=df)
+
+        assert res["blocked"] is True
+        assert res["reason"] == "LIVE_MARKET_EVALUATION_FAILED"
+        assert res["detail"] == "Market evaluation error"
+        assert res["decision"] == "NO TRADE"
+        assert res["market_data"] is None
+        assert mock_eval_rt.call_count == 0
+        assert mock_publisher.publish.call_count == 0
+        assert not store_file.exists()
+
+
+def test_runtime_evaluation_exception_blocked(tmp_path) -> None:
+    """Requirement 3 & 4 & 5 & 6 & 7: Exception in evaluate_authorized_live_runtime yields blocked=True, decision='NO TRADE', market_data=None, and does not construct publication, publish, or persist decision history."""
+    config = production_config_for(tmp_path)
+    store_file = tmp_path / "store.json"
+    runtime = LiveExecutionRuntime(
+        symbol="XAUUSD",
+        interval="5m",
+        store_path=store_file,
+        snapshot_path=tmp_path / "snap.json",
+        research_dir=tmp_path,
+        production_config=config,
+    )
+
+    df = make_buy_market_data()
+    mock_publisher = MagicMock()
+    runtime.publisher = mock_publisher
+
+    with patch("src.evaluation.live_execution_runtime.evaluate_authorized_live_runtime") as mock_eval_rt, \
+         patch("src.evaluation.live_production_decision.ProductionIntelligencePublication.from_artifacts") as mock_from_artifacts:
+        mock_eval_rt.side_effect = RuntimeError("Runtime evaluation error")
+
+        res = runtime.run_once(publish=True, persist=True, market_data=df)
+
+        assert res["blocked"] is True
+        assert res["reason"] == "LIVE_RUNTIME_EVALUATION_FAILED"
+        assert res["detail"] == "Runtime evaluation error"
+        assert res["decision"] == "NO TRADE"
+        assert res["market_data"] is None
+        assert mock_from_artifacts.call_count == 0
+        assert mock_publisher.publish.call_count == 0
+        assert not store_file.exists()
+
+
+def test_publication_construction_exception_blocked(tmp_path) -> None:
+    """Requirement Exception in from_artifacts yields blocked=True, decision='NO TRADE', market_data=None."""
+    config = production_config_for(tmp_path)
+    store_file = tmp_path / "store.json"
+    runtime = LiveExecutionRuntime(
+        symbol="XAUUSD",
+        interval="5m",
+        store_path=store_file,
+        snapshot_path=tmp_path / "snap.json",
+        research_dir=tmp_path,
+        production_config=config,
+    )
+
+    df = make_buy_market_data()
+    mock_publisher = MagicMock()
+    runtime.publisher = mock_publisher
+
+    with patch("src.evaluation.live_production_decision.ProductionIntelligencePublication.from_artifacts") as mock_from_artifacts:
+        mock_from_artifacts.side_effect = ValueError("Publication construction error")
+
+        res = runtime.run_once(publish=False, persist=True, market_data=df)
+
+        assert res["blocked"] is True
+        assert res["reason"] == "PUBLICATION_ARTIFACT_CONSTRUCTION_FAILED"
+        assert res["detail"] == "Publication construction error"
+        assert res["decision"] == "NO TRADE"
+        assert res["market_data"] is None
+        assert mock_publisher.publish.call_count == 0

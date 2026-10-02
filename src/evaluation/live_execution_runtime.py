@@ -662,58 +662,108 @@ class LiveExecutionRuntime:
                 )
 
         # 4. Create authoritative LiveMarketEvaluation
-        evaluation = create_live_market_evaluation(
-            data=data,
-            context=context,
-            reference_now=ref_now,
-            max_age_seconds=max_age,
-        )
+        try:
+            evaluation = create_live_market_evaluation(
+                data=data,
+                context=context,
+                reference_now=ref_now,
+                max_age_seconds=max_age,
+            )
+        except Exception as exc:
+            blocked = ProductionBlocked(
+                reason="LIVE_MARKET_EVALUATION_FAILED",
+                detail=str(exc),
+                candidate_id=candidate.candidate_id,
+                strategy_id=candidate.strategy_name,
+                symbol=self.symbol,
+                timeframe=self.interval,
+            )
+            return self._blocked_result(
+                blocked,
+                persist=persist,
+                publish=publish,
+                skip_if_no_trade=skip_if_no_trade,
+                reference_now=ref_now,
+            )
 
         # 5. Delegate directly to the ONE canonical downstream evaluation boundary
-        runtime_res = evaluate_authorized_live_runtime(
-            data=data,
-            evaluation=evaluation,
-            context=context,
-            stable_strategy=stable_strategy,
-            stability_score=stability_score,
-            min_stability_score=0.50,
-            store_path=self.store_path,
-            publisher=self.publisher,
-            publish=publish,
-            skip_if_no_trade=skip_if_no_trade,
-            persist=persist,
-            actor="live_execution_runtime",
-        )
+        try:
+            runtime_res = evaluate_authorized_live_runtime(
+                data=data,
+                evaluation=evaluation,
+                context=context,
+                stable_strategy=stable_strategy,
+                stability_score=stability_score,
+                min_stability_score=0.50,
+                store_path=self.store_path,
+                publisher=self.publisher,
+                publish=publish,
+                skip_if_no_trade=skip_if_no_trade,
+                persist=persist,
+                actor="live_execution_runtime",
+            )
+        except Exception as exc:
+            blocked = ProductionBlocked(
+                reason="LIVE_RUNTIME_EVALUATION_FAILED",
+                detail=str(exc),
+                candidate_id=candidate.candidate_id,
+                strategy_id=candidate.strategy_name,
+                symbol=self.symbol,
+                timeframe=self.interval,
+            )
+            return self._blocked_result(
+                blocked,
+                persist=persist,
+                publish=publish,
+                skip_if_no_trade=skip_if_no_trade,
+                reference_now=ref_now,
+            )
 
         canonical_cld = runtime_res.canonical_decision
         display = runtime_res.display
 
-        publication = ProductionIntelligencePublication.from_artifacts(
-            decision=canonical_cld.decision,
-            signal=canonical_cld.signal,
-            risk=canonical_cld.risk_levels,
-            candidate=candidate,
-            authorization=receipt,
-        )
+        try:
+            publication = ProductionIntelligencePublication.from_artifacts(
+                decision=canonical_cld.decision,
+                signal=canonical_cld.signal,
+                risk=canonical_cld.risk_levels,
+                candidate=candidate,
+                authorization=receipt,
+            )
+            record = build_live_decision_record(display)
+            record["decision_id"] = canonical_cld.decision.decision_id
+            record["signal_id"] = canonical_cld.signal.signal_id
+            record["canonical_live_decision_fingerprint"] = canonical_cld.canonical_live_decision_fingerprint
+            record["current_lifecycle_state"] = canonical_cld.current_state.value
+            record["runtime_authorization_fingerprint"] = receipt.authorization_fingerprint
+            record["authorization_policy_version"] = receipt.authorization_policy_version
+            record["authorized_at_utc"] = receipt.authorized_at_utc
+            record["promoted_artifact_fingerprint"] = receipt.promoted_artifact_fingerprint
+            record["governance_decision_fingerprint"] = receipt.governance_decision_fingerprint
+            record["campaign_selection_decision_fingerprint"] = receipt.campaign_selection_decision_fingerprint
+            record["candidate_id"] = receipt.candidate_id
+            record["strategy_name"] = receipt.strategy_name
+            record["strategy_version"] = receipt.strategy_version
+            record["context_fingerprint"] = context.context_fingerprint
+            record["evaluation_fingerprint"] = evaluation.evaluation_fingerprint
 
-        record = build_live_decision_record(display)
-        record["decision_id"] = canonical_cld.decision.decision_id
-        record["signal_id"] = canonical_cld.signal.signal_id
-        record["canonical_live_decision_fingerprint"] = canonical_cld.canonical_live_decision_fingerprint
-        record["current_lifecycle_state"] = canonical_cld.current_state.value
-        record["runtime_authorization_fingerprint"] = receipt.authorization_fingerprint
-        record["authorization_policy_version"] = receipt.authorization_policy_version
-        record["authorized_at_utc"] = receipt.authorized_at_utc
-        record["promoted_artifact_fingerprint"] = receipt.promoted_artifact_fingerprint
-        record["governance_decision_fingerprint"] = receipt.governance_decision_fingerprint
-        record["campaign_selection_decision_fingerprint"] = receipt.campaign_selection_decision_fingerprint
-        record["candidate_id"] = receipt.candidate_id
-        record["strategy_name"] = receipt.strategy_name
-        record["strategy_version"] = receipt.strategy_version
-        record["context_fingerprint"] = context.context_fingerprint
-        record["evaluation_fingerprint"] = evaluation.evaluation_fingerprint
-
-        contract_payload = publication.to_contract_v1_payload()
+            contract_payload = publication.to_contract_v1_payload()
+        except Exception as exc:
+            blocked = ProductionBlocked(
+                reason="PUBLICATION_ARTIFACT_CONSTRUCTION_FAILED",
+                detail=str(exc),
+                candidate_id=candidate.candidate_id,
+                strategy_id=candidate.strategy_name,
+                symbol=self.symbol,
+                timeframe=self.interval,
+            )
+            return self._blocked_result(
+                blocked,
+                persist=persist,
+                publish=publish,
+                skip_if_no_trade=skip_if_no_trade,
+                reference_now=ref_now,
+            )
 
         pub_res = runtime_res.decision.get("publish_result")
 
