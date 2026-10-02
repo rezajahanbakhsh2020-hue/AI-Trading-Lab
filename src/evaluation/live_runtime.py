@@ -273,65 +273,102 @@ def evaluate_authorized_live_runtime(
                 pub_ts_now = cld_last_ts
         except Exception:
             pass
-        published_dec, _, pub_res = publish_canonical_live_decision(
-            final_cld,
-            publisher=publisher,
-            candidate=resolved_candidate,
-            path=pub_store_path,
-            skip_if_no_trade=skip_if_no_trade,
-            actor=actor,
-            timestamp_utc=pub_ts_now,
-        )
-        final_cld = published_dec
-        pub_result = pub_res
+        try:
+            published_dec, _, pub_res = publish_canonical_live_decision(
+                final_cld,
+                publisher=publisher,
+                candidate=resolved_candidate,
+                path=pub_store_path,
+                skip_if_no_trade=skip_if_no_trade,
+                actor=actor,
+                timestamp_utc=pub_ts_now,
+            )
+            final_cld = published_dec
+            pub_result = pub_res
+        except Exception as exc:
+            pub_result = {
+                "status": "FAILED",
+                "published": False,
+                "reason": f"Publication boundary exception: {exc}",
+                "error": str(exc),
+                "delivery_status": "FAILED_PERMANENT",
+                "current_lifecycle_state": final_cld.current_state.value,
+            }
 
     # Presentation display consumer
-    if evaluation.fresh:
-        display = build_live_trade_display(
-            data,
-            canonical_decision=final_cld,
-            stable_strategy=stable_strategy,
-            stability_score=effective_stability_score,
-            min_stability_score=min_stability_score,
-            symbol=symbol,
-            interval=interval,
-        )
-        display["quote_stale"] = False
-        display["quote_age_seconds"] = evaluation.age_seconds
-    else:
+    try:
+        if evaluation.fresh:
+            display = build_live_trade_display(
+                data,
+                canonical_decision=final_cld,
+                stable_strategy=stable_strategy,
+                stability_score=effective_stability_score,
+                min_stability_score=min_stability_score,
+                symbol=symbol,
+                interval=interval,
+            )
+            display["quote_stale"] = False
+            display["quote_age_seconds"] = evaluation.age_seconds
+        else:
+            display = {
+                "symbol": symbol,
+                "interval": interval,
+                "decision": "NO TRADE",
+                "reason": evaluation.freshness_reason,
+                "stable_strategy": str(stable_strategy),
+                "stability_score": effective_stability_score,
+                "strategy_supported": str(stable_strategy) == "momentum",
+                "signal": 0,
+                "signal_label": "NO TRADE",
+                "trend": "NEUTRAL",
+                "momentum": None,
+                "entry_price": None,
+                "stop_loss": None,
+                "tp1": None,
+                "tp2": None,
+                "tp3": None,
+                "take_profit": None,
+                "risk_distance": None,
+                "risk_reward_ratio": None,
+                "risk_reward_tp1": None,
+                "risk_reward_tp2": None,
+                "risk_reward_tp3": None,
+                "stop_loss_pct": None,
+                "take_profit_pct": None,
+                "tp1_multiplier": None,
+                "tp2_multiplier": None,
+                "tp3_multiplier": None,
+                "momentum_window": None,
+                "fast_window": None,
+                "slow_window": None,
+                "timestamp": evaluation.candle_timestamp_utc,
+                "quote_stale": True,
+                "quote_age_seconds": evaluation.age_seconds,
+            }
+    except Exception:
         display = {
             "symbol": symbol,
             "interval": interval,
-            "decision": "NO TRADE",
-            "reason": evaluation.freshness_reason,
+            "decision": final_decision_obj.direction.value,
+            "reason": final_decision_obj.reason,
             "stable_strategy": str(stable_strategy),
             "stability_score": effective_stability_score,
             "strategy_supported": str(stable_strategy) == "momentum",
-            "signal": 0,
-            "signal_label": "NO TRADE",
-            "trend": "NEUTRAL",
-            "momentum": None,
-            "entry_price": None,
-            "stop_loss": None,
-            "tp1": None,
-            "tp2": None,
-            "tp3": None,
-            "take_profit": None,
-            "risk_distance": None,
-            "risk_reward_ratio": None,
-            "risk_reward_tp1": None,
-            "risk_reward_tp2": None,
-            "risk_reward_tp3": None,
-            "stop_loss_pct": None,
-            "take_profit_pct": None,
-            "tp1_multiplier": None,
-            "tp2_multiplier": None,
-            "tp3_multiplier": None,
-            "momentum_window": None,
-            "fast_window": None,
-            "slow_window": None,
-            "timestamp": evaluation.candle_timestamp_utc,
-            "quote_stale": True,
+            "signal": sig_val if (evaluation.fresh and stable_strategy == "momentum") else 0,
+            "signal_label": final_decision_obj.direction.value,
+            "trend": str(trend_val),
+            "momentum": float(data["close"].iloc[-1]) if (evaluation.fresh and "close" in data.columns) else None,
+            "entry_price": risk_obj.entry_price,
+            "stop_loss": risk_obj.stop_loss,
+            "take_profit": risk_obj.tp2 if risk_obj.tp2 is not None else risk_obj.tp1,
+            "risk_reward_ratio": risk_obj.risk_reward_ratio,
+            "stop_loss_pct": resolved_candidate.parameters.get("stop_loss_pct"),
+            "take_profit_pct": resolved_candidate.parameters.get("take_profit_pct"),
+            "momentum_window": eff_window,
+            "fast_window": 20,
+            "slow_window": 50,
+            "timestamp": final_decision_obj.market_timestamp,
+            "quote_stale": not evaluation.fresh,
             "quote_age_seconds": evaluation.age_seconds,
         }
 

@@ -266,16 +266,24 @@ def publish_canonical_live_decision(
 
     # Invoke publisher
     publish_result = None
-    if publisher is not None and hasattr(publisher, "publish"):
-        publish_result = publisher.publish(
-            publication,
-            skip_if_no_trade=skip_if_no_trade,
-        )
-    elif publisher is None:
+    try:
+        if publisher is not None and hasattr(publisher, "publish"):
+            publish_result = publisher.publish(
+                publication,
+                skip_if_no_trade=skip_if_no_trade,
+            )
+        elif publisher is None:
+            publish_result = {
+                "status": "SKIPPED_DISABLED",
+                "published": False,
+                "reason": "Publisher is None",
+            }
+    except Exception as exc:
         publish_result = {
-            "status": "SKIPPED_DISABLED",
+            "status": "FAILED",
             "published": False,
-            "reason": "Publisher is None",
+            "reason": f"Publisher exception: {exc}",
+            "error": str(exc),
         }
 
     # Map publisher result to DeliveryStatus
