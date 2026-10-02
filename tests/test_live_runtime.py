@@ -91,6 +91,57 @@ def test_live_runtime_rejects_non_dataframe():
         )
 
 
+from unittest.mock import MagicMock, patch
+
+def test_evaluate_authorized_live_runtime_publication_exception_handled(tmp_path):
+    df = _data()
+    ref_now = pd.to_datetime(df["timestamp"], utc=True).iloc[-1].to_pydatetime()
+    mock_publisher = MagicMock()
+    mock_publisher.publish.side_effect = RuntimeError("Publisher network fault")
+
+    result = build_live_runtime(
+        data=df,
+        stable_strategy="momentum",
+        stability_score=None,
+        symbol="XAUUSD",
+        interval="5m",
+        reference_now=ref_now,
+        store_path=tmp_path / "store.json",
+        publisher=mock_publisher,
+        publish=True,
+    )
+
+    assert result.canonical_decision is not None
+    assert result.canonical_decision.current_state.value == "PERSISTED"
+    assert result.decision["decision"] == "BUY"
+    assert "publish_result" in result.decision
+    assert result.decision["publish_result"]["status"] == "FAILED"
+    assert "Publisher network fault" in str(result.decision["publish_result"]["error"])
+
+
+def test_evaluate_authorized_live_runtime_display_exception_handled(tmp_path):
+    df = _data()
+    ref_now = pd.to_datetime(df["timestamp"], utc=True).iloc[-1].to_pydatetime()
+
+    with patch("src.evaluation.live_runtime.build_live_trade_display") as mock_display:
+        mock_display.side_effect = RuntimeError("Display formatting error")
+
+        result = build_live_runtime(
+            data=df,
+            stable_strategy="momentum",
+            stability_score=None,
+            symbol="XAUUSD",
+            interval="5m",
+            reference_now=ref_now,
+            store_path=tmp_path / "store.json",
+        )
+
+        assert result.canonical_decision is not None
+        assert result.canonical_decision.current_state.value == "PERSISTED"
+        assert result.decision["decision"] == "BUY"
+        assert result.display["decision"] == "BUY"
+
+
 def test_live_runtime_rejects_empty_dataframe():
     with pytest.raises(
         ValueError,

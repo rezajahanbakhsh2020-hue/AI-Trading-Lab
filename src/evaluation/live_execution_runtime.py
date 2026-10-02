@@ -721,6 +721,11 @@ class LiveExecutionRuntime:
 
         canonical_cld = runtime_res.canonical_decision
         display = runtime_res.display
+        pub_res = runtime_res.decision.get("publish_result")
+
+        record = None
+        publication_dict = None
+        contract_payload = None
 
         try:
             publication = ProductionIntelligencePublication.from_artifacts(
@@ -730,42 +735,35 @@ class LiveExecutionRuntime:
                 candidate=candidate,
                 authorization=receipt,
             )
-            record = build_live_decision_record(display)
-            record["decision_id"] = canonical_cld.decision.decision_id
-            record["signal_id"] = canonical_cld.signal.signal_id
-            record["canonical_live_decision_fingerprint"] = canonical_cld.canonical_live_decision_fingerprint
-            record["current_lifecycle_state"] = canonical_cld.current_state.value
-            record["runtime_authorization_fingerprint"] = receipt.authorization_fingerprint
-            record["authorization_policy_version"] = receipt.authorization_policy_version
-            record["authorized_at_utc"] = receipt.authorized_at_utc
-            record["promoted_artifact_fingerprint"] = receipt.promoted_artifact_fingerprint
-            record["governance_decision_fingerprint"] = receipt.governance_decision_fingerprint
-            record["campaign_selection_decision_fingerprint"] = receipt.campaign_selection_decision_fingerprint
-            record["candidate_id"] = receipt.candidate_id
-            record["strategy_name"] = receipt.strategy_name
-            record["strategy_version"] = receipt.strategy_version
-            record["context_fingerprint"] = context.context_fingerprint
-            record["evaluation_fingerprint"] = evaluation.evaluation_fingerprint
-
+            publication_dict = publication.as_dict()
             contract_payload = publication.to_contract_v1_payload()
-        except Exception as exc:
-            blocked = ProductionBlocked(
-                reason="PUBLICATION_ARTIFACT_CONSTRUCTION_FAILED",
-                detail=str(exc),
-                candidate_id=candidate.candidate_id,
-                strategy_id=candidate.strategy_name,
-                symbol=self.symbol,
-                timeframe=self.interval,
-            )
-            return self._blocked_result(
-                blocked,
-                persist=persist,
-                publish=publish,
-                skip_if_no_trade=skip_if_no_trade,
-                reference_now=ref_now,
-            )
 
-        pub_res = runtime_res.decision.get("publish_result")
+            rec = build_live_decision_record(display)
+            rec["decision_id"] = canonical_cld.decision.decision_id
+            rec["signal_id"] = canonical_cld.signal.signal_id
+            rec["canonical_live_decision_fingerprint"] = canonical_cld.canonical_live_decision_fingerprint
+            rec["current_lifecycle_state"] = canonical_cld.current_state.value
+            rec["runtime_authorization_fingerprint"] = receipt.authorization_fingerprint
+            rec["authorization_policy_version"] = receipt.authorization_policy_version
+            rec["authorized_at_utc"] = receipt.authorized_at_utc
+            rec["promoted_artifact_fingerprint"] = receipt.promoted_artifact_fingerprint
+            rec["governance_decision_fingerprint"] = receipt.governance_decision_fingerprint
+            rec["campaign_selection_decision_fingerprint"] = receipt.campaign_selection_decision_fingerprint
+            rec["candidate_id"] = receipt.candidate_id
+            rec["strategy_name"] = receipt.strategy_name
+            rec["strategy_version"] = receipt.strategy_version
+            rec["context_fingerprint"] = context.context_fingerprint
+            rec["evaluation_fingerprint"] = evaluation.evaluation_fingerprint
+            record = rec
+        except Exception as exc:
+            if pub_res is None:
+                pub_res = {
+                    "status": "FAILED",
+                    "published": False,
+                    "reason": "PUBLICATION_ARTIFACT_CONSTRUCTION_FAILED",
+                    "error": str(exc),
+                    "detail": str(exc),
+                }
 
         execution_result = {
             "blocked": False,
@@ -791,7 +789,7 @@ class LiveExecutionRuntime:
             "delivery_status": pub_res.get("delivery_status") if pub_res else None,
             "delivery_receipt_fingerprint": pub_res.get("delivery_receipt_fingerprint") if pub_res else None,
             "record": record,
-            "publication": publication.as_dict(),
+            "publication": publication_dict,
             "contract_payload": contract_payload,
             "publish_result": pub_res,
             "market_data": data.copy(),

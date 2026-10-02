@@ -1107,8 +1107,8 @@ def test_runtime_evaluation_exception_blocked(tmp_path) -> None:
         assert not store_file.exists()
 
 
-def test_publication_construction_exception_blocked(tmp_path) -> None:
-    """Requirement Exception in from_artifacts yields blocked=True, decision='NO TRADE', market_data=None."""
+def test_publication_construction_exception_preserves_persisted_decision(tmp_path) -> None:
+    """Requirement: Exception in from_artifacts after successful persistence preserves blocked=False and persisted decision."""
     config = production_config_for(tmp_path)
     store_file = tmp_path / "store.json"
     runtime = LiveExecutionRuntime(
@@ -1121,17 +1121,108 @@ def test_publication_construction_exception_blocked(tmp_path) -> None:
     )
 
     df = make_buy_market_data()
-    mock_publisher = MagicMock()
-    runtime.publisher = mock_publisher
+    ref_now = pd.to_datetime(df["openTime"], utc=True).iloc[-1].to_pydatetime()
 
     with patch("src.evaluation.live_production_decision.ProductionIntelligencePublication.from_artifacts") as mock_from_artifacts:
         mock_from_artifacts.side_effect = ValueError("Publication construction error")
 
-        res = runtime.run_once(publish=False, persist=True, market_data=df)
+        res = runtime.run_once(publish=False, persist=True, market_data=df, reference_now=ref_now)
+
+        assert res["blocked"] is False
+        assert res["decision"] == "BUY"
+        assert res["current_lifecycle_state"] == "PERSISTED"
+        assert res["publish_result"]["status"] == "FAILED"
+        assert "Publication construction error" in res["publish_result"]["error"]
+        assert store_file.exists()
+        history = json.loads(store_file.read_text())
+        assert len(history) == 1
+        assert history[0]["signal_label"] == "BUY"
+
+
+def test_failure_before_persistence_yields_blocked_no_trade_no_history(tmp_path) -> None:
+    """Mandatory Test Scenario 1: Failure before persistence yields blocked=True, NO TRADE, no decision history."""
+    config = production_config_for(tmp_path)
+    store_file = tmp_path / "store.json"
+    runtime = LiveExecutionRuntime(
+        symbol="XAUUSD",
+        interval="5m",
+        store_path=store_file,
+        snapshot_path=tmp_path / "snap.json",
+        research_dir=tmp_path,
+        production_config=config,
+    )
+
+    df = make_buy_market_data()
+    ref_now = pd.to_datetime(df["openTime"], utc=True).iloc[-1].to_pydatetime()
+
+    # Trigger exception in strategy evaluation BEFORE persistence
+    with patch("src.evaluation.live_runtime.evaluate_production_decision") as mock_eval_dec:
+        mock_eval_dec.side_effect = ValueError("Strategy evaluation failure before persistence")
+
+        res = runtime.run_once(publish=True, persist=True, market_data=df, reference_now=ref_now)
 
         assert res["blocked"] is True
-        assert res["reason"] == "PUBLICATION_ARTIFACT_CONSTRUCTION_FAILED"
-        assert res["detail"] == "Publication construction error"
         assert res["decision"] == "NO TRADE"
-        assert res["market_data"] is None
-        assert mock_publisher.publish.call_count == 0
+        assert not store_file.exists()
+
+
+def test_failure_during_publication_after_persistence_preserves_persisted_decision(tmp_path) -> None:
+    """Mandatory Test Scenario 2: Failure during publication after successful persistence preserves decision and blocked=False."""
+    config = production_config_for(tmp_path)
+    store_file = tmp_path / "store.json"
+    mock_publisher = MagicMock()
+    mock_publisher.publish.side_effect = RuntimeError("Publisher network connection error")
+
+    runtime = LiveExecutionRuntime(
+        symbol="XAUUSD",
+        interval="5m",
+        publisher=mock_publisher,
+        store_path=store_file,
+        snapshot_path=tmp_path / "snap.json",
+        research_dir=tmp_path,
+        production_config=config,
+    )
+
+    df = make_buy_market_data()
+    ref_now = pd.to_datetime(df["openTime"], utc=True).iloc[-1].to_pydatetime()
+
+    res = runtime.run_once(publish=True, persist=True, market_data=df, reference_now=ref_now)
+
+    # 1. Canonical decision really persisted in decision_history.json
+    assert store_file.exists()
+    history = json.loads(store_file.read_text())
+    assert len(history) == 1
+    assert history[0]["signal_label"] == "BUY"
+
+    # 2. Result is NOT blocked=True / NO TRADE
+    assert res["blocked"] is False
+    assert res["decision"] == "BUY"
+    assert res["current_lifecycle_state"] == "PERSISTED"
+    assert res["publish_result"]["status"] == "FAILED"
+    assert "Publisher network connection error" in str(res["publish_result"]["error"])
+
+
+def test_no_blocked_true_with_persisted_decision_invariant(tmp_path) -> None:
+    """Mandatory Test Scenario 5: Explicit proof that no state of blocked=True + persisted normal canonical decision ever occurs."""
+    config = production_config_for(tmp_path)
+    store_file = tmp_path / "store.json"
+    mock_publisher = MagicMock()
+    mock_publisher.publish.side_effect = RuntimeError("Outbound transport failure")
+
+    runtime = LiveExecutionRuntime(
+        symbol="XAUUSD",
+        interval="5m",
+        publisher=mock_publisher,
+        store_path=store_file,
+        snapshot_path=tmp_path / "snap.json",
+        research_dir=tmp_path,
+        production_config=config,
+    )
+
+    df = make_buy_market_data()
+    ref_now = pd.to_datetime(df["openTime"], utc=True).iloc[-1].to_pydatetime()
+
+    res = runtime.run_once(publish=True, persist=True, market_data=df, reference_now=ref_now)
+
+    if store_file.exists() and len(json.loads(store_file.read_text())) > 0:
+        assert res["blocked"] is False, "Forbidden state: decision is persisted in store but returned result claims blocked=True!"
