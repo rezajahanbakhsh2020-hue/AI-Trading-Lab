@@ -11,8 +11,10 @@ from app_live import (
     fetch_xauusd_quote,
 )
 from app_live_trade_display import _build_chart
-from src.evaluation.live_runtime import build_live_runtime
-from src.evaluation.production_live_bridge import load_production_selection
+from src.evaluation.live_execution_runtime import (
+    LiveExecutionRuntime,
+    ProductionRuntimeConfig,
+)
 from src.visualization.live_trade_overlay import build_live_trade_overlay
 
 
@@ -35,32 +37,51 @@ def run_live_end_to_end_proof() -> dict[str, Any]:
 
     quote = fetch_xauusd_quote()
 
-    selection = load_production_selection()
+    config = ProductionRuntimeConfig(
+        symbol=SYMBOL,
+        timeframe=INTERVAL,
+    )
 
-    stable_strategy = selection.get("stable_strategy")
-    stability_score = selection.get("stability_score")
-
-    if not stable_strategy:
-        raise ValueError(
-            "Production selection does not contain a stable strategy."
-        )
-
-    if stability_score is None:
-        raise ValueError(
-            "Production selection does not contain a stability score."
-        )
-
-    runtime = build_live_runtime(
-        data,
-        stable_strategy=str(stable_strategy),
-        stability_score=float(stability_score),
+    runtime = LiveExecutionRuntime(
         symbol=SYMBOL,
         interval=INTERVAL,
+        limit=LIMIT,
+        production_config=config,
     )
+
+    runtime_res = runtime.run_once(
+        publish=False,
+        persist=True,
+    )
+
+    if runtime_res.get("blocked"):
+        reason = runtime_res.get("reason", "UNKNOWN_BLOCKED_REASON")
+        detail = runtime_res.get("detail", "No promoted candidate or runtime authorization available.")
+        raise RuntimeError(
+            f"Live execution runtime blocked: {reason} - {detail}"
+        )
+
+    record = runtime_res.get("record") or {}
+    publication = runtime_res.get("publication") or {}
+
+    display_dict = {
+        "decision": runtime_res.get("decision"),
+        "entry_price": publication.get("entry"),
+        "stop_loss": publication.get("stop_loss"),
+        "tp1": publication.get("tp1"),
+        "tp2": publication.get("tp2"),
+        "tp3": publication.get("tp3"),
+        "stable_strategy": runtime_res.get("strategy"),
+        "stability_score": runtime_res.get("stability_score"),
+        "symbol": SYMBOL,
+        "interval": INTERVAL,
+        "trend": record.get("trend"),
+        "signal_label": record.get("signal_label"),
+    }
 
     overlay = build_live_trade_overlay(
         data,
-        runtime.display,
+        display_dict,
     )
 
     figure = _build_chart(
@@ -93,12 +114,12 @@ def run_live_end_to_end_proof() -> dict[str, Any]:
         "symbol": SYMBOL,
         "interval": INTERVAL,
         "candle_count": len(data),
-        "stable_strategy": str(stable_strategy),
-        "stability_score": float(stability_score),
-        "decision": runtime.decision["decision"],
-        "signal": runtime.decision["signal"],
-        "signal_label": runtime.decision["signal_label"],
-        "trend": runtime.decision["trend"],
+        "stable_strategy": str(runtime_res.get("strategy")) if runtime_res.get("strategy") is not None else None,
+        "stability_score": float(runtime_res.get("stability_score")) if runtime_res.get("stability_score") is not None else None,
+        "decision": runtime_res.get("decision"),
+        "signal": record.get("signal"),
+        "signal_label": record.get("signal_label"),
+        "trend": record.get("trend"),
         "entry": overlay["levels"].get("entry"),
         "stop_loss": overlay["levels"].get("stop_loss"),
         "tp1": overlay["levels"].get("tp1"),
@@ -107,14 +128,19 @@ def run_live_end_to_end_proof() -> dict[str, Any]:
         "live_mid": quote.get("mid"),
         "market_state": quote.get("marketState"),
         "quote_stale": quote.get("stale"),
-        "quote_age_seconds": quote.get(
-            "quoteAgeSeconds"
-        ),
-        "production_source": selection.get(
-            "source_path"
-        ),
+        "quote_age_seconds": quote.get("quoteAgeSeconds"),
         "html_path": str(OUTPUT_HTML),
         "end_to_end_passed": True,
+        "candidate_id": runtime_res.get("candidate_id"),
+        "evidence_id": runtime_res.get("evidence_id"),
+        "decision_id": record.get("decision_id"),
+        "runtime_authorization_fingerprint": runtime_res.get("runtime_authorization_fingerprint"),
+        "promoted_artifact_fingerprint": runtime_res.get("promoted_artifact_fingerprint"),
+        "governance_decision_fingerprint": runtime_res.get("governance_decision_fingerprint"),
+        "campaign_selection_decision_fingerprint": runtime_res.get("campaign_selection_decision_fingerprint"),
+        "canonical_live_decision_fingerprint": record.get("canonical_live_decision_fingerprint"),
+        "context_fingerprint": runtime_res.get("context_fingerprint"),
+        "evaluation_fingerprint": runtime_res.get("evaluation_fingerprint"),
     }
 
     OUTPUT_JSON.write_text(
