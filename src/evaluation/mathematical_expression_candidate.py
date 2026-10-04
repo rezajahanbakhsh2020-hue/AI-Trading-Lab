@@ -1,0 +1,599 @@
+"""Canonical Research-Only Mathematical Expression Candidate & Signal Policy.
+
+Provides immutable representations for mathematical strategy candidates,
+canonical sign interpretation policies, search-space pre-validation,
+and bridge methods to create governed ResearchHypothesis instances.
+"""
+
+from __future__ import annotations
+
+import hashlib
+import json
+import math
+from dataclasses import dataclass, field
+from typing import Any, Dict, Tuple
+
+import pandas as pd
+
+from src.evaluation.mathematical_expression import (
+    MathematicalExpression,
+    MathematicalExpressionError,
+    MathematicalSearchSpace,
+    SearchSpaceValidationError,
+    _float_to_lossless_str,
+)
+from src.evaluation.hypothesis_generator import accept_hypothesis_for_research
+from src.evaluation.mathematical_expression_strategy import create_mathematical_research_registry
+from src.evaluation.research_constitution import (
+    CodeProvenance,
+    DatasetScope,
+    ExecutionAssumptions,
+    HypothesisStatus,
+    ResearchEvidence,
+    ResearchHypothesis,
+    WalkForwardProtocol,
+)
+from src.evaluation.research_runner import DiscoveryCriteria, run_research_experiment
+
+
+class MathematicalCandidateValidationError(MathematicalExpressionError):
+    """Raised when a mathematical candidate fails governance pre-validation or lineage checks."""
+
+
+@dataclass(frozen=True)
+class MathematicalSignalInterpretationPolicy:
+    """Canonical immutable sign policy for converting expression outputs to trading signals.
+
+    Canonical Rules:
+        expression_value > 0  => LONG (+1)
+        expression_value < 0  => SHORT (-1)
+        expression_value == 0 => NO TRADE (0)
+
+    Fails closed on NaN, Inf, or non-finite inputs.
+    """
+
+    policy_name: str = "SIGN_POLICY"
+    version: str = "1.0"
+
+    def __post_init__(self) -> None:
+        if not self.policy_name or not isinstance(self.policy_name, str) or not self.policy_name.strip():
+            raise MathematicalCandidateValidationError("policy_name must be a non-empty string.")
+        if not self.version or not isinstance(self.version, str) or not self.version.strip():
+            raise MathematicalCandidateValidationError("version must be a non-empty string.")
+
+    def evaluate_value(self, val: float) -> int:
+        """Evaluate a single numeric value into signal {-1, 0, 1}."""
+        f_val = float(val)
+        if math.isnan(f_val) or math.isinf(f_val):
+            raise MathematicalCandidateValidationError(f"Non-finite evaluation value rejected by signal policy: {val}")
+
+        if f_val > 0.0:
+            return 1
+        elif f_val < 0.0:
+            return -1
+        else:
+            return 0
+
+    def evaluate_series(self, series: pd.Series) -> pd.Series:
+        """Evaluate a Series into integer signal series {-1, 0, 1}."""
+        if not isinstance(series, pd.Series):
+            raise TypeError(f"series must be a pandas Series, got {type(series)}")
+
+        if series.isna().any() or series.map(lambda x: math.isinf(float(x)) if pd.notna(x) else False).any():
+            raise MathematicalCandidateValidationError("Non-finite values encountered during Series signal evaluation.")
+
+        signals = pd.Series(0, index=series.index, dtype=int)
+        signals.loc[series > 0.0] = 1
+        signals.loc[series < 0.0] = -1
+        return signals
+
+    def to_canonical_dict(self) -> Dict[str, Any]:
+        """Convert policy to deterministic, ordered canonical dictionary."""
+        return {
+            "policy_name": self.policy_name,
+            "version": self.version,
+        }
+
+    def to_canonical_json(self) -> str:
+        """Serialize policy to deterministic canonical JSON string."""
+        return json.dumps(self.to_canonical_dict(), sort_keys=True, separators=(",", ":"))
+
+    @property
+    def fingerprint(self) -> str:
+        """Deterministic SHA-256 fingerprint computed across canonical serialization."""
+        return hashlib.sha256(self.to_canonical_json().encode("utf-8")).hexdigest()
+
+    @classmethod
+    def from_canonical_dict(cls, data: Dict[str, Any]) -> MathematicalSignalInterpretationPolicy:
+        """Reconstruct policy from canonical dictionary."""
+        return cls(
+            policy_name=data.get("policy_name", "SIGN_POLICY"),
+            version=data.get("version", "1.0"),
+        )
+
+
+@dataclass(frozen=True)
+class MathematicalExpressionCandidate:
+    """Research-only mathematical candidate binding AST, search space, and signal policy.
+
+    Guarantees deterministic identity across expression structure, search space constitution,
+    signal policy, generator metadata, and complete research lineage.
+    """
+
+    expression: MathematicalExpression
+    search_space: MathematicalSearchSpace
+    signal_policy: MathematicalSignalInterpretationPolicy
+    dataset_scope: DatasetScope
+    execution_assumptions: ExecutionAssumptions
+    code_provenance: CodeProvenance
+    generator_id: str = "manual"
+    generator_version: str = "1.0"
+    random_seed: int = 0
+    version: str = "1.0"
+    candidate_id: str = field(init=False)
+    fingerprint: str = field(init=False)
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.expression, MathematicalExpression):
+            raise TypeError(f"expression must be MathematicalExpression, got {type(self.expression)}")
+        if not isinstance(self.search_space, MathematicalSearchSpace):
+            raise TypeError(f"search_space must be MathematicalSearchSpace, got {type(self.search_space)}")
+        if not isinstance(self.signal_policy, MathematicalSignalInterpretationPolicy):
+            raise TypeError(f"signal_policy must be MathematicalSignalInterpretationPolicy, got {type(self.signal_policy)}")
+        if not isinstance(self.dataset_scope, DatasetScope):
+            raise TypeError(f"dataset_scope must be DatasetScope, got {type(self.dataset_scope)}")
+        if not isinstance(self.execution_assumptions, ExecutionAssumptions):
+            raise TypeError(f"execution_assumptions must be ExecutionAssumptions, got {type(self.execution_assumptions)}")
+        if not isinstance(self.code_provenance, CodeProvenance):
+            raise TypeError(f"code_provenance must be CodeProvenance, got {type(self.code_provenance)}")
+
+        if not self.generator_id or not isinstance(self.generator_id, str) or not self.generator_id.strip():
+            raise MathematicalCandidateValidationError("generator_id must be a non-empty string.")
+        if not self.generator_version or not isinstance(self.generator_version, str) or not self.generator_version.strip():
+            raise MathematicalCandidateValidationError("generator_version must be a non-empty string.")
+        if not isinstance(self.random_seed, int) or isinstance(self.random_seed, bool):
+            raise MathematicalCandidateValidationError("random_seed must be an integer.")
+        if not self.version or not isinstance(self.version, str) or not self.version.strip():
+            raise MathematicalCandidateValidationError("version must be a non-empty string.")
+
+        # Compute canonical serialization and fingerprint
+        canonical_dict = self.to_canonical_dict()
+        serialized = json.dumps(canonical_dict, sort_keys=True, separators=(",", ":"))
+        fp = hashlib.sha256(serialized.encode("utf-8")).hexdigest()
+        object.__setattr__(self, "fingerprint", fp)
+        object.__setattr__(self, "candidate_id", f"math_cand_{fp[:16]}")
+
+    def validate(self) -> None:
+        """Perform authoritative pre-execution governance validation.
+
+        Enforces:
+        - Expression validation against search space constitutional constraints
+        - Strict DatasetScope, ExecutionAssumptions, and CodeProvenance lineage consistency
+        """
+        # 1. Search space constitution check
+        self.search_space.validate_expression(self.expression)
+
+        # 2. Lineage agreement check
+        if self.search_space.dataset_scope is not None and self.search_space.dataset_scope != self.dataset_scope:
+            raise MathematicalCandidateValidationError(
+                f"Candidate DatasetScope ({self.dataset_scope}) does not match SearchSpace DatasetScope ({self.search_space.dataset_scope})."
+            )
+        if self.expression.dataset_scope is not None and self.expression.dataset_scope != self.dataset_scope:
+            raise MathematicalCandidateValidationError(
+                f"Candidate DatasetScope ({self.dataset_scope}) does not match Expression DatasetScope ({self.expression.dataset_scope})."
+            )
+
+        if self.search_space.execution_assumptions is not None and self.search_space.execution_assumptions != self.execution_assumptions:
+            raise MathematicalCandidateValidationError(
+                f"Candidate ExecutionAssumptions ({self.execution_assumptions}) does not match SearchSpace ExecutionAssumptions ({self.search_space.execution_assumptions})."
+            )
+        if self.expression.execution_assumptions is not None and self.expression.execution_assumptions != self.execution_assumptions:
+            raise MathematicalCandidateValidationError(
+                f"Candidate ExecutionAssumptions ({self.execution_assumptions}) does not match Expression ExecutionAssumptions ({self.expression.execution_assumptions})."
+            )
+
+        if self.search_space.code_provenance is not None and self.search_space.code_provenance != self.code_provenance:
+            raise MathematicalCandidateValidationError(
+                f"Candidate CodeProvenance ({self.code_provenance}) does not match SearchSpace CodeProvenance ({self.search_space.code_provenance})."
+            )
+        if self.expression.code_provenance is not None and self.expression.code_provenance != self.code_provenance:
+            raise MathematicalCandidateValidationError(
+                f"Candidate CodeProvenance ({self.code_provenance}) does not match Expression CodeProvenance ({self.expression.code_provenance})."
+            )
+
+    @staticmethod
+    def compute_canonical_dict(
+        *,
+        version: str,
+        expression_dict: Dict[str, Any],
+        expression_fingerprint: str,
+        search_space_fingerprint: str,
+        signal_policy_dict: Dict[str, Any],
+        signal_policy_fingerprint: str,
+        generator_id: str,
+        generator_version: str,
+        random_seed: int,
+        dataset_scope: DatasetScope,
+        execution_assumptions: ExecutionAssumptions,
+        code_provenance: CodeProvenance,
+    ) -> Dict[str, Any]:
+        """Compute the canonical candidate dictionary from constituent identity components.
+
+        SINGLE SOURCE OF TRUTH for candidate canonical serialization.
+        """
+        return {
+            "version": version,
+            "expression": expression_dict,
+            "expression_fingerprint": expression_fingerprint,
+            "search_space_fingerprint": search_space_fingerprint,
+            "signal_policy": signal_policy_dict,
+            "signal_policy_fingerprint": signal_policy_fingerprint,
+            "generator_id": generator_id,
+            "generator_version": generator_version,
+            "random_seed": random_seed,
+            "dataset_scope": {
+                "dataset_id": dataset_scope.dataset_id,
+                "symbol": dataset_scope.symbol,
+                "timeframe": dataset_scope.timeframe,
+                "start_date": dataset_scope.start_date,
+                "end_date": dataset_scope.end_date,
+            },
+            "execution_assumptions": {
+                "transaction_cost": _float_to_lossless_str(execution_assumptions.transaction_cost),
+                "slippage": _float_to_lossless_str(execution_assumptions.slippage),
+                "latency_ms": _float_to_lossless_str(execution_assumptions.latency_ms),
+            },
+            "code_provenance": {
+                "commit_sha": code_provenance.commit_sha,
+                "repository_status": code_provenance.repository_status,
+                "author": code_provenance.author,
+            },
+        }
+
+    @classmethod
+    def compute_fingerprint_from_components(
+        cls,
+        *,
+        version: str,
+        expression_dict: Dict[str, Any],
+        expression_fingerprint: str,
+        search_space_fingerprint: str,
+        signal_policy_dict: Dict[str, Any],
+        signal_policy_fingerprint: str,
+        generator_id: str,
+        generator_version: str,
+        random_seed: int,
+        dataset_scope: DatasetScope,
+        execution_assumptions: ExecutionAssumptions,
+        code_provenance: CodeProvenance,
+    ) -> str:
+        """Compute candidate SHA-256 fingerprint from constituent identity components."""
+        canonical_dict = cls.compute_canonical_dict(
+            version=version,
+            expression_dict=expression_dict,
+            expression_fingerprint=expression_fingerprint,
+            search_space_fingerprint=search_space_fingerprint,
+            signal_policy_dict=signal_policy_dict,
+            signal_policy_fingerprint=signal_policy_fingerprint,
+            generator_id=generator_id,
+            generator_version=generator_version,
+            random_seed=random_seed,
+            dataset_scope=dataset_scope,
+            execution_assumptions=execution_assumptions,
+            code_provenance=code_provenance,
+        )
+        serialized = json.dumps(canonical_dict, sort_keys=True, separators=(",", ":"))
+        return hashlib.sha256(serialized.encode("utf-8")).hexdigest()
+
+    def to_canonical_dict(self) -> Dict[str, Any]:
+        """Convert candidate to deterministic canonical dictionary."""
+        return self.compute_canonical_dict(
+            version=self.version,
+            expression_dict=self.expression.to_canonical_dict(),
+            expression_fingerprint=self.expression.fingerprint,
+            search_space_fingerprint=self.search_space.fingerprint,
+            signal_policy_dict=self.signal_policy.to_canonical_dict(),
+            signal_policy_fingerprint=self.signal_policy.fingerprint,
+            generator_id=self.generator_id,
+            generator_version=self.generator_version,
+            random_seed=self.random_seed,
+            dataset_scope=self.dataset_scope,
+            execution_assumptions=self.execution_assumptions,
+            code_provenance=self.code_provenance,
+        )
+
+    def to_canonical_json(self) -> str:
+        """Serialize candidate to deterministic canonical JSON string."""
+        return json.dumps(self.to_canonical_dict(), sort_keys=True, separators=(",", ":"))
+
+    def to_hypothesis(
+        self,
+        *,
+        walk_forward_protocol: WalkForwardProtocol,
+        benchmark_reference: str = "buy_and_hold",
+        methodology_version: str = "discovery_v1.0",
+        strategy_version: str = "1.0.0",
+    ) -> ResearchHypothesis:
+        """Bridge candidate into governed ResearchHypothesis with GENERATED status.
+
+        Validates search space constraints and lineage prior to constructing hypothesis.
+        Fails closed if walk_forward_protocol is missing or not a WalkForwardProtocol instance.
+        """
+        self.validate()
+
+        if walk_forward_protocol is None or not isinstance(walk_forward_protocol, WalkForwardProtocol):
+            raise MathematicalCandidateValidationError(
+                "A mathematical research candidate requires an explicit WalkForwardProtocol. Implicit fallback defaults are strictly forbidden."
+            )
+
+        wf_protocol = walk_forward_protocol
+
+        statement = (
+            f"Mathematical expression candidate [{self.candidate_id}] evaluating "
+            f"AST op={self.expression.operator.value} with fingerprint {self.expression.fingerprint[:12]}"
+        )
+
+        parameters = {
+            "expression_dict": self.expression.to_canonical_dict(),
+            "expression_fingerprint": self.expression.fingerprint,
+            "search_space_fingerprint": self.search_space.fingerprint,
+            "signal_policy_dict": self.signal_policy.to_canonical_dict(),
+            "signal_policy_fingerprint": self.signal_policy.fingerprint,
+            "candidate_id": self.candidate_id,
+            "candidate_fingerprint": self.fingerprint,
+            "candidate_version": self.version,
+            "generator_id": self.generator_id,
+            "generator_version": self.generator_version,
+            "random_seed": self.random_seed,
+        }
+
+        return ResearchHypothesis(
+            statement=statement,
+            methodology_version=methodology_version,
+            strategy_name="mathematical_expression",
+            strategy_version=strategy_version,
+            dataset_scope=self.dataset_scope,
+            execution_assumptions=self.execution_assumptions,
+            code_provenance=self.code_provenance,
+            benchmark_reference=benchmark_reference,
+            parameters=parameters,
+            random_seed=self.random_seed,
+            walk_forward_protocol=wf_protocol,
+            status=HypothesisStatus.GENERATED,
+        )
+
+
+def validate_accepted_hypothesis_against_candidate(
+    candidate: MathematicalExpressionCandidate,
+    accepted_hypothesis: ResearchHypothesis,
+    walk_forward_protocol: WalkForwardProtocol,
+) -> None:
+    """Perform authoritative boundary validation of an ACCEPTED ResearchHypothesis against candidate.
+
+    Enforces:
+    1. accepted_hypothesis.status == ACCEPTED_FOR_RESEARCH
+    2. accepted_hypothesis.strategy_name == "mathematical_expression"
+    3. Outer candidate-owned lineage equality:
+       - dataset_scope
+       - execution_assumptions
+       - code_provenance
+       - random_seed
+       - walk_forward_protocol
+    4. Parameters presence & fingerprint consistency for expression, signal policy, and search space
+    5. Re-derived candidate fingerprint & candidate_id equality against candidate instance
+    """
+    if accepted_hypothesis.status != HypothesisStatus.ACCEPTED_FOR_RESEARCH:
+        raise MathematicalCandidateValidationError(
+            f"Accepted hypothesis status must be ACCEPTED_FOR_RESEARCH, got '{accepted_hypothesis.status.value}'."
+        )
+
+    if accepted_hypothesis.strategy_name != "mathematical_expression":
+        raise MathematicalCandidateValidationError(
+            f"Accepted hypothesis strategy_name must be 'mathematical_expression', got '{accepted_hypothesis.strategy_name}'."
+        )
+
+    # Outer candidate-owned lineage equality
+    if accepted_hypothesis.dataset_scope != candidate.dataset_scope:
+        raise MathematicalCandidateValidationError(
+            f"DatasetScope mismatch between candidate ({candidate.dataset_scope}) and accepted hypothesis ({accepted_hypothesis.dataset_scope})."
+        )
+
+    if accepted_hypothesis.execution_assumptions != candidate.execution_assumptions:
+        raise MathematicalCandidateValidationError(
+            f"ExecutionAssumptions mismatch between candidate ({candidate.execution_assumptions}) and accepted hypothesis ({accepted_hypothesis.execution_assumptions})."
+        )
+
+    if accepted_hypothesis.code_provenance != candidate.code_provenance:
+        raise MathematicalCandidateValidationError(
+            f"CodeProvenance mismatch between candidate ({candidate.code_provenance}) and accepted hypothesis ({accepted_hypothesis.code_provenance})."
+        )
+
+    if accepted_hypothesis.random_seed != candidate.random_seed:
+        raise MathematicalCandidateValidationError(
+            f"random_seed mismatch between candidate ({candidate.random_seed}) and accepted hypothesis ({accepted_hypothesis.random_seed})."
+        )
+
+    if accepted_hypothesis.walk_forward_protocol != walk_forward_protocol:
+        raise MathematicalCandidateValidationError(
+            f"WalkForwardProtocol mismatch between expected ({walk_forward_protocol}) and accepted hypothesis ({accepted_hypothesis.walk_forward_protocol})."
+        )
+
+    params = accepted_hypothesis.parameters
+    if not isinstance(params, dict):
+        raise MathematicalCandidateValidationError("Accepted hypothesis parameters must be a dictionary.")
+
+    required_fields = (
+        "expression_dict",
+        "expression_fingerprint",
+        "search_space_fingerprint",
+        "signal_policy_dict",
+        "signal_policy_fingerprint",
+        "candidate_id",
+        "candidate_fingerprint",
+        "candidate_version",
+        "generator_id",
+        "generator_version",
+        "random_seed",
+    )
+    for field_name in required_fields:
+        if field_name not in params or params[field_name] is None:
+            raise MathematicalCandidateValidationError(
+                f"Accepted hypothesis parameters missing required field '{field_name}'."
+            )
+
+    # Reconstruct expression from dict & verify fingerprint
+    try:
+        reconstructed_expr = MathematicalExpression.from_canonical_dict(params["expression_dict"])
+    except Exception as exc:
+        raise MathematicalCandidateValidationError(f"Failed to reconstruct MathematicalExpression from accepted hypothesis: {exc}") from exc
+
+    if reconstructed_expr.fingerprint != params["expression_fingerprint"]:
+        raise MathematicalCandidateValidationError(
+            f"Reconstructed expression fingerprint ({reconstructed_expr.fingerprint}) mismatch in accepted hypothesis parameters ({params['expression_fingerprint']})."
+        )
+
+    if reconstructed_expr.fingerprint != candidate.expression.fingerprint:
+        raise MathematicalCandidateValidationError(
+            f"Expression fingerprint mismatch between candidate ({candidate.expression.fingerprint}) and accepted hypothesis ({reconstructed_expr.fingerprint})."
+        )
+
+    if params["search_space_fingerprint"] != candidate.search_space.fingerprint:
+        raise MathematicalCandidateValidationError(
+            f"SearchSpace fingerprint mismatch between candidate ({candidate.search_space.fingerprint}) and accepted hypothesis ({params['search_space_fingerprint']})."
+        )
+
+    # Reconstruct signal policy & verify fingerprint
+    try:
+        reconstructed_policy = MathematicalSignalInterpretationPolicy.from_canonical_dict(params["signal_policy_dict"])
+    except Exception as exc:
+        raise MathematicalCandidateValidationError(f"Failed to reconstruct MathematicalSignalInterpretationPolicy from accepted hypothesis: {exc}") from exc
+
+    if reconstructed_policy.fingerprint != params["signal_policy_fingerprint"]:
+        raise MathematicalCandidateValidationError(
+            f"Reconstructed signal policy fingerprint ({reconstructed_policy.fingerprint}) mismatch in accepted hypothesis parameters ({params['signal_policy_fingerprint']})."
+        )
+
+    if reconstructed_policy.fingerprint != candidate.signal_policy.fingerprint:
+        raise MathematicalCandidateValidationError(
+            f"Signal policy fingerprint mismatch between candidate ({candidate.signal_policy.fingerprint}) and accepted hypothesis ({reconstructed_policy.fingerprint})."
+        )
+
+    if params["candidate_version"] != candidate.version:
+        raise MathematicalCandidateValidationError(
+            f"candidate_version mismatch between candidate ({candidate.version}) and accepted hypothesis ({params['candidate_version']})."
+        )
+
+    if params["generator_id"] != candidate.generator_id:
+        raise MathematicalCandidateValidationError(
+            f"generator_id mismatch between candidate ({candidate.generator_id}) and accepted hypothesis ({params['generator_id']})."
+        )
+
+    if params["generator_version"] != candidate.generator_version:
+        raise MathematicalCandidateValidationError(
+            f"generator_version mismatch between candidate ({candidate.generator_version}) and accepted hypothesis ({params['generator_version']})."
+        )
+
+    if params["random_seed"] != candidate.random_seed:
+        raise MathematicalCandidateValidationError(
+            f"Parameter random_seed mismatch between candidate ({candidate.random_seed}) and accepted hypothesis ({params['random_seed']})."
+        )
+
+    # Re-derive expected candidate fingerprint using single canonical helper
+    expected_cand_fp = MathematicalExpressionCandidate.compute_fingerprint_from_components(
+        version=str(params["candidate_version"]),
+        expression_dict=reconstructed_expr.to_canonical_dict(),
+        expression_fingerprint=reconstructed_expr.fingerprint,
+        search_space_fingerprint=str(params["search_space_fingerprint"]),
+        signal_policy_dict=reconstructed_policy.to_canonical_dict(),
+        signal_policy_fingerprint=reconstructed_policy.fingerprint,
+        generator_id=str(params["generator_id"]),
+        generator_version=str(params["generator_version"]),
+        random_seed=int(params["random_seed"]),
+        dataset_scope=accepted_hypothesis.dataset_scope,
+        execution_assumptions=accepted_hypothesis.execution_assumptions,
+        code_provenance=accepted_hypothesis.code_provenance,
+    )
+
+    if expected_cand_fp != params["candidate_fingerprint"]:
+        raise MathematicalCandidateValidationError(
+            f"Candidate fingerprint mismatch in accepted hypothesis parameters: re-derived '{expected_cand_fp}' vs parameter '{params['candidate_fingerprint']}'."
+        )
+
+    if expected_cand_fp != candidate.fingerprint:
+        raise MathematicalCandidateValidationError(
+            f"Candidate fingerprint mismatch between candidate ({candidate.fingerprint}) and accepted hypothesis ({expected_cand_fp})."
+        )
+
+    if params["candidate_id"] != candidate.candidate_id:
+        raise MathematicalCandidateValidationError(
+            f"candidate_id mismatch between candidate ({candidate.candidate_id}) and accepted hypothesis ({params['candidate_id']})."
+        )
+
+
+def run_mathematical_research_experiment(
+    candidate: MathematicalExpressionCandidate,
+    df: pd.DataFrame | None = None,
+    *,
+    walk_forward_protocol: WalkForwardProtocol,
+    criteria: DiscoveryCriteria | None = None,
+    benchmark_reference: str = "buy_and_hold",
+    persist_evidence: bool = False,
+) -> ResearchEvidence:
+    """Execute a mathematical research candidate through the existing governed research pipeline.
+
+    Execution Bridge Flow:
+        MathematicalExpressionCandidate
+            -> 1. pre-execution search space & lineage validation (.validate())
+            -> 2. ResearchHypothesis(status=GENERATED)
+            -> 3. accept_hypothesis_for_research() => ACCEPTED_FOR_RESEARCH
+            -> 4. validate_accepted_hypothesis_against_candidate(...)
+            -> 5. create research-only StrategyRegistry
+            -> 6. run_research_experiment(registry=research_registry)
+            -> 7. ResearchEvidence verification
+
+    Guarantees identity invariant tracing:
+        expression.fingerprint
+            -> candidate.fingerprint
+            -> hypothesis.fingerprint
+            -> spec.fingerprint
+            -> evidence.experiment_fingerprint
+    """
+    # 1. Pre-execution search space & lineage validation
+    candidate.validate()
+
+    # 2. Convert candidate to ResearchHypothesis (status=GENERATED)
+    raw_hypothesis = candidate.to_hypothesis(
+        benchmark_reference=benchmark_reference,
+        walk_forward_protocol=walk_forward_protocol,
+    )
+
+    # 3. Transition hypothesis status to ACCEPTED_FOR_RESEARCH via canonical governance entry point
+    accepted_hypothesis = accept_hypothesis_for_research(raw_hypothesis)
+
+    # 4. Authoritative boundary validation of ACCEPTED hypothesis against candidate object & outer fields
+    validate_accepted_hypothesis_against_candidate(
+        candidate=candidate,
+        accepted_hypothesis=accepted_hypothesis,
+        walk_forward_protocol=walk_forward_protocol,
+    )
+
+    # 5. Create dedicated research-only StrategyRegistry
+    research_registry = create_mathematical_research_registry()
+
+    # 6. Execute via canonical run_research_experiment
+    evidence = run_research_experiment(
+        spec=accepted_hypothesis,
+        df=df,
+        criteria=criteria,
+        registry=research_registry,
+        persist_evidence=persist_evidence,
+    )
+
+    # 7. Verify end-to-end identity invariant traceability
+    if evidence.experiment_fingerprint != accepted_hypothesis.fingerprint:
+        raise MathematicalCandidateValidationError(
+            f"Identity invariant broken: evidence.experiment_fingerprint ({evidence.experiment_fingerprint}) "
+            f"mismatches accepted hypothesis fingerprint ({accepted_hypothesis.fingerprint})."
+        )
+
+    return evidence
