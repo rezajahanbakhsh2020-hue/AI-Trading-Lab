@@ -190,6 +190,23 @@ class SymbolicSearch:
         if not isinstance(random_seed, int) or isinstance(random_seed, bool):
             raise MathematicalSearchError("random_seed must be an integer.")
 
+        # Fail-closed generator metadata consistency boundary between search space constitution and execution arguments
+        if search_space.generator_id != generator_id:
+            raise MathematicalSearchError(
+                f"Generator metadata mismatch for 'generator_id': search space constitution has '{search_space.generator_id}' "
+                f"but execution argument supplied '{generator_id}'."
+            )
+        if search_space.generator_version != generator_version:
+            raise MathematicalSearchError(
+                f"Generator metadata mismatch for 'generator_version': search space constitution has '{search_space.generator_version}' "
+                f"but execution argument supplied '{generator_version}'."
+            )
+        if search_space.random_seed != random_seed:
+            raise MathematicalSearchError(
+                f"Generator metadata mismatch for 'random_seed': search space constitution has '{search_space.random_seed}' "
+                f"but execution argument supplied '{random_seed}'."
+            )
+
         # 6. Validate constant values against search space bounds and precision
         validated_constants = self._validate_constants(constant_values, search_space)
 

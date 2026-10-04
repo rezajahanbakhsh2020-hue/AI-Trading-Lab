@@ -21,6 +21,14 @@ Covers all 20 required architectural and adversarial test specifications:
 18. Research-only candidate compatibility (candidate.validate() and execution bridge)
 19. Anti-recurrence boundary (market evaluation never invoked)
 20. Malformed search space fails closed
+21. Matching metadata search success
+22. Generator-id mismatch fail closed
+23. Generator-version mismatch fail closed
+24. Random-seed mismatch fail closed
+25. Independent all-field mismatches fail closed
+26. Pre-generation sentinel validation precedes AST generation
+27. Generated expression and candidate provenance exact equality
+28. Search space identity preservation
 """
 
 from __future__ import annotations
@@ -107,6 +115,9 @@ def base_search_space(default_lineage) -> MathematicalSearchSpace:
         constant_precision=0.5,
         max_complexity=10,
         max_search_budget=100,
+        generator_id="symbolic_search",
+        generator_version="1.0",
+        random_seed=0,
         dataset_scope=ds,
         execution_assumptions=ea,
         code_provenance=cp,
@@ -114,12 +125,27 @@ def base_search_space(default_lineage) -> MathematicalSearchSpace:
 
 
 # 1. Deterministic identical search: same inputs -> identical ordered fingerprints
-def test_1_deterministic_identical_search(base_search_space, default_lineage):
+def test_1_deterministic_identical_search(default_lineage):
     ds, ea, cp = default_lineage
+    ss = MathematicalSearchSpace(
+        search_id="test_search_space_1",
+        allowed_operators=(
+            MathematicalOperator.FEATURE,
+            MathematicalOperator.CONSTANT,
+            MathematicalOperator.ADD,
+        ),
+        allowed_features=("close", "open"),
+        generator_id="symbolic_search",
+        generator_version="1.0",
+        random_seed=42,
+        dataset_scope=ds,
+        execution_assumptions=ea,
+        code_provenance=cp,
+    )
     strategy = SymbolicSearch()
 
     res1 = strategy.search(
-        search_space=base_search_space,
+        search_space=ss,
         dataset_scope=ds,
         execution_assumptions=ea,
         code_provenance=cp,
@@ -131,7 +157,7 @@ def test_1_deterministic_identical_search(base_search_space, default_lineage):
     )
 
     res2 = strategy.search(
-        search_space=base_search_space,
+        search_space=ss,
         dataset_scope=ds,
         execution_assumptions=ea,
         code_provenance=cp,
@@ -156,6 +182,9 @@ def test_2_feature_ordering_independence(default_lineage):
         search_id="ss_1",
         allowed_operators=(MathematicalOperator.FEATURE,),
         allowed_features=("close", "open", "volume", "high"),
+        generator_id="symbolic_search",
+        generator_version="1.0",
+        random_seed=0,
         dataset_scope=ds,
         execution_assumptions=ea,
         code_provenance=cp,
@@ -164,6 +193,9 @@ def test_2_feature_ordering_independence(default_lineage):
         search_id="ss_1",
         allowed_operators=(MathematicalOperator.FEATURE,),
         allowed_features=("volume", "high", "close", "open"),
+        generator_id="symbolic_search",
+        generator_version="1.0",
+        random_seed=0,
         dataset_scope=ds,
         execution_assumptions=ea,
         code_provenance=cp,
@@ -208,6 +240,9 @@ def test_4_lag_boundary(default_lineage):
         allowed_features=("close",),
         min_lag=1,
         max_lag=3,
+        generator_id="symbolic_search",
+        generator_version="1.0",
+        random_seed=0,
         dataset_scope=ds,
         execution_assumptions=ea,
         code_provenance=cp,
@@ -228,6 +263,9 @@ def test_5_operator_constitution(default_lineage):
         search_id="ss_op",
         allowed_operators=(MathematicalOperator.FEATURE, MathematicalOperator.ADD),
         allowed_features=("close", "open"),
+        generator_id="symbolic_search",
+        generator_version="1.0",
+        random_seed=0,
         dataset_scope=ds,
         execution_assumptions=ea,
         code_provenance=cp,
@@ -252,6 +290,9 @@ def test_6_feature_constitution(default_lineage):
         search_id="ss_feat",
         allowed_operators=(MathematicalOperator.FEATURE, MathematicalOperator.ADD),
         allowed_features=("close",),
+        generator_id="symbolic_search",
+        generator_version="1.0",
+        random_seed=0,
         dataset_scope=ds,
         execution_assumptions=ea,
         code_provenance=cp,
@@ -281,6 +322,9 @@ def test_7_complexity_constitution(default_lineage):
         max_interaction_count=1,
         max_complexity=4,
         max_window_size=10,
+        generator_id="symbolic_search",
+        generator_version="1.0",
+        random_seed=0,
         dataset_scope=ds,
         execution_assumptions=ea,
         code_provenance=cp,
@@ -332,6 +376,9 @@ def test_9_duplicate_commutative_prevention(default_lineage):
         max_lag=0,
         max_depth=2,
         max_node_count=3,
+        generator_id="symbolic_search",
+        generator_version="1.0",
+        random_seed=0,
         dataset_scope=ds,
         execution_assumptions=ea,
         code_provenance=cp,
@@ -340,13 +387,10 @@ def test_9_duplicate_commutative_prevention(default_lineage):
     strategy = SymbolicSearch()
     res = strategy.search(ss, ds, ea, cp, limit=20)
 
-    # We have features 'close' and 'open'.
-    # ADD(close, open) vs ADD(open, close) should produce only 1 candidate!
     add_cands = [
         c for c in res.candidates
         if c.expression.operator == MathematicalOperator.ADD
     ]
-    # Check that feature_references == ('close', 'open') appears only once
     pair_adds = [c for c in add_cands if set(c.expression.feature_references) == {"close", "open"}]
     assert len(pair_adds) == 1
 
@@ -372,6 +416,9 @@ def test_11_search_budget_truncation(default_lineage):
         allowed_operators=(MathematicalOperator.FEATURE, MathematicalOperator.ADD),
         allowed_features=("close", "open", "high", "low"),
         max_search_budget=5,
+        generator_id="symbolic_search",
+        generator_version="1.0",
+        random_seed=0,
         dataset_scope=ds,
         execution_assumptions=ea,
         code_provenance=cp,
@@ -394,6 +441,9 @@ def test_12_requested_limit_truncation(default_lineage):
         allowed_operators=(MathematicalOperator.FEATURE, MathematicalOperator.ADD),
         allowed_features=("close", "open", "high", "low"),
         max_search_budget=100,
+        generator_id="symbolic_search",
+        generator_version="1.0",
+        random_seed=0,
         dataset_scope=ds,
         execution_assumptions=ea,
         code_provenance=cp,
@@ -421,27 +471,56 @@ def test_13_zero_negative_limit_fails_closed(base_search_space, default_lineage)
 
 
 # 14. Reproducibility: same seed and constitution reproduce exact ordering
-def test_14_reproducibility(base_search_space, default_lineage):
+def test_14_reproducibility(default_lineage):
     ds, ea, cp = default_lineage
+    ss = MathematicalSearchSpace(
+        search_id="ss_repro",
+        allowed_operators=(MathematicalOperator.FEATURE, MathematicalOperator.ADD),
+        allowed_features=("close", "open"),
+        generator_id="symbolic_search",
+        generator_version="1.0",
+        random_seed=123,
+        dataset_scope=ds,
+        execution_assumptions=ea,
+        code_provenance=cp,
+    )
     strategy = SymbolicSearch()
 
-    res1 = strategy.search(base_search_space, ds, ea, cp, constant_values=(1.0,), limit=15, random_seed=123)
-    res2 = strategy.search(base_search_space, ds, ea, cp, constant_values=(1.0,), limit=15, random_seed=123)
+    res1 = strategy.search(ss, ds, ea, cp, constant_values=(1.0,), limit=15, random_seed=123)
+    res2 = strategy.search(ss, ds, ea, cp, constant_values=(1.0,), limit=15, random_seed=123)
 
     assert [c.candidate_id for c in res1.candidates] == [c.candidate_id for c in res2.candidates]
 
 
 # 15. Metadata mutation: changing generator version/id or seed changes MathematicalExpressionCandidate identity
-def test_15_metadata_mutation_affects_candidate_identity(base_search_space, default_lineage):
+def test_15_metadata_mutation_affects_candidate_identity(default_lineage):
     ds, ea, cp = default_lineage
-    strategy = SymbolicSearch()
+    ss1 = MathematicalSearchSpace(
+        search_id="ss_meta",
+        allowed_operators=(MathematicalOperator.FEATURE,),
+        allowed_features=("close",),
+        generator_id="symbolic_search",
+        generator_version="1.0",
+        random_seed=0,
+        dataset_scope=ds,
+        execution_assumptions=ea,
+        code_provenance=cp,
+    )
+    ss2 = MathematicalSearchSpace(
+        search_id="ss_meta",
+        allowed_operators=(MathematicalOperator.FEATURE,),
+        allowed_features=("close",),
+        generator_id="symbolic_search",
+        generator_version="2.0",
+        random_seed=0,
+        dataset_scope=ds,
+        execution_assumptions=ea,
+        code_provenance=cp,
+    )
 
-    res_v1 = strategy.search(
-        base_search_space, ds, ea, cp, constant_values=(1.0,), limit=5, generator_version="1.0", random_seed=0
-    )
-    res_v2 = strategy.search(
-        base_search_space, ds, ea, cp, constant_values=(1.0,), limit=5, generator_version="2.0", random_seed=0
-    )
+    strategy = SymbolicSearch()
+    res_v1 = strategy.search(ss1, ds, ea, cp, limit=5, generator_version="1.0", random_seed=0)
+    res_v2 = strategy.search(ss2, ds, ea, cp, limit=5, generator_version="2.0", random_seed=0)
 
     assert res_v1.candidates[0].fingerprint != res_v2.candidates[0].fingerprint
     assert res_v1.candidates[0].expression.fingerprint != res_v2.candidates[0].expression.fingerprint
@@ -452,7 +531,6 @@ def test_16_no_data_dependency(base_search_space, default_lineage):
     ds, ea, cp = default_lineage
     strategy = SymbolicSearch()
 
-    # Search should execute without passing any DataFrame or market data objects
     res = strategy.search(base_search_space, ds, ea, cp, limit=10)
     assert isinstance(res, MathematicalSearchResult)
     assert res.generated_count == 10
@@ -479,6 +557,9 @@ def test_18_research_only_candidate_bridge_compatibility(default_lineage):
         search_id="ss_bridge",
         allowed_operators=(MathematicalOperator.FEATURE,),
         allowed_features=("close",),
+        generator_id="symbolic_search",
+        generator_version="1.0",
+        random_seed=0,
         dataset_scope=ds,
         execution_assumptions=ea,
         code_provenance=cp,
@@ -490,7 +571,6 @@ def test_18_research_only_candidate_bridge_compatibility(default_lineage):
     candidate = res.candidates[0]
     candidate.validate()  # Passes governance pre-validation
 
-    # Synthesize dummy DataFrame matching DatasetScope dates (2023-01-01 to 2023-12-31)
     dates = pd.date_range("2023-01-01", "2023-12-31 23:00:00", freq="1h", tz="UTC")
     df = pd.DataFrame(
         {
@@ -537,15 +617,12 @@ def test_19_anti_recurrence_no_evaluation(base_search_space, default_lineage, mo
 def test_20_malformed_search_space_fails_closed(default_lineage):
     ds, ea, cp = default_lineage
 
-    # Empty search_id
     with pytest.raises(SearchSpaceValidationError, match="search_id"):
         MathematicalSearchSpace(search_id="", dataset_scope=ds, execution_assumptions=ea, code_provenance=cp)
 
-    # Empty allowed_operators
     with pytest.raises(SearchSpaceValidationError, match="allowed_operators"):
         MathematicalSearchSpace(search_id="ss", allowed_operators=(), dataset_scope=ds, execution_assumptions=ea, code_provenance=cp)
 
-    # max_window_size smaller than max_lag
     with pytest.raises(SearchSpaceValidationError, match="max_window_size"):
         MathematicalSearchSpace(
             search_id="ss",
@@ -556,3 +633,205 @@ def test_20_malformed_search_space_fails_closed(default_lineage):
             execution_assumptions=ea,
             code_provenance=cp,
         )
+
+
+# ==============================================================================
+# ADVERSARIAL REGRESSION TESTS FOR GENERATOR METADATA BOUNDARY (PR #70 REPAIR)
+# ==============================================================================
+
+# A. MATCHING METADATA
+def test_21_generator_metadata_matching_success(default_lineage):
+    ds, ea, cp = default_lineage
+    ss = MathematicalSearchSpace(
+        search_id="ss_match",
+        allowed_operators=(MathematicalOperator.FEATURE,),
+        allowed_features=("close",),
+        generator_id="custom_gen",
+        generator_version="2.1",
+        random_seed=777,
+        dataset_scope=ds,
+        execution_assumptions=ea,
+        code_provenance=cp,
+    )
+
+    strategy = SymbolicSearch()
+    res = strategy.search(
+        search_space=ss,
+        dataset_scope=ds,
+        execution_assumptions=ea,
+        code_provenance=cp,
+        limit=5,
+        generator_id="custom_gen",
+        generator_version="2.1",
+        random_seed=777,
+    )
+
+    assert res is not None
+    assert res.generated_count == 5
+    assert res.generator_id == "custom_gen"
+    assert res.generator_version == "2.1"
+    assert res.random_seed == 777
+
+
+# B. GENERATOR-ID MISMATCH
+def test_22_generator_id_mismatch_fails_closed(base_search_space, default_lineage):
+    ds, ea, cp = default_lineage
+    strategy = SymbolicSearch()
+
+    with pytest.raises(MathematicalSearchError, match="generator_id"):
+        strategy.search(
+            search_space=base_search_space,  # has generator_id="symbolic_search"
+            dataset_scope=ds,
+            execution_assumptions=ea,
+            code_provenance=cp,
+            generator_id="different_generator_id",
+            generator_version=base_search_space.generator_version,
+            random_seed=base_search_space.random_seed,
+        )
+
+
+# C. GENERATOR-VERSION MISMATCH
+def test_23_generator_version_mismatch_fails_closed(base_search_space, default_lineage):
+    ds, ea, cp = default_lineage
+    strategy = SymbolicSearch()
+
+    with pytest.raises(MathematicalSearchError, match="generator_version"):
+        strategy.search(
+            search_space=base_search_space,  # has generator_version="1.0"
+            dataset_scope=ds,
+            execution_assumptions=ea,
+            code_provenance=cp,
+            generator_id=base_search_space.generator_id,
+            generator_version="9.9.9",
+            random_seed=base_search_space.random_seed,
+        )
+
+
+# D. RANDOM-SEED MISMATCH
+def test_24_random_seed_mismatch_fails_closed(base_search_space, default_lineage):
+    ds, ea, cp = default_lineage
+    strategy = SymbolicSearch()
+
+    with pytest.raises(MathematicalSearchError, match="random_seed"):
+        strategy.search(
+            search_space=base_search_space,  # has random_seed=0
+            dataset_scope=ds,
+            execution_assumptions=ea,
+            code_provenance=cp,
+            generator_id=base_search_space.generator_id,
+            generator_version=base_search_space.generator_version,
+            random_seed=999,
+        )
+
+
+# E. INDEPENDENT ALL-FIELD MISMATCHES
+def test_25_independent_all_field_mismatches(default_lineage):
+    ds, ea, cp = default_lineage
+    ss = MathematicalSearchSpace(
+        search_id="ss_indep",
+        allowed_operators=(MathematicalOperator.FEATURE,),
+        allowed_features=("close",),
+        generator_id="gen_A",
+        generator_version="1.0",
+        random_seed=10,
+        dataset_scope=ds,
+        execution_assumptions=ea,
+        code_provenance=cp,
+    )
+    strategy = SymbolicSearch()
+
+    # Mismatch 1: generator_id
+    with pytest.raises(MathematicalSearchError, match="generator_id"):
+        strategy.search(ss, ds, ea, cp, generator_id="gen_B", generator_version="1.0", random_seed=10)
+
+    # Mismatch 2: generator_version
+    with pytest.raises(MathematicalSearchError, match="generator_version"):
+        strategy.search(ss, ds, ea, cp, generator_id="gen_A", generator_version="2.0", random_seed=10)
+
+    # Mismatch 3: random_seed
+    with pytest.raises(MathematicalSearchError, match="random_seed"):
+        strategy.search(ss, ds, ea, cp, generator_id="gen_A", generator_version="1.0", random_seed=20)
+
+
+# F. PRE-GENERATION SENTINEL
+def test_26_pre_generation_sentinel_provenance_validation_precedes_ast_generation(base_search_space, default_lineage, monkeypatch):
+    ds, ea, cp = default_lineage
+    strategy = SymbolicSearch()
+
+    def sentinel_enumerate(*args, **kwargs):
+        raise RuntimeError("SENTINEL_ENUMERATE_CALLED: AST generation should NOT be reached on metadata mismatch!")
+
+    monkeypatch.setattr(strategy, "_enumerate_candidates", sentinel_enumerate)
+
+    # Mismatched metadata call must raise MathematicalSearchError, NOT RuntimeError
+    with pytest.raises(MathematicalSearchError, match="generator_id"):
+        strategy.search(
+            search_space=base_search_space,
+            dataset_scope=ds,
+            execution_assumptions=ea,
+            code_provenance=cp,
+            generator_id="mismatched_id",
+            generator_version=base_search_space.generator_version,
+            random_seed=base_search_space.random_seed,
+        )
+
+
+# G & H. GENERATED EXPRESSION AND CANDIDATE PROVENANCE EQUALITY
+def test_27_generated_expression_and_candidate_provenance_equality(default_lineage):
+    ds, ea, cp = default_lineage
+    ss = MathematicalSearchSpace(
+        search_id="ss_prov",
+        allowed_operators=(MathematicalOperator.FEATURE, MathematicalOperator.ADD),
+        allowed_features=("close", "open"),
+        generator_id="symbolic_search_prov",
+        generator_version="3.0",
+        random_seed=555,
+        dataset_scope=ds,
+        execution_assumptions=ea,
+        code_provenance=cp,
+    )
+
+    strategy = SymbolicSearch()
+    res = strategy.search(
+        search_space=ss,
+        dataset_scope=ds,
+        execution_assumptions=ea,
+        code_provenance=cp,
+        limit=10,
+        generator_id="symbolic_search_prov",
+        generator_version="3.0",
+        random_seed=555,
+    )
+
+    assert res.generated_count > 0
+    for cand in res.candidates:
+        # Candidate provenance equality
+        assert cand.generator_id == ss.generator_id
+        assert cand.generator_version == ss.generator_version
+        assert cand.random_seed == ss.random_seed
+
+        # Expression AST provenance equality
+        assert cand.expression.generator_id == ss.generator_id
+        assert cand.expression.generator_version == ss.generator_version
+        assert cand.expression.random_seed == ss.random_seed
+
+
+# I. SEARCH SPACE IDENTITY PRESERVATION
+def test_28_search_space_identity_preservation(base_search_space, default_lineage):
+    ds, ea, cp = default_lineage
+    fp_before = base_search_space.fingerprint
+
+    strategy = SymbolicSearch()
+    res = strategy.search(
+        search_space=base_search_space,
+        dataset_scope=ds,
+        execution_assumptions=ea,
+        code_provenance=cp,
+        limit=5,
+        generator_id=base_search_space.generator_id,
+        generator_version=base_search_space.generator_version,
+        random_seed=base_search_space.random_seed,
+    )
+
+    assert base_search_space.fingerprint == fp_before
+    assert res.search_space_fingerprint == fp_before
