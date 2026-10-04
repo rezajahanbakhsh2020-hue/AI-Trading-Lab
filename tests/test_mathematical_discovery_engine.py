@@ -20,7 +20,7 @@ Enforces:
 17. End-to-end identity: expression fingerprint -> candidate fingerprint -> hypothesis fingerprint -> evidence experiment fingerprint remains traceable and internally consistent.
 18. Architecture Guard Test: run_mathematical_discovery delegates directly to _run_governed_discovery_lifecycle.
 19. FAIL_CLOSED Discovery Feedback: malformed knowledge patterns trigger FAIL_CLOSED feedback and fail closed before hypothesis acceptance or execution.
-20. No Silent Input Filtering: malformed knowledge patterns and memory constraints fail closed rather than being silently ignored.
+20. Governance Store Failure Fail-Closed Boundary: governance store resolution exceptions trigger explicit fail-closed trials and block acceptance/execution/evidence creation.
 """
 
 from __future__ import annotations
@@ -66,7 +66,7 @@ from src.evaluation.research_knowledge import (
     ResearchKnowledgePattern,
     ResearchPatternCategory,
 )
-from src.evaluation.research_registry import DoNotRepeatConstraint, _compute_scope_id, _compute_ea_id, _compute_cp_id
+from src.evaluation.research_registry import DoNotRepeatConstraint, ResearchRegistryStore, _compute_scope_id, _compute_ea_id, _compute_cp_id
 from src.strategies.registry import DEFAULT_REGISTRY
 
 
@@ -146,6 +146,77 @@ def test_architecture_guard_run_mathematical_discovery_delegates_to_unified_life
 
     lifecycle_spy.assert_called_once()
     assert res.candidates_evaluated == 2
+
+
+# --- GOVERNANCE STORE FAILURE FAIL-CLOSED TESTS ---
+
+def test_governance_memory_store_resolution_failure_fails_closed(sample_lineage, synthetic_ohlcv, sample_search_space, monkeypatch):
+    """Prove that an exception in memory store resolution fails closed and prevents acceptance/execution."""
+    ds, ea, cp = sample_lineage
+    engine = DiscoveryEngine(criteria=DiscoveryCriteria(min_observations_is=20, min_observations_oos=10))
+
+    accept_spy = MagicMock(side_effect=AssertionError("accept_hypothesis_for_research MUST NOT be called on store failure!"))
+    exec_spy = MagicMock(side_effect=AssertionError("run_research_experiment MUST NOT be called on store failure!"))
+
+    monkeypatch.setattr("src.evaluation.discovery_engine.accept_hypothesis_for_research", accept_spy)
+    monkeypatch.setattr("src.evaluation.discovery_engine.run_research_experiment", exec_spy)
+
+    # Store that raises RuntimeError when get_active_do_not_repeat_constraints is invoked
+    mock_store = MagicMock(spec=ResearchRegistryStore)
+    mock_store.get_active_do_not_repeat_constraints.side_effect = RuntimeError("Database connection crashed during memory lookup")
+
+    res = engine.run_mathematical_discovery(
+        df=synthetic_ohlcv,
+        search_space=sample_search_space,
+        dataset_scope=ds,
+        execution_assumptions=ea,
+        code_provenance=cp,
+        wf_train_size=40,
+        wf_test_size=15,
+        limit=1,
+        memory_store=mock_store,
+        enable_memory_governance=True,
+    )
+
+    assert res.trial_ledger[0].status == "FAILED"
+    assert RejectionReason.GOVERNANCE_BLOCKED in res.trial_ledger[0].rejection_reasons
+    assert "Database connection crashed" in res.trial_ledger[0].error_message
+    accept_spy.assert_not_called()
+    exec_spy.assert_not_called()
+
+
+def test_governance_knowledge_store_resolution_failure_fails_closed(sample_lineage, synthetic_ohlcv, sample_search_space, monkeypatch):
+    """Prove that an exception in knowledge store resolution fails closed and prevents acceptance/execution."""
+    ds, ea, cp = sample_lineage
+    engine = DiscoveryEngine(criteria=DiscoveryCriteria(min_observations_is=20, min_observations_oos=10))
+
+    accept_spy = MagicMock(side_effect=AssertionError("accept_hypothesis_for_research MUST NOT be called on store failure!"))
+    exec_spy = MagicMock(side_effect=AssertionError("run_research_experiment MUST NOT be called on store failure!"))
+
+    monkeypatch.setattr("src.evaluation.discovery_engine.accept_hypothesis_for_research", accept_spy)
+    monkeypatch.setattr("src.evaluation.discovery_engine.run_research_experiment", exec_spy)
+
+    mock_store = MagicMock(spec=ResearchRegistryStore)
+    mock_store.list_patterns.side_effect = RuntimeError("Disk I/O error during pattern retrieval")
+
+    res = engine.run_mathematical_discovery(
+        df=synthetic_ohlcv,
+        search_space=sample_search_space,
+        dataset_scope=ds,
+        execution_assumptions=ea,
+        code_provenance=cp,
+        wf_train_size=40,
+        wf_test_size=15,
+        limit=1,
+        memory_store=mock_store,
+        enable_discovery_feedback=True,
+    )
+
+    assert res.trial_ledger[0].status == "FAILED"
+    assert RejectionReason.GOVERNANCE_BLOCKED in res.trial_ledger[0].rejection_reasons
+    assert "Disk I/O error" in res.trial_ledger[0].error_message
+    accept_spy.assert_not_called()
+    exec_spy.assert_not_called()
 
 
 # --- TEST 1: HAPPY PATH ---

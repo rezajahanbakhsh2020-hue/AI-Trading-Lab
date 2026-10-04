@@ -487,6 +487,7 @@ class ResearchCampaignOrchestrator:
         )
 
         active_constraints: Sequence[DoNotRepeatConstraint] = ()
+        memory_store_error: str | None = None
         if enable_memory_governance:
             if isinstance(memory_store, (list, tuple)):
                 active_constraints = memory_store
@@ -498,10 +499,11 @@ class ResearchCampaignOrchestrator:
                             symbol=definition.dataset_scope.symbol,
                             timeframe=definition.dataset_scope.timeframe,
                         )
-                    except Exception:
-                        active_constraints = ()
+                    except Exception as exc:
+                        memory_store_error = f"Governance store constraint resolution failed: {exc}"
 
         effective_patterns: Sequence[ResearchKnowledgePattern] = ()
+        knowledge_store_error: str | None = None
         if enable_discovery_feedback:
             if knowledge_patterns is not None:
                 effective_patterns = knowledge_patterns
@@ -510,8 +512,8 @@ class ResearchCampaignOrchestrator:
                 if eff_store is not None and hasattr(eff_store, "list_patterns"):
                     try:
                         effective_patterns = eff_store.list_patterns()
-                    except Exception:
-                        effective_patterns = ()
+                    except Exception as exc:
+                        knowledge_store_error = f"Governance store knowledge pattern resolution failed: {exc}"
 
         evidence_list: list[ResearchEvidence] = []
         selected_candidate_ids: list[str] = []
@@ -521,6 +523,27 @@ class ResearchCampaignOrchestrator:
 
         for planned_trial in plan.trials:
             cp = checkpoints_map.get(planned_trial.trial_id)
+
+            # Fail closed on governance store resolution failures
+            if memory_store_error or knowledge_store_error:
+                store_err_msg = memory_store_error or knowledge_store_error or "Governance store resolution failed."
+                cp_failed = ResearchTrialCheckpoint(
+                    trial_id=planned_trial.trial_id,
+                    campaign_id=campaign_id,
+                    candidate_id=planned_trial.candidate_id,
+                    trial_index=planned_trial.trial_index,
+                    attempt_number=1,
+                    status="FAILED",
+                    rejection_reasons=("SPECIFICATION_INVALID", "GOVERNANCE_BLOCKED"),
+                    error_message=store_err_msg,
+                )
+                self.store.save_trial_checkpoint(cp_failed)
+                if policy.fail_fast:
+                    self.store.save_lifecycle_state(
+                        campaign_id, ResearchCampaignStatus.FAILED, reason=store_err_msg
+                    )
+                    raise CampaignIntegrityError(f"Governance store resolution failed: {store_err_msg}")
+                continue
             if cp is None:
                 cp = ResearchTrialCheckpoint(
                     trial_id=planned_trial.trial_id,
@@ -614,9 +637,6 @@ class ResearchCampaignOrchestrator:
                 walk_forward_protocol=wf_protocol,
             )
 
-            # Accept hypothesis for research governance
-            hypothesis = accept_hypothesis_for_research(raw_hypothesis)
-
             # Stage 0a: Controlled Discovery Feedback
             feedback_fail_closed = False
             fail_closed_reason = ""
@@ -627,6 +647,7 @@ class ResearchCampaignOrchestrator:
                     execution_assumptions=definition.execution_assumptions,
                     code_provenance=definition.code_provenance,
                     knowledge_patterns=effective_patterns,
+                    hypothesis=raw_hypothesis,
                     search_id=search_space.search_id,
                     search_fingerprint=search_space.search_fingerprint,
                     registry_store=registry_store,
@@ -671,6 +692,7 @@ class ResearchCampaignOrchestrator:
                     execution_assumptions=definition.execution_assumptions,
                     code_provenance=definition.code_provenance,
                     active_constraints=active_constraints,
+                    hypothesis=raw_hypothesis,
                     search_id=search_space.search_id,
                     search_fingerprint=search_space.search_fingerprint,
                     methodology_version=definition.methodology_version,
@@ -712,6 +734,9 @@ class ResearchCampaignOrchestrator:
                         )
                         raise CampaignIntegrityError(f"Memory governance failed closed: {gov_res.reason}")
                     continue
+
+            # Accept hypothesis for research governance AFTER feedback & memory governance pass
+            hypothesis = accept_hypothesis_for_research(raw_hypothesis)
 
             # Execute research experiment
             try:

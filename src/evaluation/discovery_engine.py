@@ -604,8 +604,9 @@ class DiscoveryEngine:
             else (ResearchRegistryStore() if persist_evidence else None)
         )
 
-        # Resolve active constraints without silent filtering
+        # Resolve active constraints without silent filtering or fail-open fallbacks
         active_constraints: Sequence[DoNotRepeatConstraint] = ()
+        memory_store_error: str | None = None
         if enable_memory_governance:
             if isinstance(memory_store, (list, tuple)):
                 active_constraints = memory_store  # Unfiltered sequence
@@ -617,11 +618,12 @@ class DiscoveryEngine:
                             symbol=dataset_scope.symbol,
                             timeframe=dataset_scope.timeframe,
                         )
-                    except Exception:
-                        active_constraints = ()
+                    except Exception as exc:
+                        memory_store_error = f"Governance store constraint resolution failed: {exc}"
 
-        # Resolve knowledge patterns without silent filtering
+        # Resolve knowledge patterns without silent filtering or fail-open fallbacks
         effective_patterns: Sequence[ResearchKnowledgePattern] = ()
+        knowledge_store_error: str | None = None
         if enable_discovery_feedback:
             if knowledge_patterns is not None:
                 effective_patterns = knowledge_patterns  # Unfiltered sequence
@@ -630,14 +632,65 @@ class DiscoveryEngine:
                 if eff_store is not None and hasattr(eff_store, "list_patterns"):
                     try:
                         effective_patterns = eff_store.list_patterns()
-                    except Exception:
-                        effective_patterns = ()
+                    except Exception as exc:
+                        knowledge_store_error = f"Governance store knowledge pattern resolution failed: {exc}"
 
         discovery_feedback_records: list[ResearchDiscoveryFeedback] = []
         seen_candidate_fingerprints: set[str] = set()
 
         for idx, cand in enumerate(eval_candidates):
             trial_id = f"{search_id}_trial_{idx}"
+
+            # Fail closed on governance store resolution failures
+            if memory_store_error or knowledge_store_error:
+                store_err_msg = memory_store_error or knowledge_store_error or "Governance store resolution failed."
+                if effective_search_policy.fail_fast:
+                    raise RegistryValidationError(store_err_msg)
+
+                trial_record = ResearchTrialRecord(
+                    search_id=search_id,
+                    trial_id=trial_id,
+                    trial_index=idx,
+                    candidate_id=cand.candidate_id,
+                    candidate_fingerprint=cand.candidate_id if isinstance(cand, CandidateSpec) else cand.fingerprint,
+                    experiment_fingerprint="",
+                    evidence_fingerprint=None,
+                    qualification_status=PromotionStatus.REJECTED,
+                    rejection_reasons=(RejectionReason.SPECIFICATION_INVALID, RejectionReason.GOVERNANCE_BLOCKED),
+                    status="FAILED",
+                    error_message=store_err_msg,
+                    campaign_id=campaign_id,
+                )
+                trial_records.append(trial_record)
+
+                dummy_hyp = (
+                    cand.to_hypothesis(walk_forward_protocol=wf_protocol)
+                    if isinstance(cand, MathematicalExpressionCandidate)
+                    else ResearchHypothesis(
+                        statement=f"Hypothesis for candidate {cand.candidate_id}",
+                        methodology_version=self.criteria.methodology_version,
+                        strategy_name=cand.strategy_name,
+                        strategy_version=self.criteria.strategy_version,
+                        dataset_scope=dataset_scope,
+                        execution_assumptions=execution_assumptions,
+                        code_provenance=code_provenance,
+                        benchmark_reference=self.criteria.benchmark_reference,
+                        parameters=dict(cand.parameters),
+                        random_seed=cand.random_seed,
+                        walk_forward_protocol=wf_protocol,
+                    )
+                )
+
+                research_cand = ResearchCandidate(
+                    candidate_id=cand.candidate_id,
+                    hypothesis=dummy_hyp,
+                    evidence=None,
+                    validation_status=PromotionStatus.REJECTED,
+                    promotion_status=PromotionStatus.REJECTED,
+                    rejection_reasons=(RejectionReason.SPECIFICATION_INVALID, RejectionReason.GOVERNANCE_BLOCKED),
+                )
+                research_candidates.append(research_cand)
+                continue
 
             # Pre-validation for MathematicalExpressionCandidate
             if isinstance(cand, MathematicalExpressionCandidate):
