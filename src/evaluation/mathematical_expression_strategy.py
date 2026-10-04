@@ -25,10 +25,11 @@ def validate_mathematical_hypothesis_parameters(
 
     Fails closed before any DataFrame or AST evaluation if:
     - strategy_name != "mathematical_expression"
-    - required mathematical identity fields are missing
-    - expression_dict or signal_policy_dict cannot be reconstructed
+    - required mathematical identity fields are missing or incomplete
     - reconstructed expression.fingerprint != parameters["expression_fingerprint"]
     - reconstructed signal_policy.fingerprint != parameters["signal_policy_fingerprint"]
+    - re-derived candidate fingerprint != parameters["candidate_fingerprint"]
+    - candidate_id != math_cand_<first 16 chars of candidate fingerprint>
     """
     if strategy_name != "mathematical_expression":
         raise MathematicalExpressionError(
@@ -41,15 +42,20 @@ def validate_mathematical_hypothesis_parameters(
     required_fields = (
         "expression_dict",
         "expression_fingerprint",
-        "candidate_fingerprint",
         "search_space_fingerprint",
         "signal_policy_dict",
         "signal_policy_fingerprint",
+        "candidate_id",
+        "candidate_fingerprint",
+        "candidate_version",
+        "generator_id",
+        "generator_version",
+        "random_seed",
     )
-    for field in required_fields:
-        if field not in parameters or parameters[field] is None:
+    for field_name in required_fields:
+        if field_name not in parameters or parameters[field_name] is None:
             raise MathematicalExpressionError(
-                f"Tampered or incomplete mathematical hypothesis: missing required parameter '{field}'."
+                f"Tampered or incomplete mathematical hypothesis: missing required parameter '{field_name}'."
             )
 
     # Reconstruct expression & verify fingerprint match
@@ -64,7 +70,14 @@ def validate_mathematical_hypothesis_parameters(
             f"does not match parameter fingerprint '{parameters['expression_fingerprint']}'."
         )
 
+    # Validate expression dataset scope, execution assumptions, code provenance presence
+    if expr.dataset_scope is None or expr.execution_assumptions is None or expr.code_provenance is None:
+        raise MathematicalExpressionError(
+            "Mathematical expression in hypothesis parameters lacks complete research lineage (dataset_scope, execution_assumptions, code_provenance)."
+        )
+
     from src.evaluation.mathematical_expression_candidate import (
+        MathematicalExpressionCandidate,
         MathematicalSignalInterpretationPolicy,
     )
 
@@ -78,6 +91,35 @@ def validate_mathematical_hypothesis_parameters(
         raise MathematicalExpressionError(
             f"Mathematical signal policy identity mismatch: reconstructed policy fingerprint '{policy.fingerprint}' "
             f"does not match parameter fingerprint '{parameters['signal_policy_fingerprint']}'."
+        )
+
+    # Re-derive expected candidate fingerprint using single canonical helper in MathematicalExpressionCandidate
+    expected_cand_fp = MathematicalExpressionCandidate.compute_fingerprint_from_components(
+        version=str(parameters["candidate_version"]),
+        expression_dict=expr.to_canonical_dict(),
+        expression_fingerprint=expr.fingerprint,
+        search_space_fingerprint=str(parameters["search_space_fingerprint"]),
+        signal_policy_dict=policy.to_canonical_dict(),
+        signal_policy_fingerprint=policy.fingerprint,
+        generator_id=str(parameters["generator_id"]),
+        generator_version=str(parameters["generator_version"]),
+        random_seed=int(parameters["random_seed"]),
+        dataset_scope=expr.dataset_scope,
+        execution_assumptions=expr.execution_assumptions,
+        code_provenance=expr.code_provenance,
+    )
+
+    if expected_cand_fp != parameters["candidate_fingerprint"]:
+        raise MathematicalExpressionError(
+            f"Mathematical candidate identity mismatch: re-derived candidate fingerprint '{expected_cand_fp}' "
+            f"does not match parameter candidate_fingerprint '{parameters['candidate_fingerprint']}'."
+        )
+
+    expected_cand_id = f"math_cand_{expected_cand_fp[:16]}"
+    if parameters["candidate_id"] != expected_cand_id:
+        raise MathematicalExpressionError(
+            f"Mathematical candidate ID mismatch: candidate_id '{parameters['candidate_id']}' "
+            f"does not match expected canonical ID '{expected_cand_id}'."
         )
 
     return expr, policy

@@ -201,36 +201,106 @@ class MathematicalExpressionCandidate:
                 f"Candidate CodeProvenance ({self.code_provenance}) does not match Expression CodeProvenance ({self.expression.code_provenance})."
             )
 
-    def to_canonical_dict(self) -> Dict[str, Any]:
-        """Convert candidate to deterministic canonical dictionary."""
+    @staticmethod
+    def compute_canonical_dict(
+        *,
+        version: str,
+        expression_dict: Dict[str, Any],
+        expression_fingerprint: str,
+        search_space_fingerprint: str,
+        signal_policy_dict: Dict[str, Any],
+        signal_policy_fingerprint: str,
+        generator_id: str,
+        generator_version: str,
+        random_seed: int,
+        dataset_scope: DatasetScope,
+        execution_assumptions: ExecutionAssumptions,
+        code_provenance: CodeProvenance,
+    ) -> Dict[str, Any]:
+        """Compute the canonical candidate dictionary from constituent identity components.
+
+        SINGLE SOURCE OF TRUTH for candidate canonical serialization.
+        """
         return {
-            "version": self.version,
-            "expression": self.expression.to_canonical_dict(),
-            "expression_fingerprint": self.expression.fingerprint,
-            "search_space_fingerprint": self.search_space.fingerprint,
-            "signal_policy": self.signal_policy.to_canonical_dict(),
-            "signal_policy_fingerprint": self.signal_policy.fingerprint,
-            "generator_id": self.generator_id,
-            "generator_version": self.generator_version,
-            "random_seed": self.random_seed,
+            "version": version,
+            "expression": expression_dict,
+            "expression_fingerprint": expression_fingerprint,
+            "search_space_fingerprint": search_space_fingerprint,
+            "signal_policy": signal_policy_dict,
+            "signal_policy_fingerprint": signal_policy_fingerprint,
+            "generator_id": generator_id,
+            "generator_version": generator_version,
+            "random_seed": random_seed,
             "dataset_scope": {
-                "dataset_id": self.dataset_scope.dataset_id,
-                "symbol": self.dataset_scope.symbol,
-                "timeframe": self.dataset_scope.timeframe,
-                "start_date": self.dataset_scope.start_date,
-                "end_date": self.dataset_scope.end_date,
+                "dataset_id": dataset_scope.dataset_id,
+                "symbol": dataset_scope.symbol,
+                "timeframe": dataset_scope.timeframe,
+                "start_date": dataset_scope.start_date,
+                "end_date": dataset_scope.end_date,
             },
             "execution_assumptions": {
-                "transaction_cost": _float_to_lossless_str(self.execution_assumptions.transaction_cost),
-                "slippage": _float_to_lossless_str(self.execution_assumptions.slippage),
-                "latency_ms": _float_to_lossless_str(self.execution_assumptions.latency_ms),
+                "transaction_cost": _float_to_lossless_str(execution_assumptions.transaction_cost),
+                "slippage": _float_to_lossless_str(execution_assumptions.slippage),
+                "latency_ms": _float_to_lossless_str(execution_assumptions.latency_ms),
             },
             "code_provenance": {
-                "commit_sha": self.code_provenance.commit_sha,
-                "repository_status": self.code_provenance.repository_status,
-                "author": self.code_provenance.author,
+                "commit_sha": code_provenance.commit_sha,
+                "repository_status": code_provenance.repository_status,
+                "author": code_provenance.author,
             },
         }
+
+    @classmethod
+    def compute_fingerprint_from_components(
+        cls,
+        *,
+        version: str,
+        expression_dict: Dict[str, Any],
+        expression_fingerprint: str,
+        search_space_fingerprint: str,
+        signal_policy_dict: Dict[str, Any],
+        signal_policy_fingerprint: str,
+        generator_id: str,
+        generator_version: str,
+        random_seed: int,
+        dataset_scope: DatasetScope,
+        execution_assumptions: ExecutionAssumptions,
+        code_provenance: CodeProvenance,
+    ) -> str:
+        """Compute candidate SHA-256 fingerprint from constituent identity components."""
+        canonical_dict = cls.compute_canonical_dict(
+            version=version,
+            expression_dict=expression_dict,
+            expression_fingerprint=expression_fingerprint,
+            search_space_fingerprint=search_space_fingerprint,
+            signal_policy_dict=signal_policy_dict,
+            signal_policy_fingerprint=signal_policy_fingerprint,
+            generator_id=generator_id,
+            generator_version=generator_version,
+            random_seed=random_seed,
+            dataset_scope=dataset_scope,
+            execution_assumptions=execution_assumptions,
+            code_provenance=code_provenance,
+        )
+        serialized = json.dumps(canonical_dict, sort_keys=True, separators=(",", ":"))
+        return hashlib.sha256(serialized.encode("utf-8")).hexdigest()
+
+    def to_canonical_dict(self) -> Dict[str, Any]:
+        """Convert candidate to deterministic canonical dictionary."""
+        return self.compute_canonical_dict(
+            version=self.version,
+            expression_dict=self.expression.to_canonical_dict(),
+            expression_fingerprint=self.expression.fingerprint,
+            search_space_fingerprint=self.search_space.fingerprint,
+            signal_policy_dict=self.signal_policy.to_canonical_dict(),
+            signal_policy_fingerprint=self.signal_policy.fingerprint,
+            generator_id=self.generator_id,
+            generator_version=self.generator_version,
+            random_seed=self.random_seed,
+            dataset_scope=self.dataset_scope,
+            execution_assumptions=self.execution_assumptions,
+            code_provenance=self.code_provenance,
+        )
 
     def to_canonical_json(self) -> str:
         """Serialize candidate to deterministic canonical JSON string."""
@@ -271,6 +341,7 @@ class MathematicalExpressionCandidate:
             "signal_policy_fingerprint": self.signal_policy.fingerprint,
             "candidate_id": self.candidate_id,
             "candidate_fingerprint": self.fingerprint,
+            "candidate_version": self.version,
             "generator_id": self.generator_id,
             "generator_version": self.generator_version,
             "random_seed": self.random_seed,

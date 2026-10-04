@@ -170,11 +170,163 @@ def test_tamper_evident_boundary_missing_required_fields(sample_lineage):
 
     hyp = cand.to_hypothesis(walk_forward_protocol=WalkForwardProtocol(40, 15))
 
-    for required in ("expression_dict", "expression_fingerprint", "candidate_fingerprint", "search_space_fingerprint", "signal_policy_dict", "signal_policy_fingerprint"):
+    required_fields = (
+        "expression_dict",
+        "expression_fingerprint",
+        "search_space_fingerprint",
+        "signal_policy_dict",
+        "signal_policy_fingerprint",
+        "candidate_id",
+        "candidate_fingerprint",
+        "candidate_version",
+        "generator_id",
+        "generator_version",
+        "random_seed",
+    )
+    for required in required_fields:
         params = dict(hyp.parameters)
         del params[required]
         with pytest.raises(MathematicalExpressionError, match="Tampered or incomplete mathematical hypothesis"):
             validate_mathematical_hypothesis_parameters(params, strategy_name="mathematical_expression")
+
+
+def test_tamper_evident_boundary_candidate_fingerprint_tampering(sample_lineage):
+    """Adversarial test: Mutate ONLY candidate_fingerprint -> Fail Closed."""
+    ds, ea, cp = sample_lineage
+    expr = MathematicalExpression(operator=MathematicalOperator.CONSTANT, constant_value=1.0, dataset_scope=ds, execution_assumptions=ea, code_provenance=cp)
+    space = MathematicalSearchSpace(search_id="space_tamp", dataset_scope=ds, execution_assumptions=ea, code_provenance=cp)
+    policy = MathematicalSignalInterpretationPolicy()
+    cand = MathematicalExpressionCandidate(expr, space, policy, ds, ea, cp)
+
+    hyp = cand.to_hypothesis(walk_forward_protocol=WalkForwardProtocol(40, 15))
+    params = dict(hyp.parameters)
+
+    # Mutate ONLY candidate_fingerprint
+    params["candidate_fingerprint"] = "0" * 64
+
+    with pytest.raises(MathematicalExpressionError, match="Mathematical candidate identity mismatch"):
+        validate_mathematical_hypothesis_parameters(params, strategy_name="mathematical_expression")
+
+
+def test_tamper_evident_boundary_candidate_id_tampering(sample_lineage):
+    """Adversarial test: Mutate ONLY candidate_id -> Fail Closed."""
+    ds, ea, cp = sample_lineage
+    expr = MathematicalExpression(operator=MathematicalOperator.CONSTANT, constant_value=1.0, dataset_scope=ds, execution_assumptions=ea, code_provenance=cp)
+    space = MathematicalSearchSpace(search_id="space_tamp", dataset_scope=ds, execution_assumptions=ea, code_provenance=cp)
+    policy = MathematicalSignalInterpretationPolicy()
+    cand = MathematicalExpressionCandidate(expr, space, policy, ds, ea, cp)
+
+    hyp = cand.to_hypothesis(walk_forward_protocol=WalkForwardProtocol(40, 15))
+    params = dict(hyp.parameters)
+
+    # Mutate ONLY candidate_id
+    params["candidate_id"] = "math_cand_fakeid12345678"
+
+    with pytest.raises(MathematicalExpressionError, match="Mathematical candidate ID mismatch"):
+        validate_mathematical_hypothesis_parameters(params, strategy_name="mathematical_expression")
+
+
+def test_tamper_evident_boundary_search_space_fingerprint_tampering(sample_lineage):
+    """Adversarial test: Mutate ONLY search_space_fingerprint -> Fail Closed."""
+    ds, ea, cp = sample_lineage
+    expr = MathematicalExpression(operator=MathematicalOperator.CONSTANT, constant_value=1.0, dataset_scope=ds, execution_assumptions=ea, code_provenance=cp)
+    space = MathematicalSearchSpace(search_id="space_tamp", dataset_scope=ds, execution_assumptions=ea, code_provenance=cp)
+    policy = MathematicalSignalInterpretationPolicy()
+    cand = MathematicalExpressionCandidate(expr, space, policy, ds, ea, cp)
+
+    hyp = cand.to_hypothesis(walk_forward_protocol=WalkForwardProtocol(40, 15))
+    params = dict(hyp.parameters)
+
+    # Mutate ONLY search_space_fingerprint
+    params["search_space_fingerprint"] = "f" * 64
+
+    with pytest.raises(MathematicalExpressionError, match="Mathematical candidate identity mismatch"):
+        validate_mathematical_hypothesis_parameters(params, strategy_name="mathematical_expression")
+
+
+def test_tamper_evident_boundary_generator_metadata_tampering(sample_lineage):
+    """Adversarial test: Mutate ONLY generator_id or generator_version -> Fail Closed."""
+    ds, ea, cp = sample_lineage
+    expr = MathematicalExpression(operator=MathematicalOperator.CONSTANT, constant_value=1.0, dataset_scope=ds, execution_assumptions=ea, code_provenance=cp)
+    space = MathematicalSearchSpace(search_id="space_tamp", dataset_scope=ds, execution_assumptions=ea, code_provenance=cp)
+    policy = MathematicalSignalInterpretationPolicy()
+    cand = MathematicalExpressionCandidate(expr, space, policy, ds, ea, cp, generator_id="gen_orig", generator_version="1.0")
+
+    hyp = cand.to_hypothesis(walk_forward_protocol=WalkForwardProtocol(40, 15))
+
+    # Mutate generator_id
+    params_gen_id = dict(hyp.parameters)
+    params_gen_id["generator_id"] = "gen_fake"
+    with pytest.raises(MathematicalExpressionError, match="Mathematical candidate identity mismatch"):
+        validate_mathematical_hypothesis_parameters(params_gen_id, strategy_name="mathematical_expression")
+
+    # Mutate generator_version
+    params_gen_ver = dict(hyp.parameters)
+    params_gen_ver["generator_version"] = "9.9"
+    with pytest.raises(MathematicalExpressionError, match="Mathematical candidate identity mismatch"):
+        validate_mathematical_hypothesis_parameters(params_gen_ver, strategy_name="mathematical_expression")
+
+
+def test_tamper_evident_boundary_candidate_version_tampering(sample_lineage):
+    """Adversarial test: Mutate ONLY candidate_version -> Fail Closed."""
+    ds, ea, cp = sample_lineage
+    expr = MathematicalExpression(operator=MathematicalOperator.CONSTANT, constant_value=1.0, dataset_scope=ds, execution_assumptions=ea, code_provenance=cp)
+    space = MathematicalSearchSpace(search_id="space_tamp", dataset_scope=ds, execution_assumptions=ea, code_provenance=cp)
+    policy = MathematicalSignalInterpretationPolicy()
+    cand = MathematicalExpressionCandidate(expr, space, policy, ds, ea, cp, version="1.0")
+
+    hyp = cand.to_hypothesis(walk_forward_protocol=WalkForwardProtocol(40, 15))
+    params = dict(hyp.parameters)
+
+    # Mutate candidate_version
+    params["candidate_version"] = "2.0"
+
+    with pytest.raises(MathematicalExpressionError, match="Mathematical candidate identity mismatch"):
+        validate_mathematical_hypothesis_parameters(params, strategy_name="mathematical_expression")
+
+
+def test_tamper_evident_boundary_random_seed_tampering(sample_lineage):
+    """Adversarial test: Mutate ONLY random_seed -> Fail Closed."""
+    ds, ea, cp = sample_lineage
+    expr = MathematicalExpression(operator=MathematicalOperator.CONSTANT, constant_value=1.0, dataset_scope=ds, execution_assumptions=ea, code_provenance=cp)
+    space = MathematicalSearchSpace(search_id="space_tamp", dataset_scope=ds, execution_assumptions=ea, code_provenance=cp)
+    policy = MathematicalSignalInterpretationPolicy()
+    cand = MathematicalExpressionCandidate(expr, space, policy, ds, ea, cp, random_seed=42)
+
+    hyp = cand.to_hypothesis(walk_forward_protocol=WalkForwardProtocol(40, 15))
+    params = dict(hyp.parameters)
+
+    # Mutate random_seed
+    params["random_seed"] = 9999
+
+    with pytest.raises(MathematicalExpressionError, match="Mathematical candidate identity mismatch"):
+        validate_mathematical_hypothesis_parameters(params, strategy_name="mathematical_expression")
+
+
+def test_tamper_evident_boundary_lineage_tampering(sample_lineage):
+    """Adversarial test: Mutate DatasetScope inside expression_dict -> Fail Closed."""
+    ds, ea, cp = sample_lineage
+    expr = MathematicalExpression(operator=MathematicalOperator.CONSTANT, constant_value=1.0, dataset_scope=ds, execution_assumptions=ea, code_provenance=cp)
+    space = MathematicalSearchSpace(search_id="space_tamp", dataset_scope=ds, execution_assumptions=ea, code_provenance=cp)
+    policy = MathematicalSignalInterpretationPolicy()
+    cand = MathematicalExpressionCandidate(expr, space, policy, ds, ea, cp)
+
+    hyp = cand.to_hypothesis(walk_forward_protocol=WalkForwardProtocol(40, 15))
+    params = dict(hyp.parameters)
+
+    # Tamper with dataset_scope inside expression_dict without updating expression_fingerprint
+    tampered_expr_dict = dict(params["expression_dict"])
+    tampered_expr_dict["dataset_scope"] = {
+        "dataset_id": "tampered_ds",
+        "symbol": "XAUUSD",
+        "timeframe": "1h",
+        "start_date": "2023-01-01",
+        "end_date": "2023-01-07",
+    }
+    params["expression_dict"] = tampered_expr_dict
+
+    with pytest.raises(MathematicalExpressionError, match="Mathematical identity mismatch"):
+        validate_mathematical_hypothesis_parameters(params, strategy_name="mathematical_expression")
 
 
 def test_tamper_evident_boundary_wrong_strategy_name(sample_lineage):
