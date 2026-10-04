@@ -343,6 +343,18 @@ def test_lineage_preservation_from_decision_to_publication() -> None:
     assert pub.tp1 == risk.tp1
 
 
+def test_publication_provenance_fields() -> None:
+    cand, dec, sig, risk, pub = make_test_artifacts()
+    prov = pub.provenance
+    assert prov["source"] == "AI-Trading-Lab"
+    assert prov["provenance_type"] == "live_signal"
+    assert prov["is_live"] is True
+    assert prov["produced_at"] == dec.decision_timestamp
+    assert prov["candidate_id"] == cand.candidate_id
+    assert prov["evidence_id"] == cand.evidence.evidence_id
+    assert prov["experiment_fingerprint"] == cand.evidence.experiment_fingerprint
+
+
 def test_secret_redaction() -> None:
     secret_key = "super-secret-api-key-99"
     text = f"HTTP Error with Authorization Bearer {secret_key}"
