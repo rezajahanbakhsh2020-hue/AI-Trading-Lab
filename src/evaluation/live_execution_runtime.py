@@ -12,10 +12,6 @@ from typing import Any, Callable
 
 import pandas as pd
 
-from app_live import (
-    DEFAULT_INTERVAL,
-    DEFAULT_LIMIT,
-)
 from src.data.provider import (
     BiQuoteProvider,
     FunctionMarketDataProvider,
@@ -55,6 +51,8 @@ from src.integration.project2_publisher import (
 
 logger = logging.getLogger(__name__)
 
+DEFAULT_INTERVAL = "5m"
+DEFAULT_LIMIT = 200
 DEFAULT_STORE_PATH = Path("results/live/decision_history.json")
 DEFAULT_SNAPSHOT_PATH = Path("results/live/latest_execution.json")
 
