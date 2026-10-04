@@ -21,7 +21,6 @@ from src.evaluation.mathematical_expression import (
     MathematicalSearchSpace,
     SearchSpaceValidationError,
     _float_to_lossless_str,
-    _lossless_str_to_float,
 )
 from src.evaluation.hypothesis_generator import accept_hypothesis_for_research
 from src.evaluation.mathematical_expression_strategy import create_mathematical_research_registry
@@ -33,7 +32,6 @@ from src.evaluation.research_constitution import (
     ResearchEvidence,
     ResearchHypothesis,
     WalkForwardProtocol,
-    resolve_walk_forward_protocol,
 )
 from src.evaluation.research_runner import DiscoveryCriteria, run_research_experiment
 
@@ -241,18 +239,24 @@ class MathematicalExpressionCandidate:
     def to_hypothesis(
         self,
         *,
+        walk_forward_protocol: WalkForwardProtocol,
         benchmark_reference: str = "buy_and_hold",
-        walk_forward_protocol: WalkForwardProtocol | None = None,
         methodology_version: str = "discovery_v1.0",
         strategy_version: str = "1.0.0",
     ) -> ResearchHypothesis:
         """Bridge candidate into governed ResearchHypothesis with GENERATED status.
 
         Validates search space constraints and lineage prior to constructing hypothesis.
+        Fails closed if walk_forward_protocol is missing or not a WalkForwardProtocol instance.
         """
         self.validate()
 
-        wf_protocol = walk_forward_protocol or WalkForwardProtocol(train_size=100, test_size=30)
+        if walk_forward_protocol is None or not isinstance(walk_forward_protocol, WalkForwardProtocol):
+            raise MathematicalCandidateValidationError(
+                "A mathematical research candidate requires an explicit WalkForwardProtocol. Implicit fallback defaults are strictly forbidden."
+            )
+
+        wf_protocol = walk_forward_protocol
 
         statement = (
             f"Mathematical expression candidate [{self.candidate_id}] evaluating "
@@ -292,8 +296,8 @@ def run_mathematical_research_experiment(
     candidate: MathematicalExpressionCandidate,
     df: pd.DataFrame | None = None,
     *,
+    walk_forward_protocol: WalkForwardProtocol,
     criteria: DiscoveryCriteria | None = None,
-    walk_forward_protocol: WalkForwardProtocol | None = None,
     benchmark_reference: str = "buy_and_hold",
     persist_evidence: bool = False,
 ) -> ResearchEvidence:
