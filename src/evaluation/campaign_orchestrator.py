@@ -38,6 +38,7 @@ import pandas as pd
 
 from src.evaluation.candidate_generator import ResearchSearchSpace
 from src.evaluation.discovery_feedback import (
+    DiscoveryFeedbackType,
     evaluate_candidate_discovery_feedback,
 )
 from src.evaluation.hypothesis_generator import accept_hypothesis_for_research
@@ -485,10 +486,10 @@ class ResearchCampaignOrchestrator:
             else (ResearchRegistryStore() if policy.persist_evidence else None)
         )
 
-        active_constraints: tuple[DoNotRepeatConstraint, ...] = ()
+        active_constraints: Sequence[DoNotRepeatConstraint] = ()
         if enable_memory_governance:
             if isinstance(memory_store, (list, tuple)):
-                active_constraints = tuple(c for c in memory_store if isinstance(c, DoNotRepeatConstraint))
+                active_constraints = memory_store
             else:
                 eff_store = memory_store if memory_store is not None else self.memory_store
                 if eff_store is not None:
@@ -500,10 +501,10 @@ class ResearchCampaignOrchestrator:
                     except Exception:
                         active_constraints = ()
 
-        effective_patterns: tuple[ResearchKnowledgePattern, ...] = ()
+        effective_patterns: Sequence[ResearchKnowledgePattern] = ()
         if enable_discovery_feedback:
             if knowledge_patterns is not None:
-                effective_patterns = tuple(k for k in knowledge_patterns if isinstance(k, ResearchKnowledgePattern))
+                effective_patterns = knowledge_patterns
             else:
                 eff_store = memory_store if isinstance(memory_store, ResearchRegistryStore) else self.memory_store
                 if eff_store is not None and hasattr(eff_store, "list_patterns"):
@@ -617,6 +618,8 @@ class ResearchCampaignOrchestrator:
             hypothesis = accept_hypothesis_for_research(raw_hypothesis)
 
             # Stage 0a: Controlled Discovery Feedback
+            feedback_fail_closed = False
+            fail_closed_reason = ""
             if enable_discovery_feedback:
                 cand_feedbacks = evaluate_candidate_discovery_feedback(
                     candidate=cand,
@@ -629,12 +632,36 @@ class ResearchCampaignOrchestrator:
                     registry_store=registry_store,
                     methodology_version=definition.methodology_version,
                 )
-                if registry_store is not None:
-                    for fb in cand_feedbacks:
+                for fb in cand_feedbacks:
+                    if registry_store is not None:
                         try:
                             registry_store.register_feedback(fb)
                         except Exception:
                             pass
+                    if fb.feedback_type == DiscoveryFeedbackType.FAIL_CLOSED:
+                        feedback_fail_closed = True
+                        fail_closed_reason = fb.reason
+
+            if feedback_fail_closed:
+                cp_failed = ResearchTrialCheckpoint(
+                    trial_id=cp.trial_id,
+                    campaign_id=campaign_id,
+                    candidate_id=cp.candidate_id,
+                    trial_index=cp.trial_index,
+                    attempt_number=cp.attempt_number,
+                    status="FAILED",
+                    qualification_status="REJECTED",
+                    rejection_reasons=("SPECIFICATION_INVALID", "GOVERNANCE_BLOCKED"),
+                    error_message=fail_closed_reason,
+                    execution_history=cp.execution_history,
+                )
+                self.store.save_trial_checkpoint(cp_failed)
+                if policy.fail_fast:
+                    self.store.save_lifecycle_state(
+                        campaign_id, ResearchCampaignStatus.FAILED, reason=fail_closed_reason
+                    )
+                    raise CampaignIntegrityError(f"Discovery feedback failed closed: {fail_closed_reason}")
+                continue
 
             # Stage 0b: Memory Governance
             if enable_memory_governance and active_constraints:

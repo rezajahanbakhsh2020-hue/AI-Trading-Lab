@@ -18,6 +18,9 @@ Enforces:
 15. Anti-leakage: prove generation does not inspect market data or ResearchEvidence/performance outcomes.
 16. Blocked-candidate sentinel: monkeypatch the research execution boundary and prove it is never called when memory/discovery governance blocks the candidate.
 17. End-to-end identity: expression fingerprint -> candidate fingerprint -> hypothesis fingerprint -> evidence experiment fingerprint remains traceable and internally consistent.
+18. Architecture Guard Test: run_mathematical_discovery delegates directly to _run_governed_discovery_lifecycle.
+19. FAIL_CLOSED Discovery Feedback: malformed knowledge patterns trigger FAIL_CLOSED feedback and fail closed before hypothesis acceptance or execution.
+20. No Silent Input Filtering: malformed knowledge patterns and memory constraints fail closed rather than being silently ignored.
 """
 
 from __future__ import annotations
@@ -120,6 +123,31 @@ def sample_search_space(sample_lineage):
     )
 
 
+# --- ARCHITECTURE GUARD TEST ---
+
+def test_architecture_guard_run_mathematical_discovery_delegates_to_unified_lifecycle(sample_lineage, synthetic_ohlcv, sample_search_space, monkeypatch):
+    """Architecture Guard Test: Prove run_mathematical_discovery delegates to _run_governed_discovery_lifecycle."""
+    ds, ea, cp = sample_lineage
+    engine = DiscoveryEngine(criteria=DiscoveryCriteria(min_observations_is=20, min_observations_oos=10))
+
+    lifecycle_spy = MagicMock(side_effect=engine._run_governed_discovery_lifecycle)
+    monkeypatch.setattr(engine, "_run_governed_discovery_lifecycle", lifecycle_spy)
+
+    res = engine.run_mathematical_discovery(
+        df=synthetic_ohlcv,
+        search_space=sample_search_space,
+        dataset_scope=ds,
+        execution_assumptions=ea,
+        code_provenance=cp,
+        wf_train_size=40,
+        wf_test_size=15,
+        limit=2,
+    )
+
+    lifecycle_spy.assert_called_once()
+    assert res.candidates_evaluated == 2
+
+
 # --- TEST 1: HAPPY PATH ---
 
 def test_happy_path_symbolic_search_candidate_reaches_research_evidence(sample_lineage, synthetic_ohlcv, sample_search_space):
@@ -194,7 +222,7 @@ def test_governance_order_memory_governance_runs_before_hypothesis_acceptance(sa
     accept_spy.assert_not_called()
 
 
-# --- TEST 3: DISCOVERY FEEDBACK GOVERNANCE ---
+# --- TEST 3: DISCOVERY FEEDBACK GOVERNANCE & FAIL_CLOSED SENTINEL ---
 
 def test_discovery_feedback_governance_attaches_feedback_records(sample_lineage, synthetic_ohlcv, sample_search_space):
     ds, ea, cp = sample_lineage
@@ -239,6 +267,39 @@ def test_discovery_feedback_governance_attaches_feedback_records(sample_lineage,
 
     assert len(res.discovery_feedback) >= 1
     assert any(fb.feedback_type == DiscoveryFeedbackType.RELEVANT_SUCCESS_PATTERN for fb in res.discovery_feedback)
+
+
+def test_discovery_feedback_fail_closed_sentinel_blocks_acceptance_and_execution(sample_lineage, synthetic_ohlcv, sample_search_space, monkeypatch):
+    """HARD FAIL-CLOSED SENTINEL TEST: Prove malformed pattern triggers FAIL_CLOSED feedback and blocks acceptance/execution."""
+    ds, ea, cp = sample_lineage
+    engine = DiscoveryEngine(criteria=DiscoveryCriteria(min_observations_is=20, min_observations_oos=10))
+
+    accept_spy = MagicMock(side_effect=AssertionError("accept_hypothesis_for_research MUST NOT be called on FAIL_CLOSED feedback!"))
+    exec_spy = MagicMock(side_effect=AssertionError("run_research_experiment MUST NOT be called on FAIL_CLOSED feedback!"))
+
+    monkeypatch.setattr("src.evaluation.discovery_engine.accept_hypothesis_for_research", accept_spy)
+    monkeypatch.setattr("src.evaluation.discovery_engine.run_research_experiment", exec_spy)
+
+    # Malformed item in knowledge patterns (not a ResearchKnowledgePattern instance)
+    malformed_patterns = ["invalid_pattern_string"]  # type: ignore
+
+    res = engine.run_mathematical_discovery(
+        df=synthetic_ohlcv,
+        search_space=sample_search_space,
+        dataset_scope=ds,
+        execution_assumptions=ea,
+        code_provenance=cp,
+        wf_train_size=40,
+        wf_test_size=15,
+        limit=1,
+        knowledge_patterns=malformed_patterns,
+        enable_discovery_feedback=True,
+    )
+
+    assert res.trial_ledger[0].status == "FAILED"
+    assert RejectionReason.GOVERNANCE_BLOCKED in res.trial_ledger[0].rejection_reasons
+    accept_spy.assert_not_called()
+    exec_spy.assert_not_called()
 
 
 # --- TEST 4: ACCEPTANCE FAILURE ---
