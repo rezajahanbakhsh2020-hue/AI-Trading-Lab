@@ -6,20 +6,19 @@ Connects promoted research candidates and evidence to the live execution decisio
 
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass, field
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from enum import Enum
 import hashlib
 import json
 import math
 from numbers import Real
-from typing import Any, Mapping, Optional, Sequence
+from typing import Any, Optional
 
 import pandas as pd
 
 from src.evaluation.research_constitution import (
     PromotionStatus,
-    RejectionReason,
     ResearchEvidence,
 )
 
@@ -37,185 +36,6 @@ class Direction(str, Enum):
 
 
 @dataclass(frozen=True)
-class AuthorizedLiveDecision:
-    """Canonical, immutable live decision artifact binding the authorized decision, risk levels, and authorization receipt."""
-
-    authorization_receipt: ProductionAuthorizationReceipt
-    candidate_id: str
-    strategy_name: str
-    strategy_version: str
-    symbol: str
-    timeframe: str
-
-    decision: ProductionDecision
-    risk_levels: ProductionRiskLevels
-
-    promoted_artifact_fingerprint: str
-    governance_decision_fingerprint: str
-    campaign_selection_decision_fingerprint: Optional[str]
-    authorization_fingerprint: str
-
-    event_time_utc: str
-    decision_artifact_fingerprint: str = field(init=False)
-
-    def __post_init__(self) -> None:
-        if not isinstance(self.authorization_receipt, ProductionAuthorizationReceipt):
-            raise ProductionRuntimeAuthorizationError(
-                f"authorization_receipt must be ProductionAuthorizationReceipt, got {type(self.authorization_receipt).__name__}"
-            )
-        if not isinstance(self.decision, ProductionDecision):
-            raise ProductionRuntimeAuthorizationError("decision must be a ProductionDecision instance.")
-        if not isinstance(self.risk_levels, ProductionRiskLevels):
-            raise ProductionRuntimeAuthorizationError("risk_levels must be a ProductionRiskLevels instance.")
-
-        rec = self.authorization_receipt
-
-        # Invariant checks against receipt
-        if self.candidate_id != rec.candidate_id:
-            raise ProductionRuntimeAuthorizationError(
-                f"candidate_id '{self.candidate_id}' does not match authorization receipt candidate_id '{rec.candidate_id}'."
-            )
-        if self.strategy_name != rec.strategy_name:
-            raise ProductionRuntimeAuthorizationError(
-                f"strategy_name '{self.strategy_name}' does not match authorization receipt strategy_name '{rec.strategy_name}'."
-            )
-        if self.strategy_version != rec.strategy_version:
-            raise ProductionRuntimeAuthorizationError(
-                f"strategy_version '{self.strategy_version}' does not match authorization receipt strategy_version '{rec.strategy_version}'."
-            )
-        if self.symbol.upper() != rec.symbol.upper():
-            raise ProductionRuntimeAuthorizationError(
-                f"symbol '{self.symbol}' does not match authorization receipt symbol '{rec.symbol}'."
-            )
-        if self.timeframe != rec.timeframe:
-            raise ProductionRuntimeAuthorizationError(
-                f"timeframe '{self.timeframe}' does not match authorization receipt timeframe '{rec.timeframe}'."
-            )
-        if self.promoted_artifact_fingerprint != rec.promoted_artifact_fingerprint:
-            raise ProductionRuntimeAuthorizationError(
-                f"promoted_artifact_fingerprint mismatch against authorization receipt."
-            )
-        if self.governance_decision_fingerprint != rec.governance_decision_fingerprint:
-            raise ProductionRuntimeAuthorizationError(
-                f"governance_decision_fingerprint mismatch against authorization receipt."
-            )
-        if self.campaign_selection_decision_fingerprint != rec.campaign_selection_decision_fingerprint:
-            raise ProductionRuntimeAuthorizationError(
-                f"campaign_selection_decision_fingerprint mismatch against authorization receipt."
-            )
-        if self.authorization_fingerprint != rec.authorization_fingerprint:
-            raise ProductionRuntimeAuthorizationError(
-                f"authorization_fingerprint mismatch against authorization receipt."
-            )
-
-        # Decision & Risk invariants against receipt/candidate identity
-        if self.decision.candidate_id != rec.candidate_id:
-            raise ProductionRuntimeAuthorizationError(
-                f"Decision candidate_id '{self.decision.candidate_id}' does not match authorization candidate_id '{rec.candidate_id}'."
-            )
-        if self.decision.symbol.upper() != rec.symbol.upper():
-            raise ProductionRuntimeAuthorizationError(
-                f"Decision symbol '{self.decision.symbol}' does not match authorization symbol '{rec.symbol}'."
-            )
-        if self.decision.timeframe != rec.timeframe:
-            raise ProductionRuntimeAuthorizationError(
-                f"Decision timeframe '{self.decision.timeframe}' does not match authorization timeframe '{rec.timeframe}'."
-            )
-        if self.risk_levels.decision_id != self.decision.decision_id:
-            raise ProductionRuntimeAuthorizationError(
-                f"Risk decision_id '{self.risk_levels.decision_id}' does not match decision ID '{self.decision.decision_id}'."
-            )
-
-        if not self.event_time_utc or not str(self.event_time_utc).strip():
-            raise ProductionRuntimeAuthorizationError("event_time_utc must be a non-empty string.")
-
-        object.__setattr__(self, "symbol", self.symbol.upper())
-        object.__setattr__(self, "event_time_utc", str(self.event_time_utc).strip())
-
-        payload = {
-            "candidate_id": self.candidate_id,
-            "strategy_name": self.strategy_name,
-            "strategy_version": self.strategy_version,
-            "symbol": self.symbol,
-            "timeframe": self.timeframe,
-            "decision_id": self.decision.decision_id,
-            "risk_id": self.risk_levels.risk_id,
-            "promoted_artifact_fingerprint": self.promoted_artifact_fingerprint,
-            "governance_decision_fingerprint": self.governance_decision_fingerprint,
-            "campaign_selection_decision_fingerprint": self.campaign_selection_decision_fingerprint,
-            "authorization_fingerprint": self.authorization_fingerprint,
-            "event_time_utc": self.event_time_utc,
-        }
-        serialized = json.dumps(payload, sort_keys=True, ensure_ascii=True)
-        object.__setattr__(
-            self,
-            "decision_artifact_fingerprint",
-            hashlib.sha256(serialized.encode("utf-8")).hexdigest(),
-        )
-
-    @classmethod
-    def create(
-        cls,
-        *,
-        authorization: ProductionRuntimeAuthorization | ProductionAuthorizationReceipt,
-        candidate: PromotedCandidateArtifact,
-        decision: ProductionDecision,
-        risk_levels: ProductionRiskLevels,
-        event_time_utc: Optional[str] = None,
-    ) -> AuthorizedLiveDecision:
-        """Construct a canonical AuthorizedLiveDecision from an authorized candidate and its evaluated decision."""
-        if not isinstance(candidate, PromotedCandidateArtifact):
-            raise TypeError("candidate must be a PromotedCandidateArtifact instance.")
-
-        receipt = (
-            authorization
-            if isinstance(authorization, ProductionAuthorizationReceipt)
-            else ProductionAuthorizationReceipt.from_authorization(authorization)
-        )
-
-        if candidate.candidate_id != receipt.candidate_id:
-            raise ProductionRuntimeAuthorizationError(
-                f"Supplied candidate ID '{candidate.candidate_id}' does not match authorization receipt candidate ID '{receipt.candidate_id}'."
-            )
-
-        evt_time = event_time_utc or decision.market_timestamp
-
-        return cls(
-            authorization_receipt=receipt,
-            candidate_id=receipt.candidate_id,
-            strategy_name=receipt.strategy_name,
-            strategy_version=receipt.strategy_version,
-            symbol=receipt.symbol,
-            timeframe=receipt.timeframe,
-            decision=decision,
-            risk_levels=risk_levels,
-            promoted_artifact_fingerprint=receipt.promoted_artifact_fingerprint,
-            governance_decision_fingerprint=receipt.governance_decision_fingerprint,
-            campaign_selection_decision_fingerprint=receipt.campaign_selection_decision_fingerprint,
-            authorization_fingerprint=receipt.authorization_fingerprint,
-            event_time_utc=evt_time,
-        )
-
-    def as_dict(self) -> dict[str, Any]:
-        return {
-            "decision_artifact_fingerprint": self.decision_artifact_fingerprint,
-            "authorization_receipt": self.authorization_receipt.as_dict(),
-            "candidate_id": self.candidate_id,
-            "strategy_name": self.strategy_name,
-            "strategy_version": self.strategy_version,
-            "symbol": self.symbol,
-            "timeframe": self.timeframe,
-            "decision": self.decision.as_dict(),
-            "risk_levels": self.risk_levels.as_dict(),
-            "promoted_artifact_fingerprint": self.promoted_artifact_fingerprint,
-            "governance_decision_fingerprint": self.governance_decision_fingerprint,
-            "campaign_selection_decision_fingerprint": self.campaign_selection_decision_fingerprint,
-            "authorization_fingerprint": self.authorization_fingerprint,
-            "event_time_utc": self.event_time_utc,
-        }
-
-
-@dataclass(frozen=True)
 class ProductionAuthorizationReceipt:
     """Canonical immutable projection of ProductionRuntimeAuthorization for durable execution lineage."""
 
@@ -230,8 +50,15 @@ class ProductionAuthorizationReceipt:
     authorization_policy_version: str
     authorized_at_utc: str
     authorization_fingerprint: str
+    operational_stability_score: float
 
     def __post_init__(self) -> None:
+        if isinstance(self.operational_stability_score, bool) or not isinstance(self.operational_stability_score, Real):
+            raise ProductionRuntimeAuthorizationError("operational_stability_score must be a numeric float.")
+        f_stab = float(self.operational_stability_score)
+        if not math.isfinite(f_stab):
+            raise ProductionRuntimeAuthorizationError("operational_stability_score must be finite (not NaN or infinity).")
+        object.__setattr__(self, "operational_stability_score", f_stab)
         if not self.candidate_id or not str(self.candidate_id).strip():
             raise ProductionRuntimeAuthorizationError("candidate_id must be a non-empty string.")
         if not self.strategy_name or not str(self.strategy_name).strip():
@@ -295,6 +122,7 @@ class ProductionAuthorizationReceipt:
             authorization_policy_version=authorization.authorization_policy_version,
             authorized_at_utc=authorization.authorized_at_utc,
             authorization_fingerprint=authorization.authorization_fingerprint,
+            operational_stability_score=authorization.operational_stability_score,
         )
 
     def as_dict(self) -> dict[str, Any]:
@@ -310,6 +138,7 @@ class ProductionAuthorizationReceipt:
             "authorization_policy_version": self.authorization_policy_version,
             "authorized_at_utc": self.authorized_at_utc,
             "authorization_fingerprint": self.authorization_fingerprint,
+            "operational_stability_score": self.operational_stability_score,
         }
 
 
@@ -329,10 +158,17 @@ class ProductionRuntimeAuthorization:
 
     authorization_policy_version: str
     authorized_at_utc: str
+    operational_stability_score: float
 
     authorization_fingerprint: str = field(init=False)
 
     def __post_init__(self) -> None:
+        if isinstance(self.operational_stability_score, bool) or not isinstance(self.operational_stability_score, Real):
+            raise ProductionRuntimeAuthorizationError("operational_stability_score must be a numeric float.")
+        f_stab = float(self.operational_stability_score)
+        if not math.isfinite(f_stab):
+            raise ProductionRuntimeAuthorizationError("operational_stability_score must be finite (not NaN or infinity).")
+        object.__setattr__(self, "operational_stability_score", f_stab)
         if not self.candidate_id or not str(self.candidate_id).strip():
             raise ProductionRuntimeAuthorizationError("candidate_id must be a non-empty string.")
         if not self.strategy_name or not str(self.strategy_name).strip():
@@ -382,6 +218,7 @@ class ProductionRuntimeAuthorization:
             "campaign_selection_decision_fingerprint": self.campaign_selection_decision_fingerprint,
             "authorization_policy_version": self.authorization_policy_version,
             "authorized_at_utc": self.authorized_at_utc,
+            "operational_stability_score": self.operational_stability_score,
         }
         serialized = json.dumps(payload, sort_keys=True, ensure_ascii=True)
         object.__setattr__(
@@ -464,6 +301,7 @@ def authorize_production_runtime(
         campaign_selection_decision_fingerprint=promoted_candidate.campaign_selection_decision_fingerprint,
         authorization_policy_version=authorization_policy_version,
         authorized_at_utc=authorized_at.isoformat(),
+        operational_stability_score=promoted_candidate.operational_stability_score,
     )
 
 
@@ -496,6 +334,7 @@ class PromotedCandidateArtifact:
     evidence: ResearchEvidence
     symbol: str
     timeframe: str
+    operational_stability_score: float
     parameters: dict[str, Any] = field(default_factory=dict)
     policy: ProductionPromotionPolicy = field(default_factory=ProductionPromotionPolicy)
     governance_decision: Any | None = None
@@ -504,6 +343,12 @@ class PromotedCandidateArtifact:
     artifact_fingerprint: str = field(init=False)
 
     def __post_init__(self) -> None:
+        if isinstance(self.operational_stability_score, bool) or not isinstance(self.operational_stability_score, Real):
+            raise ValueError("operational_stability_score must be a numeric float.")
+        f_stab = float(self.operational_stability_score)
+        if not math.isfinite(f_stab):
+            raise ValueError("operational_stability_score must be finite (not NaN or infinity).")
+        object.__setattr__(self, "operational_stability_score", f_stab)
         if not self.candidate_id or not self.candidate_id.strip():
             raise ValueError("candidate_id must be a non-empty string.")
         if not self.strategy_name or not self.strategy_name.strip():
@@ -516,6 +361,7 @@ class PromotedCandidateArtifact:
             raise ValueError("symbol must be a non-empty string.")
         if not self.timeframe or not self.timeframe.strip():
             raise ValueError("timeframe must be a non-empty string.")
+
 
         merged_params = dict(self.evidence.spec.parameters) if (self.evidence and self.evidence.spec.parameters) else {}
         if self.parameters:
@@ -566,6 +412,7 @@ class PromotedCandidateArtifact:
             "policy_version": self.policy.policy_version,
             "governance_decision_fingerprint": self.governance_decision_fingerprint,
             "campaign_selection_decision_fingerprint": self.campaign_selection_decision_fingerprint,
+            "operational_stability_score": self.operational_stability_score,
         }
         serialized = json.dumps(payload, sort_keys=True, ensure_ascii=True)
         object.__setattr__(
@@ -582,6 +429,7 @@ class PromotedCandidateArtifact:
         evidence: ResearchEvidence,
         symbol: str,
         timeframe: str,
+        operational_stability_score: float,
         parameters: Optional[dict[str, Any]] = None,
         policy: Optional[ProductionPromotionPolicy] = None,
         governance_decision: Any | None = None,
@@ -607,6 +455,7 @@ class PromotedCandidateArtifact:
             governance_decision=governance_decision,
             governance_decision_fingerprint=governance_decision_fingerprint,
             campaign_selection_decision_fingerprint=campaign_selection_decision_fingerprint,
+            operational_stability_score=operational_stability_score,
         )
 
 
@@ -801,7 +650,7 @@ class ProductionDecision:
     symbol: str
     timeframe: str
     decision_timestamp: str
-    market_timestamp: str
+    market_timestamp: str | None
     direction: Direction
     reason: str
     entry_price: Optional[float]
@@ -823,10 +672,16 @@ class ProductionDecision:
             raise ValueError("timeframe must be a non-empty string.")
         if not self.decision_timestamp or not self.decision_timestamp.strip():
             raise ValueError("decision_timestamp must be a non-empty string.")
-        if not self.market_timestamp or not self.market_timestamp.strip():
-            raise ValueError("market_timestamp must be a non-empty string.")
+        if self.market_timestamp is not None:
+            mts = str(self.market_timestamp).strip()
+            if not mts:
+                raise ValueError("market_timestamp cannot be whitespace if provided.")
+            object.__setattr__(self, "market_timestamp", mts)
+
         if not isinstance(self.direction, Direction):
             raise TypeError("direction must be a Direction enum member.")
+        if self.direction in (Direction.BUY, Direction.SELL) and self.market_timestamp is None:
+            raise ValueError("Executable decision requires a non-empty market_timestamp.")
 
         if self.direction in (Direction.BUY, Direction.SELL):
             if self.entry_price is None or not math.isfinite(self.entry_price) or self.entry_price <= 0:
@@ -876,34 +731,10 @@ def evaluate_production_decision(
     data: pd.DataFrame,
     reference_now: Optional[Any] = None,
     max_age_seconds: float = 300.0,
-    authorization: Optional[ProductionRuntimeAuthorization | ProductionAuthorizationReceipt] = None,
 ) -> ProductionDecision:
     """Evaluate promoted candidate strategy against live market data to produce an authoritative ProductionDecision."""
     if not isinstance(candidate, PromotedCandidateArtifact):
         raise TypeError("candidate must be a PromotedCandidateArtifact instance.")
-
-    if authorization is not None:
-        rec = (
-            authorization
-            if isinstance(authorization, ProductionAuthorizationReceipt)
-            else ProductionAuthorizationReceipt.from_authorization(authorization)
-        )
-        if rec.candidate_id != candidate.candidate_id:
-            raise ProductionRuntimeAuthorizationError(
-                f"Authorization candidate_id '{rec.candidate_id}' does not match candidate '{candidate.candidate_id}'."
-            )
-        if rec.symbol.upper() != candidate.symbol.upper():
-            raise ProductionRuntimeAuthorizationError(
-                f"Authorization symbol '{rec.symbol}' does not match candidate symbol '{candidate.symbol}'."
-            )
-        if rec.timeframe != candidate.timeframe:
-            raise ProductionRuntimeAuthorizationError(
-                f"Authorization timeframe '{rec.timeframe}' does not match candidate timeframe '{candidate.timeframe}'."
-            )
-        if rec.promoted_artifact_fingerprint != candidate.artifact_fingerprint:
-            raise ProductionRuntimeAuthorizationError(
-                "Authorization artifact fingerprint mismatch."
-            )
 
     latest_bar = validate_market_data_for_production(
         data=data,
@@ -993,7 +824,7 @@ class ProductionSignal:
     evidence_id: str
     symbol: str
     timeframe: str
-    market_timestamp: str
+    market_timestamp: str | None
     direction: Direction
     entry_price: Optional[float]
     signal_id: str = field(init=False)
@@ -1009,10 +840,16 @@ class ProductionSignal:
             raise ValueError("symbol must be a non-empty string.")
         if not self.timeframe or not self.timeframe.strip():
             raise ValueError("timeframe must be a non-empty string.")
-        if not self.market_timestamp or not self.market_timestamp.strip():
-            raise ValueError("market_timestamp must be a non-empty string.")
+        if self.market_timestamp is not None:
+            mts = str(self.market_timestamp).strip()
+            if not mts:
+                raise ValueError("market_timestamp cannot be whitespace if provided.")
+            object.__setattr__(self, "market_timestamp", mts)
+
         if not isinstance(self.direction, Direction):
             raise TypeError("direction must be a Direction enum member.")
+        if self.direction in (Direction.BUY, Direction.SELL) and self.market_timestamp is None:
+            raise ValueError("Executable signal requires a non-empty market_timestamp.")
 
         payload = {
             "decision_id": self.decision_id,
@@ -1311,7 +1148,7 @@ class ProductionIntelligencePublication:
     symbol: str
     timeframe: str
     decision_timestamp: str
-    market_data_timestamp: str
+    market_data_timestamp: str | None
     decision: str
     confidence: Optional[float]
     entry: Optional[float]
@@ -1322,6 +1159,7 @@ class ProductionIntelligencePublication:
     tp3: Optional[float]
     trailing_stop: Optional[float]
     risk_reward_ratio: Optional[float]
+    operational_stability_score: float
     provenance: dict[str, Any]
 
     def __post_init__(self) -> None:
@@ -1343,6 +1181,34 @@ class ProductionIntelligencePublication:
             raise ValueError("symbol must be a non-empty string.")
         if not self.timeframe or not self.timeframe.strip():
             raise ValueError("timeframe must be a non-empty string.")
+
+        if isinstance(self.operational_stability_score, bool) or not isinstance(self.operational_stability_score, Real):
+            raise ValueError("operational_stability_score must be a numeric float.")
+        f_stab = float(self.operational_stability_score)
+        if not math.isfinite(f_stab):
+            raise ValueError("operational_stability_score must be finite (not NaN or infinity).")
+        object.__setattr__(self, "operational_stability_score", f_stab)
+
+        # Validate decision_timestamp as timezone-aware ISO-8601 string
+        ts_dec_str = str(self.decision_timestamp).strip()
+        if not ts_dec_str:
+            raise ValueError("decision_timestamp must be a non-empty string.")
+        try:
+            dt_dec = datetime.fromisoformat(ts_dec_str)
+            if dt_dec.tzinfo is None or dt_dec.tzinfo.utcoffset(dt_dec) is None:
+                raise ValueError("decision_timestamp must be timezone-aware ISO-8601.")
+        except Exception as exc:
+            raise ValueError(f"Invalid decision_timestamp '{self.decision_timestamp}': {exc}")
+
+        # Validate market_data_timestamp if present as timezone-aware ISO-8601 string
+        if self.market_data_timestamp is not None and str(self.market_data_timestamp).strip():
+            ts_mkt_str = str(self.market_data_timestamp).strip()
+            try:
+                dt_mkt = datetime.fromisoformat(ts_mkt_str)
+                if dt_mkt.tzinfo is None or dt_mkt.tzinfo.utcoffset(dt_mkt) is None:
+                    raise ValueError("market_data_timestamp must be timezone-aware ISO-8601.")
+            except Exception as exc:
+                raise ValueError(f"Invalid market_data_timestamp '{self.market_data_timestamp}': {exc}")
 
     @classmethod
     def from_artifacts(
@@ -1369,20 +1235,46 @@ class ProductionIntelligencePublication:
         if risk.decision_id != decision.decision_id:
             raise ValueError(f"Risk decision_id '{risk.decision_id}' does not match decision ID '{decision.decision_id}'.")
 
+        conf = confidence if confidence is not None else decision.confidence
+        stab_score = candidate.operational_stability_score
+
+        receipt = None
+        if authorization is not None:
+            receipt = (
+                authorization
+                if isinstance(authorization, ProductionAuthorizationReceipt)
+                else ProductionAuthorizationReceipt.from_authorization(authorization)
+            )
+
+        cld_fp = getattr(decision, "canonical_live_decision_fingerprint", None) or getattr(signal, "canonical_live_decision_fingerprint", None)
+        cld_state = getattr(decision, "current_lifecycle_state", None) or getattr(signal, "current_lifecycle_state", None)
+
         pub_raw = {
+            "schema_version": schema_version,
             "signal_id": signal.signal_id,
             "decision_id": decision.decision_id,
+            "strategy_id": candidate.strategy_name,
             "candidate_id": candidate.candidate_id,
-            "evidence_id": candidate.evidence.evidence_id,
-            "experiment_fingerprint": candidate.evidence.experiment_fingerprint,
+            "research_evidence_id": candidate.evidence.evidence_id,
+            "research_fingerprint": candidate.evidence.experiment_fingerprint,
             "symbol": decision.symbol.upper(),
             "timeframe": decision.timeframe,
-            "market_timestamp": decision.market_timestamp,
-            "direction": decision.direction.value,
-            "entry_price": decision.entry_price,
+            "market_data_timestamp": decision.market_timestamp,
+            "decision": decision.direction.value,
+            "confidence": conf,
+            "entry": decision.entry_price,
+            "invalidation": decision.invalidation_condition,
             "stop_loss": risk.stop_loss,
             "tp1": risk.tp1,
-            "schema_version": schema_version,
+            "tp2": risk.tp2,
+            "tp3": risk.tp3,
+            "trailing_stop": risk.trailing_stop,
+            "risk_reward_ratio": risk.risk_reward_ratio,
+            "strategy_name": candidate.strategy_name,
+            "strategy_version": candidate.strategy_version,
+            "operational_stability_score": stab_score,
+            "canonical_live_decision_fingerprint": str(cld_fp) if cld_fp else None,
+            "runtime_authorization_fingerprint": receipt.authorization_fingerprint if receipt else None,
         }
         serialized = json.dumps(pub_raw, sort_keys=True, ensure_ascii=True)
         pub_id = hashlib.sha256(serialized.encode("utf-8")).hexdigest()[:32]
@@ -1397,22 +1289,18 @@ class ProductionIntelligencePublication:
             "experiment_fingerprint": candidate.evidence.experiment_fingerprint,
             "artifact_fingerprint": candidate.artifact_fingerprint,
             "policy_version": candidate.policy.policy_version,
+            "strategy_name": candidate.strategy_name,
             "strategy_version": candidate.strategy_version,
+            "operational_stability_score": stab_score,
             "campaign_selection_decision_fingerprint": candidate.campaign_selection_decision_fingerprint,
+            "publication_contract_version": "1.0",
         }
 
-        conf = confidence if confidence is not None else decision.confidence
+        if candidate.governance_decision_fingerprint:
+            provenance["governance_decision_fingerprint"] = candidate.governance_decision_fingerprint
 
-        if authorization is not None:
-            receipt = (
-                authorization
-                if isinstance(authorization, ProductionAuthorizationReceipt)
-                else ProductionAuthorizationReceipt.from_authorization(authorization)
-            )
+        if receipt is not None:
             provenance.update({
-                "candidate_id": receipt.candidate_id,
-                "strategy_name": receipt.strategy_name,
-                "strategy_version": receipt.strategy_version,
                 "runtime_authorization_fingerprint": receipt.authorization_fingerprint,
                 "promoted_artifact_fingerprint": receipt.promoted_artifact_fingerprint,
                 "governance_decision_fingerprint": receipt.governance_decision_fingerprint,
@@ -1420,6 +1308,11 @@ class ProductionIntelligencePublication:
                 "authorization_policy_version": receipt.authorization_policy_version,
                 "authorized_at_utc": receipt.authorized_at_utc,
             })
+
+        if cld_fp:
+            provenance["canonical_live_decision_fingerprint"] = str(cld_fp)
+        if cld_state:
+            provenance["current_lifecycle_state"] = str(cld_state)
 
         return cls(
             schema_version=schema_version,
@@ -1444,6 +1337,7 @@ class ProductionIntelligencePublication:
             tp3=risk.tp3,
             trailing_stop=risk.trailing_stop,
             risk_reward_ratio=risk.risk_reward_ratio,
+            operational_stability_score=stab_score,
             provenance=provenance,
         )
 
@@ -1471,11 +1365,31 @@ class ProductionIntelligencePublication:
             "tp3": self.tp3,
             "trailing_stop": self.trailing_stop,
             "risk_reward_ratio": self.risk_reward_ratio,
+            "operational_stability_score": self.operational_stability_score,
             "provenance": dict(self.provenance),
         }
 
     def to_contract_v1_payload(self) -> dict[str, Any]:
         """Convert publication artifact into Contract v1.0 payload dict for Project 2."""
+        if not self.market_data_timestamp or not str(self.market_data_timestamp).strip():
+            raise ValueError("market_data_timestamp is required for Contract v1.0 payload delivery.")
+
+        # Validate market_data_timestamp as timezone-aware ISO-8601
+        ts_mkt_str = str(self.market_data_timestamp).strip()
+        try:
+            dt_ts = datetime.fromisoformat(ts_mkt_str)
+            if dt_ts.tzinfo is None or dt_ts.tzinfo.utcoffset(dt_ts) is None:
+                raise ValueError("market_data_timestamp must be timezone-aware ISO-8601.")
+        except Exception as exc:
+            raise ValueError(f"Invalid market_data_timestamp '{self.market_data_timestamp}': {exc}")
+
+        prov = dict(self.provenance)
+        prov["publication_contract_version"] = "1.0"
+
+        # Deterministic derivation of take_profit from canonical TP values:
+        # Uses TP2 if set, else TP1, else None.
+        tp_take = self.tp2 if self.tp2 is not None else (self.tp1 if self.tp1 is not None else None)
+
         return {
             "contract_version": self.schema_version,
             "event_id": self.publication_id,
@@ -1493,6 +1407,7 @@ class ProductionIntelligencePublication:
                 "strategy": self.strategy_id,
                 "candidate_id": self.candidate_id,
                 "confidence": self.confidence,
+                "stability_score": self.operational_stability_score,
                 "invalidation": self.invalidation,
                 "signal_label": self.decision,
                 "trend": "BULLISH" if self.decision == "BUY" else ("BEARISH" if self.decision == "SELL" else "NEUTRAL"),
@@ -1503,11 +1418,11 @@ class ProductionIntelligencePublication:
                 "tp1": self.tp1,
                 "tp2": self.tp2,
                 "tp3": self.tp3,
-                "take_profit": self.tp2 if self.tp2 is not None else self.tp1,
+                "take_profit": tp_take,
                 "risk_reward_ratio": self.risk_reward_ratio,
                 "trailing_stop": self.trailing_stop,
             },
-            "provenance": dict(self.provenance),
+            "provenance": prov,
         }
 
 
@@ -1550,7 +1465,6 @@ def build_live_production_decision(
     interval: str = DEFAULT_INTERVAL,
     candidate_id: Optional[str] = None,
     research_dir: Optional[Any] = None,
-    authorization: Optional[ProductionRuntimeAuthorization | ProductionAuthorizationReceipt] = None,
 ) -> dict[str, Any]:
     """Operational wrapper delegating directly to authoritative candidate resolution, decision evaluation, and risk calculation."""
     from live_trend import build_live_trend_snapshot
@@ -1587,23 +1501,27 @@ def build_live_production_decision(
             f"Operational production path fails closed."
         )
 
-    if "timestamp" in data.columns and not data.empty:
-        last_ts = pd.to_datetime(data["timestamp"].iloc[-1], utc=True)
-        now_ts = pd.Timestamp.now(tz="UTC")
-        if (now_ts - last_ts).total_seconds() > 300.0:
-            ref_now = last_ts
-        else:
-            ref_now = now_ts
-    else:
-        ref_now = None
-
-    if authorization is None:
-        authorization = authorize_production_runtime(
-            resolved_candidate,
-            symbol=symbol,
-            timeframe=interval,
-            now=ref_now,
+    # Strategy and stability score caller assertions against authoritative candidate lineage
+    if stable_strategy != resolved_candidate.strategy_name:
+        raise ValueError(
+            f"stable_strategy '{stable_strategy}' conflicts with candidate's authoritative strategy_name '{resolved_candidate.strategy_name}'."
         )
+
+    if abs(stability_score - resolved_candidate.operational_stability_score) > 1e-9:
+        raise ValueError(
+            f"Caller-supplied stability_score ({stability_score}) conflicts with candidate operational_stability_score ({resolved_candidate.operational_stability_score})."
+        )
+
+    ref_now = None
+
+    # Authorize runtime execution through canonical path
+    authorization = authorize_production_runtime(
+        resolved_candidate,
+        symbol=symbol,
+        timeframe=interval,
+        now=ref_now,
+    )
+    receipt = ProductionAuthorizationReceipt.from_authorization(authorization)
 
     # Authoritative evaluation through promoted candidate
     decision_obj = evaluate_production_decision(
@@ -1611,7 +1529,6 @@ def build_live_production_decision(
         data=data,
         reference_now=ref_now,
         max_age_seconds=float("inf"),
-        authorization=authorization,
     )
 
     from live_signal import generate_live_signal
@@ -1696,4 +1613,10 @@ def build_live_production_decision(
         "candidate_id": resolved_candidate.candidate_id,
         "evidence_id": resolved_candidate.evidence.evidence_id,
         "experiment_fingerprint": resolved_candidate.evidence.experiment_fingerprint,
+        "runtime_authorization_fingerprint": receipt.authorization_fingerprint,
+        "authorization_policy_version": receipt.authorization_policy_version,
+        "authorized_at_utc": receipt.authorized_at_utc,
+        "promoted_artifact_fingerprint": receipt.promoted_artifact_fingerprint,
+        "governance_decision_fingerprint": receipt.governance_decision_fingerprint,
+        "campaign_selection_decision_fingerprint": receipt.campaign_selection_decision_fingerprint,
     }
