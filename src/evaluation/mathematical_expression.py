@@ -12,6 +12,7 @@ import hashlib
 import json
 import math
 from dataclasses import dataclass, field
+from decimal import Decimal
 from typing import Any, Callable, Dict, List, Sequence, Set, Tuple, Union
 
 import numpy as np
@@ -215,23 +216,20 @@ class MathematicalExpression:
         if self.code_provenance is not None and not isinstance(self.code_provenance, CodeProvenance):
             raise MathematicalExpressionError(f"code_provenance must be instance of CodeProvenance, got {type(self.code_provenance)}")
 
-        # Propagate / validate lineage consistency across child nodes
+        # Enforce complete recursive lineage consistency across parent/child boundaries
         for child in self.children:
-            if self.dataset_scope is not None and child.dataset_scope is not None:
-                if self.dataset_scope != child.dataset_scope:
-                    raise MathematicalExpressionError(
-                        "DatasetScope mismatch between parent and child expression node."
-                    )
-            if self.execution_assumptions is not None and child.execution_assumptions is not None:
-                if self.execution_assumptions != child.execution_assumptions:
-                    raise MathematicalExpressionError(
-                        "ExecutionAssumptions mismatch between parent and child expression node."
-                    )
-            if self.code_provenance is not None and child.code_provenance is not None:
-                if self.code_provenance != child.code_provenance:
-                    raise MathematicalExpressionError(
-                        "CodeProvenance mismatch between parent and child expression node."
-                    )
+            if self.dataset_scope != child.dataset_scope:
+                raise MathematicalExpressionError(
+                    f"Lineage inconsistency for DatasetScope in parent ({self.dataset_scope}) and child ({child.dataset_scope}) relationship."
+                )
+            if self.execution_assumptions != child.execution_assumptions:
+                raise MathematicalExpressionError(
+                    f"Lineage inconsistency for ExecutionAssumptions in parent ({self.execution_assumptions}) and child ({child.execution_assumptions}) relationship."
+                )
+            if self.code_provenance != child.code_provenance:
+                raise MathematicalExpressionError(
+                    f"Lineage inconsistency for CodeProvenance in parent ({self.code_provenance}) and child ({child.code_provenance}) relationship."
+                )
 
     def _check_cycles(self, seen: Set[int] | None = None) -> None:
         """Detect self-reference / cycles in expression DAG structure."""
@@ -666,6 +664,11 @@ class MathematicalSearchSpace:
                 f"max_window_size must be an integer >= 1, got {self.max_window_size}"
             )
 
+        if self.max_window_size < self.max_lag:
+            raise SearchSpaceValidationError(
+                f"max_window_size ({self.max_window_size}) cannot be smaller than max_lag ({self.max_lag})."
+            )
+
         # Constant bounds
         if not isinstance(self.constant_bounds, tuple) or len(self.constant_bounds) != 2:
             raise SearchSpaceValidationError("constant_bounds must be a tuple of (min_val, max_val)")
@@ -787,6 +790,8 @@ class MathematicalSearchSpace:
             raise SearchSpaceValidationError(f"Expected MathematicalExpression, got {type(expr)}")
 
         # Check operators, constant bounds, precision, and lags recursively
+        prec_dec = Decimal(str(self.constant_precision))
+
         def _check_node_ops(node: MathematicalExpression) -> None:
             if node.operator not in self.allowed_operators:
                 raise SearchSpaceValidationError(
@@ -805,10 +810,9 @@ class MathematicalSearchSpace:
                         f"Constant value {c} is out of search space bounds ({c_min}, {c_max})."
                     )
 
-                # Validate constant precision alignment without silent rounding
-                ratio = c / self.constant_precision
-                nearest_int = round(ratio)
-                if abs(ratio - nearest_int) > 1e-9:
+                # Validate constant precision alignment using exact Decimal arithmetic
+                const_dec = Decimal(str(c))
+                if const_dec % prec_dec != Decimal("0"):
                     raise SearchSpaceValidationError(
                         f"Constant value {c} violates search space constant_precision constraint ({self.constant_precision})."
                     )
@@ -849,33 +853,44 @@ class MathematicalSearchSpace:
                 f"Expression complexity {expr.node_count} exceeds search space max_complexity limit of {self.max_complexity}."
             )
 
-        # Fail-Closed Research Lineage Boundary Checks
-        if self.dataset_scope is not None:
-            if expr.dataset_scope is None:
-                raise SearchSpaceValidationError(
-                    "Expression is missing DatasetScope required by search space."
-                )
-            if self.dataset_scope != expr.dataset_scope:
-                raise SearchSpaceValidationError(
-                    "Expression DatasetScope does not match search space DatasetScope."
-                )
+        if expr.max_lookback > self.max_window_size:
+            raise SearchSpaceValidationError(
+                f"Expression max_lookback {expr.max_lookback} exceeds search space max_window_size limit of {self.max_window_size}."
+            )
 
-        if self.execution_assumptions is not None:
-            if expr.execution_assumptions is None:
-                raise SearchSpaceValidationError(
-                    "Expression is missing ExecutionAssumptions required by search space."
-                )
-            if self.execution_assumptions != expr.execution_assumptions:
-                raise SearchSpaceValidationError(
-                    "Expression ExecutionAssumptions do not match search space ExecutionAssumptions."
-                )
+        # Fail-Closed Research Lineage Boundary Checks across EVERY node in the AST
+        def _check_node_lineage(node: MathematicalExpression) -> None:
+            if self.dataset_scope is not None:
+                if node.dataset_scope is None:
+                    raise SearchSpaceValidationError(
+                        "Expression is missing DatasetScope required by search space."
+                    )
+                if self.dataset_scope != node.dataset_scope:
+                    raise SearchSpaceValidationError(
+                        "Expression DatasetScope does not match search space DatasetScope."
+                    )
 
-        if self.code_provenance is not None:
-            if expr.code_provenance is None:
-                raise SearchSpaceValidationError(
-                    "Expression is missing CodeProvenance required by search space."
-                )
-            if self.code_provenance != expr.code_provenance:
-                raise SearchSpaceValidationError(
-                    "Expression CodeProvenance does not match search space CodeProvenance."
-                )
+            if self.execution_assumptions is not None:
+                if node.execution_assumptions is None:
+                    raise SearchSpaceValidationError(
+                        "Expression is missing ExecutionAssumptions required by search space."
+                    )
+                if self.execution_assumptions != node.execution_assumptions:
+                    raise SearchSpaceValidationError(
+                        "Expression ExecutionAssumptions do not match search space ExecutionAssumptions."
+                    )
+
+            if self.code_provenance is not None:
+                if node.code_provenance is None:
+                    raise SearchSpaceValidationError(
+                        "Expression is missing CodeProvenance required by search space."
+                    )
+                if self.code_provenance != node.code_provenance:
+                    raise SearchSpaceValidationError(
+                        "Expression CodeProvenance does not match search space CodeProvenance."
+                    )
+
+            for child in node.children:
+                _check_node_lineage(child)
+
+        _check_node_lineage(expr)

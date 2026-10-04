@@ -2,7 +2,7 @@
 
 Covers Four-Layer Beta Plus Testing Requirements:
 - Stage 1: Local correctness (construction, AST nodes, canonical serialization, fingerprinting, search space, search budget)
-- Stage 2: Temporal & Adversarial (negative lag, lookback propagation, safe operators, domain violations, NaN/Inf, mutation, lossless numeric precision, constant_precision enforcement, missing/mismatched lineage fail-closed)
+- Stage 2: Temporal & Adversarial (negative lag, lookback propagation, safe operators, domain violations, NaN/Inf, mutation, lossless numeric precision, exact Decimal constant_precision, recursive lineage, max_window_size, point vs Series temporal equivalence)
 - Stage 3: Research Integration (DatasetScope, ExecutionAssumptions, CodeProvenance compatibility, roundtrip serialization with hex floats)
 - Stage 4: Boundary & Anti-Recurrence (Zero coupling to ProductionDecision/live execution/risk/P2, fail-closed governance)
 """
@@ -151,11 +151,9 @@ def test_invalid_arity_rejection():
     """Test rejection when child count does not match operator arity."""
     c = MathematicalExpression(operator=MathematicalOperator.CONSTANT, constant_value=1.0)
 
-    # ADD requires 2 children, give 1
     with pytest.raises(MathematicalExpressionError, match="requires arity 2"):
         MathematicalExpression(operator=MathematicalOperator.ADD, children=(c,))
 
-    # NEG requires 1 child, give 2
     with pytest.raises(MathematicalExpressionError, match="requires arity 1"):
         MathematicalExpression(operator=MathematicalOperator.NEG, children=(c, c))
 
@@ -189,6 +187,9 @@ def test_invalid_search_space_rejection():
     with pytest.raises(SearchSpaceValidationError, match="max_search_budget must be a positive integer"):
         MathematicalSearchSpace(search_id="s1", max_search_budget=0)
 
+    with pytest.raises(SearchSpaceValidationError, match="max_window_size .* cannot be smaller than max_lag"):
+        MathematicalSearchSpace(search_id="s1", max_lag=10, max_window_size=5)
+
 
 def test_deterministic_search_space_fingerprint_and_search_budget():
     """Test deterministic fingerprinting and max_search_budget participation in search space identity."""
@@ -199,6 +200,13 @@ def test_deterministic_search_space_fingerprint_and_search_budget():
     assert s1.to_canonical_json() == s2.to_canonical_json()
     assert s1.fingerprint == s2.fingerprint
     assert s1.fingerprint != s3.fingerprint
+
+
+def test_max_window_size_fingerprint_participation():
+    """Test that max_window_size participates in search space fingerprint."""
+    s1 = MathematicalSearchSpace(search_id="space1", max_lag=5, max_window_size=20)
+    s2 = MathematicalSearchSpace(search_id="space1", max_lag=5, max_window_size=30)
+    assert s1.fingerprint != s2.fingerprint
 
 
 # --- STAGE 2: TEMPORAL & ADVERSARIAL TESTS ---
@@ -222,11 +230,9 @@ def test_invalid_lookback_warmup_rejection_at_evaluation():
     )
     df = pd.DataFrame({"close": [10.0, 11.0, 12.0, 13.0, 14.0, 15.0]})
 
-    # t=4 with lag=5 requires t - lag = -1, which is invalid
     with pytest.raises(MathematicalEvaluationError, match="Insufficient lookback history"):
         expr.evaluate(df, t=4)
 
-    # t=5 with lag=5 evaluates at index 0 (value 10.0)
     assert expr.evaluate(df, t=5) == 10.0
 
 
@@ -240,72 +246,160 @@ def test_temporal_dependency_propagation_through_nested_expressions():
         lag=3,
     )
 
-    # parent lag 3 + max(child lag 2, child lag 4) = 7
     assert parent.max_lookback == 7
     assert parent.warmup_requirement == 7
 
 
-def test_constant_precision_enforcement_in_search_space():
-    """Test that constant_precision is enforced strictly during search space validation."""
-    space = MathematicalSearchSpace(
-        search_id="s_prec",
-        constant_precision=0.001,
+def test_max_window_size_constitutional_enforcement():
+    """Test max_window_size enforcement against expression max_lookback."""
+    space = MathematicalSearchSpace(search_id="s_window", max_lag=10, max_window_size=10)
+
+    # 1. Lookback == 5 <= 10 -> PASS
+    e_pass = MathematicalExpression(operator=MathematicalOperator.FEATURE, feature_name="close", lag=5)
+    assert e_pass.max_lookback == 5
+    space.validate_expression(e_pass)
+
+    # 2. Cumulative lookback exceeds max_window_size -> FAIL
+    child_lag6 = MathematicalExpression(operator=MathematicalOperator.FEATURE, feature_name="close", lag=6)
+    parent_lag6 = MathematicalExpression(
+        operator=MathematicalOperator.ADD,
+        children=(child_lag6, MathematicalExpression(operator=MathematicalOperator.CONSTANT, constant_value=1.0)),
+        lag=6,
     )
+    assert parent_lag6.max_lookback == 12
+    with pytest.raises(SearchSpaceValidationError, match="exceeds search space max_window_size limit of 10"):
+        space.validate_expression(parent_lag6)
 
-    # 1.502 aligns with 0.001 precision -> valid
-    e_valid = MathematicalExpression(operator=MathematicalOperator.CONSTANT, constant_value=1.502)
-    space.validate_expression(e_valid)
 
-    # 1.5025 does NOT align with 0.001 precision -> invalid
-    e_invalid = MathematicalExpression(operator=MathematicalOperator.CONSTANT, constant_value=1.5025)
+def test_exact_decimal_constant_precision_enforcement():
+    """Test exact Decimal quantum step precision enforcement with zero epsilon/tolerance."""
+    space = MathematicalSearchSpace(search_id="s_prec", constant_precision=0.001)
+
+    # 1.502 -> PASS
+    e1 = MathematicalExpression(operator=MathematicalOperator.CONSTANT, constant_value=1.502)
+    space.validate_expression(e1)
+
+    # 1.503 -> PASS
+    e2 = MathematicalExpression(operator=MathematicalOperator.CONSTANT, constant_value=1.503)
+    space.validate_expression(e2)
+
+    # 1.5025 -> FAIL
+    e3 = MathematicalExpression(operator=MathematicalOperator.CONSTANT, constant_value=1.5025)
     with pytest.raises(SearchSpaceValidationError, match="violates search space constant_precision constraint"):
-        space.validate_expression(e_invalid)
+        space.validate_expression(e3)
+
+    # Adversarial boundary decimal tests
+    e_adv = MathematicalExpression(operator=MathematicalOperator.CONSTANT, constant_value=0.0001)
+    with pytest.raises(SearchSpaceValidationError, match="violates search space constant_precision constraint"):
+        space.validate_expression(e_adv)
 
 
-def test_fail_closed_lineage_validation_in_search_space():
-    """Test that search space validation fails closed if required lineage is missing or mismatched."""
+def test_recursive_ast_and_search_space_lineage_validation():
+    """Test recursive fail-closed lineage validation for DatasetScope, ExecutionAssumptions, and CodeProvenance across entire AST."""
     ds1 = DatasetScope("ds1", "XAUUSD", "1h", "2023-01-01", "2023-12-31")
     ds2 = DatasetScope("ds2", "XAUUSD", "1h", "2023-01-01", "2023-12-31")
     ea1 = ExecutionAssumptions(0.0001, 0.0002, 10.0)
     cp1 = CodeProvenance("commit_sha_123")
 
+    # 1. AST Construction: Parent has ds1, child has None -> FAIL
+    c_none = MathematicalExpression(operator=MathematicalOperator.CONSTANT, constant_value=1.0)
+    with pytest.raises(MathematicalExpressionError, match="Lineage inconsistency for DatasetScope"):
+        MathematicalExpression(operator=MathematicalOperator.ADD, children=(c_none, c_none), dataset_scope=ds1)
+
+    # 2. AST Construction: Parent has ds1, child has ds2 -> FAIL
+    c_ds2 = MathematicalExpression(operator=MathematicalOperator.CONSTANT, constant_value=1.0, dataset_scope=ds2)
+    with pytest.raises(MathematicalExpressionError, match="Lineage inconsistency for DatasetScope"):
+        MathematicalExpression(operator=MathematicalOperator.ADD, children=(c_ds2, c_ds2), dataset_scope=ds1)
+
+    # 3. Deep grandchild missing lineage in SearchSpace validation -> FAIL
     space = MathematicalSearchSpace(
-        search_id="s_lineage",
+        search_id="s_deep_lineage",
         dataset_scope=ds1,
         execution_assumptions=ea1,
         code_provenance=cp1,
     )
 
-    # 1. Valid matching lineage -> passes
-    e_valid = MathematicalExpression(
+    c_valid = MathematicalExpression(
         operator=MathematicalOperator.CONSTANT,
         constant_value=1.0,
         dataset_scope=ds1,
         execution_assumptions=ea1,
         code_provenance=cp1,
     )
-    space.validate_expression(e_valid)
-
-    # 2. Missing DatasetScope -> fails closed
-    e_missing_ds = MathematicalExpression(
-        operator=MathematicalOperator.CONSTANT,
-        constant_value=1.0,
+    p_valid = MathematicalExpression(
+        operator=MathematicalOperator.ADD,
+        children=(c_valid, c_valid),
+        dataset_scope=ds1,
         execution_assumptions=ea1,
         code_provenance=cp1,
     )
-    with pytest.raises(SearchSpaceValidationError, match="missing DatasetScope required by search space"):
-        space.validate_expression(e_missing_ds)
+    space.validate_expression(p_valid)
 
-    # 3. Mismatched DatasetScope -> fails closed
-    e_mismatch_ds = MathematicalExpression(
+    # Grandchild missing ExecutionAssumptions
+    c_missing_ea = MathematicalExpression(
         operator=MathematicalOperator.CONSTANT,
         constant_value=1.0,
-        dataset_scope=ds2,
-        execution_assumptions=ea1,
+        dataset_scope=ds1,
         code_provenance=cp1,
     )
-    with pytest.raises(SearchSpaceValidationError, match="DatasetScope does not match search space DatasetScope"):
-        space.validate_expression(e_mismatch_ds)
+    p_with_missing_grandchild = MathematicalExpression(
+        operator=MathematicalOperator.NEG,
+        children=(
+            MathematicalExpression(
+                operator=MathematicalOperator.ADD,
+                children=(c_missing_ea, c_missing_ea),
+                dataset_scope=ds1,
+                code_provenance=cp1,
+            ),
+        ),
+        dataset_scope=ds1,
+        code_provenance=cp1,
+    )
+    with pytest.raises(SearchSpaceValidationError, match="missing ExecutionAssumptions required by search space"):
+        space.validate_expression(p_with_missing_grandchild)
+
+
+def test_point_vs_series_temporal_evaluation_equivalence():
+    """Adversarial proof: Series evaluation result at row t MUST equal point evaluation at row t for all valid t."""
+    df = pd.DataFrame({"close": list(range(20)), "volume": [100 + i * 5 for i in range(20)]})
+
+    # Test 1: Single FEATURE with lag=2
+    f_lag2 = MathematicalExpression(operator=MathematicalOperator.FEATURE, feature_name="close", lag=2)
+    s1 = f_lag2.evaluate(df, t=None)
+    for row in range(f_lag2.max_lookback, len(df)):
+        assert s1.iloc[row] == df["close"].iloc[row - 2]
+        assert s1.iloc[row] == f_lag2.evaluate(df, t=row)
+
+    # Test 2: Nested FEATURE(close, lag=2) + CONSTANT(10) with parent lag=3 -> close[t-5] + 10
+    parent_lag3 = MathematicalExpression(
+        operator=MathematicalOperator.ADD,
+        children=(f_lag2, MathematicalExpression(operator=MathematicalOperator.CONSTANT, constant_value=10.0)),
+        lag=3,
+    )
+    assert parent_lag3.max_lookback == 5
+    s2 = parent_lag3.evaluate(df, t=None)
+    for row in range(parent_lag3.max_lookback, len(df)):
+        expected_val = df["close"].iloc[row - 5] + 10.0
+        assert s2.iloc[row] == expected_val
+        assert s2.iloc[row] == parent_lag3.evaluate(df, t=row)
+
+    # Test 3: Multi-branch nested lags (Branch A lag 2, Branch B lag 4, parent lag 1)
+    b_left = MathematicalExpression(operator=MathematicalOperator.FEATURE, feature_name="close", lag=2)
+    b_right = MathematicalExpression(operator=MathematicalOperator.FEATURE, feature_name="volume", lag=4)
+    multi_branch = MathematicalExpression(
+        operator=MathematicalOperator.MUL,
+        children=(b_left, b_right),
+        lag=1,
+    )
+    assert multi_branch.max_lookback == 5
+    s3 = multi_branch.evaluate(df, t=None)
+    for row in range(multi_branch.max_lookback, len(df)):
+        pt_val = multi_branch.evaluate(df, t=row)
+        assert s3.iloc[row] == pt_val
+
+    # Test 4: Warmup rows are NaN in Series
+    for row in range(multi_branch.max_lookback):
+        assert pd.isna(s3.iloc[row])
 
 
 def test_unsafe_protected_division_domain_violation():
@@ -393,7 +487,7 @@ def test_dataset_scope_mismatch_cannot_be_silently_accepted():
     child1 = MathematicalExpression(operator=MathematicalOperator.CONSTANT, constant_value=1.0, dataset_scope=ds1)
     child2 = MathematicalExpression(operator=MathematicalOperator.CONSTANT, constant_value=2.0, dataset_scope=ds2)
 
-    with pytest.raises(MathematicalExpressionError, match="DatasetScope mismatch"):
+    with pytest.raises(MathematicalExpressionError, match="Lineage inconsistency"):
         MathematicalExpression(
             operator=MathematicalOperator.ADD,
             children=(child1, child2),
