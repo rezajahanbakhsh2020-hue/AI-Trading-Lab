@@ -179,7 +179,7 @@ class BiQuoteProvider:
             )
 
         if self._quote_fetcher is None:
-            from app_live import fetch_xauusd_quote
+            from src.data.biquote import fetch_xauusd_quote
             quote_fn = fetch_xauusd_quote
         else:
             quote_fn = self._quote_fetcher
@@ -205,7 +205,7 @@ class BiQuoteProvider:
             )
 
         if self._ohlc_fetcher is None:
-            from app_live import fetch_xauusd_ohlc
+            from src.data.biquote import fetch_xauusd_ohlc
             ohlc_fn = fetch_xauusd_ohlc
         else:
             ohlc_fn = self._ohlc_fetcher

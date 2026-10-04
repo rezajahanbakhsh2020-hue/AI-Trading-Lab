@@ -86,7 +86,7 @@ def test_fetch_xauusd_ohlc_returns_valid_dataframe():
     payload = make_ohlc_payload()
 
     with patch(
-        "app_live.urlopen",
+        "src.data.biquote.urlopen",
         return_value=FakeResponse(payload),
     ):
         data = app_live.fetch_xauusd_ohlc(
@@ -130,7 +130,7 @@ def test_fetch_xauusd_ohlc_rejects_wrong_symbol():
     payload = make_ohlc_payload(symbol="EURUSD")
 
     with patch(
-        "app_live.urlopen",
+        "src.data.biquote.urlopen",
         return_value=FakeResponse(payload),
     ):
         with pytest.raises(
@@ -151,7 +151,7 @@ def test_fetch_xauusd_ohlc_rejects_missing_bars():
     }
 
     with patch(
-        "app_live.urlopen",
+        "src.data.biquote.urlopen",
         return_value=FakeResponse(payload),
     ):
         with pytest.raises(
@@ -178,7 +178,7 @@ def test_fetch_xauusd_ohlc_rejects_missing_required_column():
     payload = make_ohlc_payload(bars=bars)
 
     with patch(
-        "app_live.urlopen",
+        "src.data.biquote.urlopen",
         return_value=FakeResponse(payload),
     ):
         with pytest.raises(
@@ -205,7 +205,7 @@ def test_fetch_xauusd_ohlc_rejects_invalid_timestamp():
     payload = make_ohlc_payload(bars=bars)
 
     with patch(
-        "app_live.urlopen",
+        "src.data.biquote.urlopen",
         return_value=FakeResponse(payload),
     ):
         with pytest.raises(
@@ -232,7 +232,7 @@ def test_fetch_xauusd_ohlc_rejects_invalid_ohlc_values():
     payload = make_ohlc_payload(bars=bars)
 
     with patch(
-        "app_live.urlopen",
+        "src.data.biquote.urlopen",
         return_value=FakeResponse(payload),
     ):
         with pytest.raises(
@@ -250,7 +250,7 @@ def test_fetch_xauusd_ohlc_handles_unsorted_bars():
     payload = make_ohlc_payload(bars=bars)
 
     with patch(
-        "app_live.urlopen",
+        "src.data.biquote.urlopen",
         return_value=FakeResponse(payload),
     ):
         data = app_live.fetch_xauusd_ohlc(
@@ -273,7 +273,7 @@ def test_fetch_xauusd_ohlc_deduplicates_timestamps():
     payload = make_ohlc_payload(bars=bars)
 
     with patch(
-        "app_live.urlopen",
+        "src.data.biquote.urlopen",
         return_value=FakeResponse(payload),
     ):
         data = app_live.fetch_xauusd_ohlc(
@@ -289,7 +289,7 @@ def test_fetch_xauusd_quote_returns_mid_price():
     payload = make_quote_payload(mid=3516.25)
 
     with patch(
-        "app_live.urlopen",
+        "src.data.biquote.urlopen",
         return_value=FakeResponse(payload),
     ):
         quote = app_live.fetch_xauusd_quote()
@@ -302,7 +302,7 @@ def test_fetch_xauusd_quote_rejects_wrong_symbol():
     payload = make_quote_payload(symbol="EURUSD")
 
     with patch(
-        "app_live.urlopen",
+        "src.data.biquote.urlopen",
         return_value=FakeResponse(payload),
     ):
         with pytest.raises(
@@ -317,7 +317,7 @@ def test_fetch_xauusd_quote_rejects_missing_mid():
     payload.pop("mid")
 
     with patch(
-        "app_live.urlopen",
+        "src.data.biquote.urlopen",
         return_value=FakeResponse(payload),
     ):
         with pytest.raises(
@@ -329,7 +329,7 @@ def test_fetch_xauusd_quote_rejects_missing_mid():
 
 def test_fetch_xauusd_quote_rejects_network_error():
     with patch(
-        "app_live.urlopen",
+        "src.data.biquote.urlopen",
         side_effect=URLError("network unavailable"),
     ):
         with pytest.raises(
