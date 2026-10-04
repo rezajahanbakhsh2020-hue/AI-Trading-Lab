@@ -1,9 +1,9 @@
 """Tests for Canonical Mathematical Expression + Search-Space Constitution Layer.
 
 Covers Four-Layer Beta Plus Testing Requirements:
-- Stage 1: Local correctness (construction, AST nodes, canonical serialization, fingerprinting, search space)
-- Stage 2: Temporal & Adversarial (negative lag, lookback propagation, safe operators, domain violations, NaN/Inf, mutation, lineage mismatch)
-- Stage 3: Research Integration (DatasetScope, ExecutionAssumptions, CodeProvenance compatibility, roundtrip serialization)
+- Stage 1: Local correctness (construction, AST nodes, canonical serialization, fingerprinting, search space, search budget)
+- Stage 2: Temporal & Adversarial (negative lag, lookback propagation, safe operators, domain violations, NaN/Inf, mutation, lossless numeric precision, constant_precision enforcement, missing/mismatched lineage fail-closed)
+- Stage 3: Research Integration (DatasetScope, ExecutionAssumptions, CodeProvenance compatibility, roundtrip serialization with hex floats)
 - Stage 4: Boundary & Anti-Recurrence (Zero coupling to ProductionDecision/live execution/risk/P2, fail-closed governance)
 """
 
@@ -124,6 +124,17 @@ def test_structurally_different_expressions_have_different_identities():
     assert node1.fingerprint != node2.fingerprint
 
 
+def test_lossless_numeric_fingerprint_precision():
+    """Test that distinct finite constants that differ beyond 12 decimal places receive different fingerprints."""
+    c1 = 1.0000000000000002
+    c2 = 1.0000000000000004
+
+    node1 = MathematicalExpression(operator=MathematicalOperator.CONSTANT, constant_value=c1)
+    node2 = MathematicalExpression(operator=MathematicalOperator.CONSTANT, constant_value=c2)
+
+    assert node1.fingerprint != node2.fingerprint
+
+
 def test_malformed_expression_rejection():
     """Test rejection of malformed or empty nodes."""
     with pytest.raises(MathematicalExpressionError, match="CONSTANT node requires constant_value"):
@@ -175,12 +186,15 @@ def test_invalid_search_space_rejection():
     with pytest.raises(SearchSpaceValidationError, match="constant_bounds min_val"):
         MathematicalSearchSpace(search_id="s1", constant_bounds=(100.0, -100.0))
 
+    with pytest.raises(SearchSpaceValidationError, match="max_search_budget must be a positive integer"):
+        MathematicalSearchSpace(search_id="s1", max_search_budget=0)
 
-def test_deterministic_search_space_fingerprint():
-    """Test deterministic fingerprinting for MathematicalSearchSpace."""
-    s1 = MathematicalSearchSpace(search_id="space1", max_depth=3, random_seed=123)
-    s2 = MathematicalSearchSpace(search_id="space1", max_depth=3, random_seed=123)
-    s3 = MathematicalSearchSpace(search_id="space1", max_depth=4, random_seed=123)
+
+def test_deterministic_search_space_fingerprint_and_search_budget():
+    """Test deterministic fingerprinting and max_search_budget participation in search space identity."""
+    s1 = MathematicalSearchSpace(search_id="space1", max_depth=3, max_search_budget=500, random_seed=123)
+    s2 = MathematicalSearchSpace(search_id="space1", max_depth=3, max_search_budget=500, random_seed=123)
+    s3 = MathematicalSearchSpace(search_id="space1", max_depth=3, max_search_budget=1000, random_seed=123)
 
     assert s1.to_canonical_json() == s2.to_canonical_json()
     assert s1.fingerprint == s2.fingerprint
@@ -229,6 +243,69 @@ def test_temporal_dependency_propagation_through_nested_expressions():
     # parent lag 3 + max(child lag 2, child lag 4) = 7
     assert parent.max_lookback == 7
     assert parent.warmup_requirement == 7
+
+
+def test_constant_precision_enforcement_in_search_space():
+    """Test that constant_precision is enforced strictly during search space validation."""
+    space = MathematicalSearchSpace(
+        search_id="s_prec",
+        constant_precision=0.001,
+    )
+
+    # 1.502 aligns with 0.001 precision -> valid
+    e_valid = MathematicalExpression(operator=MathematicalOperator.CONSTANT, constant_value=1.502)
+    space.validate_expression(e_valid)
+
+    # 1.5025 does NOT align with 0.001 precision -> invalid
+    e_invalid = MathematicalExpression(operator=MathematicalOperator.CONSTANT, constant_value=1.5025)
+    with pytest.raises(SearchSpaceValidationError, match="violates search space constant_precision constraint"):
+        space.validate_expression(e_invalid)
+
+
+def test_fail_closed_lineage_validation_in_search_space():
+    """Test that search space validation fails closed if required lineage is missing or mismatched."""
+    ds1 = DatasetScope("ds1", "XAUUSD", "1h", "2023-01-01", "2023-12-31")
+    ds2 = DatasetScope("ds2", "XAUUSD", "1h", "2023-01-01", "2023-12-31")
+    ea1 = ExecutionAssumptions(0.0001, 0.0002, 10.0)
+    cp1 = CodeProvenance("commit_sha_123")
+
+    space = MathematicalSearchSpace(
+        search_id="s_lineage",
+        dataset_scope=ds1,
+        execution_assumptions=ea1,
+        code_provenance=cp1,
+    )
+
+    # 1. Valid matching lineage -> passes
+    e_valid = MathematicalExpression(
+        operator=MathematicalOperator.CONSTANT,
+        constant_value=1.0,
+        dataset_scope=ds1,
+        execution_assumptions=ea1,
+        code_provenance=cp1,
+    )
+    space.validate_expression(e_valid)
+
+    # 2. Missing DatasetScope -> fails closed
+    e_missing_ds = MathematicalExpression(
+        operator=MathematicalOperator.CONSTANT,
+        constant_value=1.0,
+        execution_assumptions=ea1,
+        code_provenance=cp1,
+    )
+    with pytest.raises(SearchSpaceValidationError, match="missing DatasetScope required by search space"):
+        space.validate_expression(e_missing_ds)
+
+    # 3. Mismatched DatasetScope -> fails closed
+    e_mismatch_ds = MathematicalExpression(
+        operator=MathematicalOperator.CONSTANT,
+        constant_value=1.0,
+        dataset_scope=ds2,
+        execution_assumptions=ea1,
+        code_provenance=cp1,
+    )
+    with pytest.raises(SearchSpaceValidationError, match="DatasetScope does not match search space DatasetScope"):
+        space.validate_expression(e_mismatch_ds)
 
 
 def test_unsafe_protected_division_domain_violation():
@@ -282,10 +359,7 @@ def test_nan_inf_propagation_rejection():
 
 def test_cyclic_expression_rejection():
     """Test that self-referencing / cyclic structures fail closed during validation."""
-    # We test cycle detection by crafting an object with cyclic child references
     n1 = MathematicalExpression(operator=MathematicalOperator.CONSTANT, constant_value=1.0)
-
-    # Manually inject cycle to simulate malicious/buggy AST construction
     object.__setattr__(n1, "children", (n1,))
 
     with pytest.raises(MathematicalExpressionError, match="Cycle detected"):
@@ -458,7 +532,6 @@ def test_search_space_validation_fails_closed_before_execution():
         dataset_scope=ds,
     )
 
-    # Expression depth = 3 (exceeds max_depth 2)
     deep_expr = MathematicalExpression(
         operator=MathematicalOperator.NEG,
         children=(

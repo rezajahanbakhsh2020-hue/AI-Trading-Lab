@@ -40,6 +40,30 @@ class SearchSpaceValidationError(MathematicalExpressionError):
     """Raised when an expression violates search space constraints."""
 
 
+def _float_to_lossless_str(val: float | None) -> str | None:
+    """Convert float to exact, lossless hex string representation. Rejects NaN and +/-Inf."""
+    if val is None:
+        return None
+    f_val = float(val)
+    if math.isnan(f_val) or math.isinf(f_val):
+        raise MathematicalExpressionError(f"Non-finite numeric value rejected: {val}")
+    return f_val.hex()
+
+
+def _lossless_str_to_float(hex_str: str | None) -> float | None:
+    """Reconstruct float from exact, lossless hex string or fallback float string. Rejects NaN and +/-Inf."""
+    if hex_str is None:
+        return None
+    try:
+        f_val = float.fromhex(hex_str)
+    except ValueError:
+        f_val = float(hex_str)
+
+    if math.isnan(f_val) or math.isinf(f_val):
+        raise MathematicalExpressionError(f"Non-finite numeric value in deserialization rejected: {hex_str}")
+    return f_val
+
+
 class MathematicalOperator(str, enum.Enum):
     """Allowlist of canonical mathematically meaningful operator primitives."""
 
@@ -288,7 +312,7 @@ class MathematicalExpression:
             "operator": self.operator.value,
             "children": [child.to_canonical_dict() for child in self.children],
             "feature_name": self.feature_name,
-            "constant_value": f"{self.constant_value:.12g}" if self.constant_value is not None else None,
+            "constant_value": _float_to_lossless_str(self.constant_value),
             "lag": self.lag,
             "max_lookback": self.max_lookback,
             "warmup_requirement": self.warmup_requirement,
@@ -310,9 +334,9 @@ class MathematicalExpression:
             ),
             "execution_assumptions": (
                 {
-                    "transaction_cost": f"{self.execution_assumptions.transaction_cost:.12g}",
-                    "slippage": f"{self.execution_assumptions.slippage:.12g}",
-                    "latency_ms": f"{self.execution_assumptions.latency_ms:.12g}",
+                    "transaction_cost": _float_to_lossless_str(self.execution_assumptions.transaction_cost),
+                    "slippage": _float_to_lossless_str(self.execution_assumptions.slippage),
+                    "latency_ms": _float_to_lossless_str(self.execution_assumptions.latency_ms),
                 }
                 if self.execution_assumptions is not None
                 else None
@@ -352,7 +376,7 @@ class MathematicalExpression:
         children = tuple(cls.from_canonical_dict(c) for c in data.get("children", []))
         feature_name = data.get("feature_name")
         constant_str = data.get("constant_value")
-        constant_value = float(constant_str) if constant_str is not None else None
+        constant_value = _lossless_str_to_float(constant_str)
         lag = int(data.get("lag", 0))
         gen_id = data.get("generator_id", "manual")
         gen_ver = data.get("generator_version", "1.0")
@@ -365,9 +389,9 @@ class MathematicalExpression:
         ea_dict = data.get("execution_assumptions")
         execution_assumptions = (
             ExecutionAssumptions(
-                transaction_cost=float(ea_dict["transaction_cost"]),
-                slippage=float(ea_dict["slippage"]),
-                latency_ms=float(ea_dict["latency_ms"]),
+                transaction_cost=_lossless_str_to_float(ea_dict["transaction_cost"]),
+                slippage=_lossless_str_to_float(ea_dict["slippage"]),
+                latency_ms=_lossless_str_to_float(ea_dict["latency_ms"]),
             )
             if ea_dict is not None
             else None
@@ -556,7 +580,7 @@ class MathematicalExpression:
 class MathematicalSearchSpace:
     """Canonical immutable Search-Space Constitution for Mathematical Discovery.
 
-    Enforces structural, temporal, complexity, constant, and lineage search budget constraints.
+    Enforces structural, temporal, complexity, constant, search budget, and lineage constraints.
     """
 
     search_id: str
@@ -575,6 +599,7 @@ class MathematicalSearchSpace:
     constant_bounds: Tuple[float, float] = (-100.0, 100.0)
     constant_precision: float = 1e-4
     max_complexity: int = 20
+    max_search_budget: int = 1000
     generator_id: str = "manual_search_space"
     generator_version: str = "1.0"
     random_seed: int = 0
@@ -653,14 +678,19 @@ class MathematicalSearchSpace:
             )
         object.__setattr__(self, "constant_bounds", (c_min, c_max))
 
-        if not isinstance(self.constant_precision, (int, float)) or self.constant_precision <= 0:
+        if not isinstance(self.constant_precision, (int, float)) or isinstance(self.constant_precision, bool) or math.isnan(self.constant_precision) or math.isinf(self.constant_precision) or self.constant_precision <= 0:
             raise SearchSpaceValidationError(
-                f"constant_precision must be a positive float, got {self.constant_precision}"
+                f"constant_precision must be a positive finite float, got {self.constant_precision}"
             )
 
         if not isinstance(self.max_complexity, int) or self.max_complexity < 1:
             raise SearchSpaceValidationError(
                 f"max_complexity must be an integer >= 1, got {self.max_complexity}"
+            )
+
+        if not isinstance(self.max_search_budget, int) or isinstance(self.max_search_budget, bool) or self.max_search_budget < 1:
+            raise SearchSpaceValidationError(
+                f"max_search_budget must be a positive integer >= 1, got {self.max_search_budget}"
             )
 
         # Validate generator metadata
@@ -699,9 +729,10 @@ class MathematicalSearchSpace:
             "min_lag": self.min_lag,
             "max_lag": self.max_lag,
             "max_window_size": self.max_window_size,
-            "constant_bounds": [f"{self.constant_bounds[0]:.12g}", f"{self.constant_bounds[1]:.12g}"],
-            "constant_precision": f"{self.constant_precision:.12g}",
+            "constant_bounds": [_float_to_lossless_str(self.constant_bounds[0]), _float_to_lossless_str(self.constant_bounds[1])],
+            "constant_precision": _float_to_lossless_str(self.constant_precision),
             "max_complexity": self.max_complexity,
+            "max_search_budget": self.max_search_budget,
             "generator_id": self.generator_id,
             "generator_version": self.generator_version,
             "random_seed": self.random_seed,
@@ -718,9 +749,9 @@ class MathematicalSearchSpace:
             ),
             "execution_assumptions": (
                 {
-                    "transaction_cost": f"{self.execution_assumptions.transaction_cost:.12g}",
-                    "slippage": f"{self.execution_assumptions.slippage:.12g}",
-                    "latency_ms": f"{self.execution_assumptions.latency_ms:.12g}",
+                    "transaction_cost": _float_to_lossless_str(self.execution_assumptions.transaction_cost),
+                    "slippage": _float_to_lossless_str(self.execution_assumptions.slippage),
+                    "latency_ms": _float_to_lossless_str(self.execution_assumptions.latency_ms),
                 }
                 if self.execution_assumptions is not None
                 else None
@@ -755,7 +786,7 @@ class MathematicalSearchSpace:
         if not isinstance(expr, MathematicalExpression):
             raise SearchSpaceValidationError(f"Expected MathematicalExpression, got {type(expr)}")
 
-        # Check operators recursively
+        # Check operators, constant bounds, precision, and lags recursively
         def _check_node_ops(node: MathematicalExpression) -> None:
             if node.operator not in self.allowed_operators:
                 raise SearchSpaceValidationError(
@@ -772,6 +803,14 @@ class MathematicalSearchSpace:
                 if c < c_min or c > c_max:
                     raise SearchSpaceValidationError(
                         f"Constant value {c} is out of search space bounds ({c_min}, {c_max})."
+                    )
+
+                # Validate constant precision alignment without silent rounding
+                ratio = c / self.constant_precision
+                nearest_int = round(ratio)
+                if abs(ratio - nearest_int) > 1e-9:
+                    raise SearchSpaceValidationError(
+                        f"Constant value {c} violates search space constant_precision constraint ({self.constant_precision})."
                     )
 
             if node.lag < self.min_lag or node.lag > self.max_lag:
@@ -810,20 +849,32 @@ class MathematicalSearchSpace:
                 f"Expression complexity {expr.node_count} exceeds search space max_complexity limit of {self.max_complexity}."
             )
 
-        # Check research lineage alignment if specified on search space
-        if self.dataset_scope is not None and expr.dataset_scope is not None:
+        # Fail-Closed Research Lineage Boundary Checks
+        if self.dataset_scope is not None:
+            if expr.dataset_scope is None:
+                raise SearchSpaceValidationError(
+                    "Expression is missing DatasetScope required by search space."
+                )
             if self.dataset_scope != expr.dataset_scope:
                 raise SearchSpaceValidationError(
                     "Expression DatasetScope does not match search space DatasetScope."
                 )
 
-        if self.execution_assumptions is not None and expr.execution_assumptions is not None:
+        if self.execution_assumptions is not None:
+            if expr.execution_assumptions is None:
+                raise SearchSpaceValidationError(
+                    "Expression is missing ExecutionAssumptions required by search space."
+                )
             if self.execution_assumptions != expr.execution_assumptions:
                 raise SearchSpaceValidationError(
                     "Expression ExecutionAssumptions do not match search space ExecutionAssumptions."
                 )
 
-        if self.code_provenance is not None and expr.code_provenance is not None:
+        if self.code_provenance is not None:
+            if expr.code_provenance is None:
+                raise SearchSpaceValidationError(
+                    "Expression is missing CodeProvenance required by search space."
+                )
             if self.code_provenance != expr.code_provenance:
                 raise SearchSpaceValidationError(
                     "Expression CodeProvenance does not match search space CodeProvenance."
