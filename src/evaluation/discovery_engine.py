@@ -80,6 +80,24 @@ from src.evaluation.research_store import (
     save_research_campaign,
     save_research_experiment,
 )
+from src.evaluation.mathematical_expression import (
+    MathematicalSearchSpace,
+)
+from src.evaluation.mathematical_expression_candidate import (
+    MathematicalExpressionCandidate,
+    MathematicalSignalInterpretationPolicy,
+    validate_accepted_hypothesis_against_candidate,
+)
+from src.evaluation.mathematical_expression_strategy import (
+    create_mathematical_research_registry,
+)
+from src.evaluation.mathematical_search import (
+    MathematicalSearchError,
+    MathematicalSearchResult,
+    MathematicalSearchStrategy,
+    SearchTerminationReason,
+    SymbolicSearch,
+)
 from src.evaluation.selection_governance import (
     ResearchSelectionAssessment,
     assess_research_selection,
@@ -1036,3 +1054,814 @@ class DiscoveryEngine:
             )
 
         return evidence
+
+    def run_mathematical_discovery(
+        self,
+        df: pd.DataFrame,
+        search_space: MathematicalSearchSpace,
+        dataset_scope: DatasetScope,
+        execution_assumptions: ExecutionAssumptions,
+        code_provenance: CodeProvenance,
+        *,
+        search_policy: ResearchSearchPolicy | None = None,
+        search_strategy: MathematicalSearchStrategy | None = None,
+        signal_policy: MathematicalSignalInterpretationPolicy | None = None,
+        constant_values: Sequence[float] = (),
+        limit: int | None = None,
+        val_ratio: float = 0.2,
+        oos_ratio: float = 0.3,
+        wf_train_size: int | None = None,
+        wf_test_size: int | None = None,
+        persist_evidence: bool = False,
+        persist_registry_dir: str | Path | None = None,
+        memory_store: ResearchRegistryStore | Sequence[DoNotRepeatConstraint] | None = None,
+        enable_memory_governance: bool = True,
+        knowledge_patterns: Sequence[ResearchKnowledgePattern] | None = None,
+        enable_discovery_feedback: bool = True,
+    ) -> DiscoveryRunResult:
+        """Execute canonical governed mathematical relationship discovery workflow.
+
+        STRUCTURAL SEARCH & GOVERNANCE PIPELINE:
+        1. Bounded structural search via MathematicalSearchStrategy / SymbolicSearch
+        2. Candidate identity and lineage validation (fail closed on tamper/mismatch)
+        3. Controlled Discovery Feedback governance (Stage 0a)
+        4. Memory-Aware DoNotRepeat governance (Stage 0b)
+        5. GENERATED hypothesis creation via candidate.to_hypothesis()
+        6. Explicit hypothesis transition via accept_hypothesis_for_research()
+        7. Accepted hypothesis boundary validation via validate_accepted_hypothesis_against_candidate()
+        8. Research experiment execution through research-only registry
+        9. Evidence qualification & robustness assessment.
+        """
+        # Validate search_space type and lineage parameters against input lineage
+        if not isinstance(search_space, MathematicalSearchSpace):
+            raise TypeError(f"search_space must be a MathematicalSearchSpace instance, got {type(search_space)}")
+        if not isinstance(dataset_scope, DatasetScope):
+            raise TypeError("dataset_scope must be a DatasetScope instance.")
+        if not isinstance(execution_assumptions, ExecutionAssumptions):
+            raise TypeError("execution_assumptions must be an ExecutionAssumptions instance.")
+        if not isinstance(code_provenance, CodeProvenance):
+            raise TypeError("code_provenance must be a CodeProvenance instance.")
+
+        if search_space.dataset_scope is not None and search_space.dataset_scope != dataset_scope:
+            raise MathematicalSearchError(
+                f"Supplied DatasetScope ({dataset_scope}) does not match SearchSpace DatasetScope ({search_space.dataset_scope})."
+            )
+        if search_space.execution_assumptions is not None and search_space.execution_assumptions != execution_assumptions:
+            raise MathematicalSearchError(
+                f"Supplied ExecutionAssumptions ({execution_assumptions}) does not match SearchSpace ExecutionAssumptions ({search_space.execution_assumptions})."
+            )
+        if search_space.code_provenance is not None and search_space.code_provenance != code_provenance:
+            raise MathematicalSearchError(
+                f"Supplied CodeProvenance ({code_provenance}) does not match SearchSpace CodeProvenance ({search_space.code_provenance})."
+            )
+
+        data = validate_and_prepare_dataset(df, dataset_scope)
+
+        # 1. Bounded structural search generation (Zero market data evaluation)
+        strategy = search_strategy or SymbolicSearch()
+
+        # Effective budget calculation
+        if limit is not None:
+            if not isinstance(limit, int) or isinstance(limit, bool) or limit <= 0:
+                raise MathematicalSearchError(f"Requested search limit must be a positive integer, got {limit}")
+            eff_limit = min(limit, search_space.max_search_budget)
+        else:
+            eff_limit = search_space.max_search_budget
+
+        if search_policy is not None:
+            if not isinstance(search_policy, ResearchSearchPolicy):
+                raise TypeError("search_policy must be a ResearchSearchPolicy instance.")
+            eff_limit = min(eff_limit, search_policy.max_trials)
+
+        search_result = strategy.search(
+            search_space=search_space,
+            dataset_scope=dataset_scope,
+            execution_assumptions=execution_assumptions,
+            code_provenance=code_provenance,
+            signal_policy=signal_policy,
+            constant_values=constant_values,
+            limit=eff_limit,
+            generator_id=search_space.generator_id,
+            generator_version=search_space.generator_version,
+            random_seed=search_space.random_seed,
+        )
+
+        candidates = search_result.candidates
+        search_truncated = (search_result.termination_reason == SearchTerminationReason.BUDGET_EXHAUSTED)
+
+        effective_search_policy = search_policy or ResearchSearchPolicy(max_trials=max(len(candidates), 1))
+        search_policy_fp = compute_search_policy_fingerprint(
+            max_trials=effective_search_policy.max_trials,
+            fail_fast=effective_search_policy.fail_fast,
+        )
+        criteria_fp = compute_criteria_fingerprint(self.criteria)
+        cand_ids = tuple(c.candidate_id for c in candidates)
+
+        campaign_id = compute_campaign_fingerprint(
+            search_space_fingerprint=search_space.fingerprint,
+            search_policy_fingerprint=search_policy_fp,
+            criteria_fingerprint=criteria_fp,
+            dataset_scope=dataset_scope,
+            execution_assumptions=execution_assumptions,
+            code_provenance=code_provenance,
+            candidate_ids=cand_ids,
+        )
+
+        campaign_store = (
+            ResearchCampaignStore(base_dir=persist_registry_dir)
+            if persist_evidence and persist_registry_dir
+            else ResearchCampaignStore()
+        )
+
+        definition = ResearchCampaignDefinition(
+            search_space_fingerprint=search_space.fingerprint,
+            search_policy_fingerprint=search_policy_fp,
+            criteria_fingerprint=criteria_fp,
+            dataset_scope=dataset_scope,
+            execution_assumptions=execution_assumptions,
+            code_provenance=code_provenance,
+            methodology_version=self.criteria.methodology_version,
+            candidate_ids=cand_ids,
+            trial_count=len(cand_ids),
+        )
+
+        planned_trials = [
+            ResearchPlannedTrial(
+                campaign_id=campaign_id,
+                trial_id=f"{search_space.search_id}_trial_{idx}",
+                trial_index=idx,
+                candidate_id=cand.candidate_id,
+                candidate_fingerprint=cand.fingerprint,
+                hypothesis_fingerprint=cand.fingerprint,
+                strategy_name="mathematical_expression",
+                strategy_version=self.criteria.strategy_version,
+                dataset_id=dataset_scope.dataset_id,
+                execution_assumptions_id=f"ea_{hashlib.sha256(str(execution_assumptions).encode('utf-8')).hexdigest()[:8]}",
+            )
+            for idx, cand in enumerate(candidates)
+        ]
+
+        plan = ResearchTrialPlan(
+            campaign_id=campaign_id,
+            definition_fingerprint=definition.definition_fingerprint,
+            trials=tuple(planned_trials),
+        )
+
+        if persist_evidence:
+            campaign_store.save_definition(definition)
+            campaign_store.save_trial_plan(plan)
+            try:
+                curr_state = campaign_store.load_lifecycle_state(campaign_id)
+                current_status = ResearchCampaignStatus(curr_state["status"])
+            except Exception:
+                current_status = None
+
+            if current_status not in (
+                ResearchCampaignStatus.COMPLETED,
+                ResearchCampaignStatus.TRUNCATED,
+                ResearchCampaignStatus.FAILED,
+                ResearchCampaignStatus.CANCELLED,
+            ):
+                campaign_store.save_lifecycle_state(campaign_id, ResearchCampaignStatus.RUNNING)
+
+        # Resolve effective WalkForwardProtocol
+        n = len(data)
+        wf_protocol = resolve_walk_forward_protocol(
+            n_observations=n,
+            train_size=wf_train_size,
+            test_size=wf_test_size,
+        )
+
+        promoted: list[ResearchEvidence] = []
+        rejected: list[ResearchEvidence] = []
+        trial_records: list[ResearchTrialRecord] = []
+        research_candidates: list[ResearchCandidate] = []
+        memory_governance_results: list[DiscoveryMemoryGovernanceResult] = []
+        registry_records: list[ResearchRegistryRecord] = []
+        learning_records: list[ResearchLearningRecord] = []
+        robustness_assessment_by_evidence_id: dict[str, ResearchRobustnessAssessment] = {}
+        governance_decision_by_evidence_id: dict[str, Any] = {}
+
+        registry_store = (
+            ResearchRegistryStore(base_dir=persist_registry_dir)
+            if persist_evidence and persist_registry_dir
+            else (ResearchRegistryStore() if persist_evidence else None)
+        )
+
+        active_constraints: tuple[DoNotRepeatConstraint, ...] = ()
+        if enable_memory_governance:
+            if isinstance(memory_store, (list, tuple)):
+                active_constraints = tuple(c for c in memory_store if isinstance(c, DoNotRepeatConstraint))
+            else:
+                eff_store = memory_store if memory_store is not None else self.memory_store
+                if eff_store is not None:
+                    try:
+                        active_constraints = eff_store.get_active_do_not_repeat_constraints(
+                            symbol=dataset_scope.symbol,
+                            timeframe=dataset_scope.timeframe,
+                        )
+                    except Exception:
+                        active_constraints = ()
+
+        effective_patterns: tuple[ResearchKnowledgePattern, ...] = ()
+        if enable_discovery_feedback:
+            if knowledge_patterns is not None:
+                effective_patterns = tuple(k for k in knowledge_patterns if isinstance(k, ResearchKnowledgePattern))
+            else:
+                eff_store = memory_store if isinstance(memory_store, ResearchRegistryStore) else self.memory_store
+                if eff_store is not None and hasattr(eff_store, "list_patterns"):
+                    try:
+                        effective_patterns = eff_store.list_patterns()
+                    except Exception:
+                        effective_patterns = ()
+
+        discovery_feedback_records: list[ResearchDiscoveryFeedback] = []
+        seen_candidate_fingerprints: set[str] = set()
+
+        # Create research-only StrategyRegistry for mathematical discovery execution
+        research_registry = create_mathematical_research_registry()
+
+        for idx, cand in enumerate(candidates):
+            trial_id = f"{search_space.search_id}_trial_{idx}"
+
+            # Step A: Candidate identity & lineage pre-validation
+            try:
+                cand.validate()
+                if cand.search_space.fingerprint != search_space.fingerprint:
+                    raise MathematicalSearchError("Candidate search_space.fingerprint does not match SearchSpace fingerprint.")
+                if cand.generator_id != search_space.generator_id or cand.generator_version != search_space.generator_version or cand.random_seed != search_space.random_seed:
+                    raise MathematicalSearchError("Candidate generator metadata does not match SearchSpace generator metadata.")
+                if cand.dataset_scope != dataset_scope or cand.execution_assumptions != execution_assumptions or cand.code_provenance != code_provenance:
+                    raise MathematicalSearchError("Candidate research lineage does not match input lineage.")
+            except Exception as exc:
+                trial_record = ResearchTrialRecord(
+                    search_id=search_space.search_id,
+                    trial_id=trial_id,
+                    trial_index=idx,
+                    candidate_id=cand.candidate_id,
+                    candidate_fingerprint=cand.fingerprint,
+                    experiment_fingerprint="",
+                    evidence_fingerprint=None,
+                    qualification_status=PromotionStatus.REJECTED,
+                    rejection_reasons=(RejectionReason.SPECIFICATION_INVALID,),
+                    status="FAILED",
+                    error_message=str(exc),
+                    campaign_id=campaign_id,
+                )
+                trial_records.append(trial_record)
+                if effective_search_policy.fail_fast:
+                    raise
+                continue
+
+            # Step B: GENERATED hypothesis creation via candidate.to_hypothesis()
+            hypothesis = cand.to_hypothesis(
+                walk_forward_protocol=wf_protocol,
+                benchmark_reference=self.criteria.benchmark_reference,
+                methodology_version=self.criteria.methodology_version,
+                strategy_version=self.criteria.strategy_version,
+            )
+
+            # Verification of identity invariants on GENERATED hypothesis
+            if cand.expression.fingerprint != hypothesis.parameters["expression_fingerprint"]:
+                raise MathematicalSearchError("Identity invariant broken: candidate expression.fingerprint != hypothesis parameter")
+            if cand.fingerprint != hypothesis.parameters["candidate_fingerprint"]:
+                raise MathematicalSearchError("Identity invariant broken: candidate.fingerprint != hypothesis parameter")
+            if search_space.fingerprint != hypothesis.parameters["search_space_fingerprint"]:
+                raise MathematicalSearchError("Identity invariant broken: search_space.fingerprint != hypothesis parameter")
+
+            # Step C: Controlled Discovery Feedback (Stage 0a)
+            if enable_discovery_feedback:
+                cand_feedbacks = evaluate_candidate_discovery_feedback(
+                    candidate=cand,
+                    dataset_scope=dataset_scope,
+                    execution_assumptions=execution_assumptions,
+                    code_provenance=code_provenance,
+                    knowledge_patterns=effective_patterns,
+                    hypothesis=hypothesis,
+                    search_id=search_space.search_id,
+                    search_fingerprint=search_space.fingerprint,
+                    registry_store=registry_store,
+                    methodology_version=self.criteria.methodology_version,
+                )
+                for fb in cand_feedbacks:
+                    discovery_feedback_records.append(fb)
+                    if registry_store is not None:
+                        try:
+                            registry_store.register_feedback(fb)
+                        except Exception:
+                            pass
+
+            # Step D: Memory-Aware Discovery Governance (Stage 0b)
+            if enable_memory_governance and active_constraints:
+                gov_res = evaluate_candidate_memory_governance(
+                    candidate=cand,
+                    dataset_scope=dataset_scope,
+                    execution_assumptions=execution_assumptions,
+                    code_provenance=code_provenance,
+                    active_constraints=active_constraints,
+                    hypothesis=hypothesis,
+                    search_id=search_space.search_id,
+                    search_fingerprint=search_space.fingerprint,
+                    methodology_version=self.criteria.methodology_version,
+                )
+                memory_governance_results.append(gov_res)
+
+                if gov_res.decision == MemoryGovernanceDecision.BLOCKED:
+                    trial_record = ResearchTrialRecord(
+                        search_id=search_space.search_id,
+                        trial_id=trial_id,
+                        trial_index=idx,
+                        candidate_id=cand.candidate_id,
+                        candidate_fingerprint=cand.fingerprint,
+                        experiment_fingerprint=gov_res.experiment_fingerprint,
+                        evidence_fingerprint=None,
+                        qualification_status=PromotionStatus.REJECTED,
+                        rejection_reasons=(RejectionReason.GOVERNANCE_BLOCKED,),
+                        status="BLOCKED",
+                        error_message=gov_res.reason,
+                        campaign_id=campaign_id,
+                    )
+                    trial_records.append(trial_record)
+
+                    research_cand = ResearchCandidate(
+                        candidate_id=cand.candidate_id,
+                        hypothesis=hypothesis,
+                        evidence=None,
+                        validation_status=PromotionStatus.REJECTED,
+                        promotion_status=PromotionStatus.REJECTED,
+                        rejection_reasons=(RejectionReason.GOVERNANCE_BLOCKED,),
+                    )
+                    research_candidates.append(research_cand)
+
+                    from src.evaluation.research_registry import (
+                        RegistryStatus,
+                        ResearchEvidenceLineage,
+                        ResearchReproducibilityDescriptor,
+                    )
+                    ds_id = _compute_scope_id(dataset_scope)
+                    ea_id = _compute_ea_id(execution_assumptions)
+                    cp_id = _compute_cp_id(code_provenance)
+
+                    repro = ResearchReproducibilityDescriptor(
+                        experiment_fingerprint=gov_res.experiment_fingerprint,
+                        evidence_fingerprint=None,
+                        dataset_scope_id=ds_id,
+                        execution_assumptions_id=ea_id,
+                        code_provenance_id=cp_id,
+                        methodology_version=self.criteria.methodology_version,
+                        search_space_fingerprint=search_space.fingerprint,
+                        trial_id=trial_id,
+                        candidate_id=cand.candidate_id,
+                    )
+                    lin = ResearchEvidenceLineage(
+                        search_id=search_space.search_id,
+                        search_fingerprint=search_space.fingerprint,
+                        trial_id=trial_id,
+                        trial_index=idx,
+                        candidate_id=cand.candidate_id,
+                        experiment_fingerprint=gov_res.experiment_fingerprint,
+                        evidence_fingerprint=None,
+                        qualification_status="REJECTED",
+                        selection_assessment_id=None,
+                        robustness_assessment_id=None,
+                        promotion_status=PromotionStatus.REJECTED.value,
+                    )
+                    blocked_key = f"blocked:{trial_id}:{cand.candidate_id}"
+                    blocked_rec_id = hashlib.sha256(blocked_key.encode("utf-8")).hexdigest()[:24]
+                    blocked_rec = ResearchRegistryRecord(
+                        record_id=blocked_rec_id,
+                        experiment_fingerprint=gov_res.experiment_fingerprint,
+                        evidence_fingerprint=None,
+                        candidate_id=cand.candidate_id,
+                        search_fingerprint=search_space.fingerprint,
+                        search_id=search_space.search_id,
+                        trial_id=trial_id,
+                        trial_index=idx,
+                        status=RegistryStatus.REJECTED,
+                        qualification_status="REJECTED",
+                        promotion_status=PromotionStatus.REJECTED.value,
+                        rejection_reasons=("GOVERNANCE_BLOCKED",),
+                        dataset_scope_id=ds_id,
+                        execution_assumptions_id=ea_id,
+                        code_provenance_id=cp_id,
+                        methodology_version=self.criteria.methodology_version,
+                        selection_assessment_id=None,
+                        robustness_assessment_id=None,
+                        benchmark_status=None,
+                        regime_status=None,
+                        error_message=gov_res.reason,
+                        reproducibility=repro,
+                        lineage=lin,
+                    )
+                    registry_records.append(blocked_rec)
+                    if registry_store is not None:
+                        registry_store.register(blocked_rec)
+
+                    continue
+
+                elif gov_res.decision == MemoryGovernanceDecision.FAIL_CLOSED:
+                    from src.evaluation.research_registry import RegistryValidationError
+                    if effective_search_policy.fail_fast:
+                        raise RegistryValidationError(
+                            f"Memory governance failed closed for candidate '{cand.candidate_id}': {gov_res.reason}"
+                        )
+
+                    trial_record = ResearchTrialRecord(
+                        search_id=search_space.search_id,
+                        trial_id=trial_id,
+                        trial_index=idx,
+                        candidate_id=cand.candidate_id,
+                        candidate_fingerprint=cand.fingerprint,
+                        experiment_fingerprint=gov_res.experiment_fingerprint,
+                        evidence_fingerprint=None,
+                        qualification_status=PromotionStatus.REJECTED,
+                        rejection_reasons=(RejectionReason.SPECIFICATION_INVALID, RejectionReason.GOVERNANCE_BLOCKED),
+                        status="FAILED",
+                        error_message=gov_res.reason,
+                        campaign_id=campaign_id,
+                    )
+                    trial_records.append(trial_record)
+
+                    research_cand = ResearchCandidate(
+                        candidate_id=cand.candidate_id,
+                        hypothesis=hypothesis,
+                        evidence=None,
+                        validation_status=PromotionStatus.REJECTED,
+                        promotion_status=PromotionStatus.REJECTED,
+                        rejection_reasons=(RejectionReason.SPECIFICATION_INVALID, RejectionReason.GOVERNANCE_BLOCKED),
+                    )
+                    research_candidates.append(research_cand)
+                    continue
+
+            # Step E: Explicit transition via accept_hypothesis_for_research()
+            try:
+                accepted_hypothesis = accept_hypothesis_for_research(hypothesis)
+            except Exception as exc:
+                trial_record = ResearchTrialRecord(
+                    search_id=search_space.search_id,
+                    trial_id=trial_id,
+                    trial_index=idx,
+                    candidate_id=cand.candidate_id,
+                    candidate_fingerprint=cand.fingerprint,
+                    experiment_fingerprint="",
+                    evidence_fingerprint=None,
+                    qualification_status=PromotionStatus.REJECTED,
+                    rejection_reasons=(RejectionReason.GOVERNANCE_BLOCKED,),
+                    status="BLOCKED",
+                    error_message=str(exc),
+                    campaign_id=campaign_id,
+                )
+                trial_records.append(trial_record)
+
+                research_cand = ResearchCandidate(
+                    candidate_id=cand.candidate_id,
+                    hypothesis=hypothesis,
+                    evidence=None,
+                    validation_status=PromotionStatus.REJECTED,
+                    promotion_status=PromotionStatus.REJECTED,
+                    rejection_reasons=(RejectionReason.GOVERNANCE_BLOCKED,),
+                )
+                research_candidates.append(research_cand)
+
+                if effective_search_policy.fail_fast:
+                    raise
+
+                continue
+
+            # Step F: Boundary validation of ACCEPTED hypothesis against candidate
+            try:
+                validate_accepted_hypothesis_against_candidate(
+                    candidate=cand,
+                    accepted_hypothesis=accepted_hypothesis,
+                    walk_forward_protocol=wf_protocol,
+                )
+            except Exception as exc:
+                trial_record = ResearchTrialRecord(
+                    search_id=search_space.search_id,
+                    trial_id=trial_id,
+                    trial_index=idx,
+                    candidate_id=cand.candidate_id,
+                    candidate_fingerprint=cand.fingerprint,
+                    experiment_fingerprint="",
+                    evidence_fingerprint=None,
+                    qualification_status=PromotionStatus.REJECTED,
+                    rejection_reasons=(RejectionReason.SPECIFICATION_INVALID,),
+                    status="FAILED",
+                    error_message=str(exc),
+                    campaign_id=campaign_id,
+                )
+                trial_records.append(trial_record)
+                if effective_search_policy.fail_fast:
+                    raise
+                continue
+
+            # Step G: Canonical research execution using research_registry
+            try:
+                evidence = run_research_experiment(
+                    spec=accepted_hypothesis,
+                    df=data,
+                    criteria=self.criteria,
+                    registry=research_registry,
+                    wf_train_size=wf_train_size,
+                    wf_test_size=wf_test_size,
+                    persist_evidence=False,
+                )
+            except Exception as exc:
+                if effective_search_policy.fail_fast:
+                    raise
+
+                trial_record = ResearchTrialRecord(
+                    search_id=search_space.search_id,
+                    trial_id=trial_id,
+                    trial_index=idx,
+                    candidate_id=cand.candidate_id,
+                    candidate_fingerprint=cand.fingerprint,
+                    experiment_fingerprint="",
+                    evidence_fingerprint=None,
+                    qualification_status=PromotionStatus.REJECTED,
+                    rejection_reasons=(RejectionReason.SPECIFICATION_INVALID,),
+                    status="FAILED",
+                    error_message=str(exc),
+                    campaign_id=campaign_id,
+                )
+                trial_records.append(trial_record)
+
+                research_cand = ResearchCandidate(
+                    candidate_id=cand.candidate_id,
+                    hypothesis=accepted_hypothesis,
+                    evidence=None,
+                    validation_status=PromotionStatus.REJECTED,
+                    promotion_status=PromotionStatus.REJECTED,
+                    rejection_reasons=(RejectionReason.SPECIFICATION_INVALID,),
+                )
+                research_candidates.append(research_cand)
+                continue
+
+            # Identity chain validation post-execution
+            if evidence.experiment_fingerprint != accepted_hypothesis.fingerprint:
+                raise MathematicalSearchError(
+                    f"Identity chain broken post-execution: evidence.experiment_fingerprint ({evidence.experiment_fingerprint}) "
+                    f"does not match accepted_hypothesis fingerprint ({accepted_hypothesis.fingerprint})."
+                )
+
+            if evidence.experiment_fingerprint in seen_candidate_fingerprints and RejectionReason.DUPLICATE_CANDIDATE not in evidence.rejection_reasons:
+                rejection_reasons = list(evidence.rejection_reasons) + [RejectionReason.DUPLICATE_CANDIDATE]
+                evidence = ResearchEvidence(
+                    experiment_fingerprint=evidence.experiment_fingerprint,
+                    spec=evidence.spec,
+                    partitions=evidence.partitions,
+                    robustness_verdict=evidence.robustness_verdict,
+                    benchmark_comparison=evidence.benchmark_comparison,
+                    promotion_status=PromotionStatus.REJECTED,
+                    rejection_reasons=tuple(dict.fromkeys(rejection_reasons)),
+                    critique_notes=evidence.critique_notes,
+                    created_at_utc=evidence.created_at_utc,
+                )
+
+            seen_candidate_fingerprints.add(evidence.experiment_fingerprint)
+
+            if persist_evidence:
+                save_research_experiment(
+                    evidence,
+                    base_dir=persist_registry_dir if persist_registry_dir else DEFAULT_RESEARCH_DIR,
+                )
+
+            # Robustness Assessment and Qualification
+            rob_assessment = assess_research_robustness(
+                evidence=evidence,
+                robustness_criteria=self.criteria.robustness_criteria,
+            )
+            robustness_assessment_by_evidence_id[evidence.experiment_fingerprint] = rob_assessment
+
+            from src.evaluation.research_qualification import qualify_research_evidence
+            qual_res = qualify_research_evidence(evidence, robustness_assessment=rob_assessment)
+            governance_decision_by_evidence_id[evidence.experiment_fingerprint] = qual_res
+
+            if qual_res.qualified:
+                promoted.append(evidence)
+                trial_status = "QUALIFIED"
+            else:
+                rejected.append(evidence)
+                trial_status = "REJECTED"
+
+            trial_record = ResearchTrialRecord(
+                search_id=search_space.search_id,
+                trial_id=trial_id,
+                trial_index=idx,
+                candidate_id=cand.candidate_id,
+                candidate_fingerprint=cand.fingerprint,
+                experiment_fingerprint=evidence.experiment_fingerprint,
+                evidence_fingerprint=evidence.evidence_id,
+                qualification_status=qual_res.status,
+                rejection_reasons=qual_res.rejection_reasons,
+                status=trial_status,
+                error_message="",
+                campaign_id=campaign_id,
+            )
+            trial_records.append(trial_record)
+
+            research_cand = ResearchCandidate(
+                candidate_id=cand.candidate_id,
+                hypothesis=accepted_hypothesis,
+                evidence=evidence,
+                validation_status=qual_res.status,
+                promotion_status=qual_res.status,
+                rejection_reasons=qual_res.rejection_reasons,
+                created_at_utc=evidence.created_at_utc,
+            )
+            research_candidates.append(research_cand)
+
+        # Deterministic ranking
+        def _evidence_rank_key(ev: ResearchEvidence) -> tuple[float, float, str]:
+            oos_sharpe = next(
+                (p.sharpe_ratio for p in ev.partitions if p.role == EvidencePartitionRole.OUT_OF_SAMPLE),
+                -999.0,
+            )
+            total_return = next(
+                (p.total_return for p in ev.partitions if p.role == EvidencePartitionRole.OUT_OF_SAMPLE),
+                -999.0,
+            )
+            return (-oos_sharpe, -total_return, ev.experiment_fingerprint)
+
+        promoted_sorted = sorted(promoted, key=_evidence_rank_key)
+        rejected_sorted = sorted(rejected, key=_evidence_rank_key)
+
+        selection_assessments: list[ResearchSelectionAssessment] = []
+        robustness_assessments: list[ResearchRobustnessAssessment] = []
+
+        all_evidence = promoted_sorted + rejected_sorted
+        for ev in all_evidence:
+            assessment = assess_research_selection(
+                evidence=ev,
+                trial_records=trial_records,
+                search_fingerprint=search_space.fingerprint,
+                evidence_collection=all_evidence,
+            )
+            selection_assessments.append(assessment)
+
+            rob_assessment = robustness_assessment_by_evidence_id.get(ev.experiment_fingerprint)
+            if rob_assessment is None:
+                raise RuntimeError(
+                    f"Canonical robustness assessment missing for evidence '{ev.experiment_fingerprint}'."
+                )
+            robustness_assessments.append(rob_assessment)
+
+            tr = next((t for t in trial_records if t.experiment_fingerprint == ev.experiment_fingerprint), None)
+            cand_id = tr.candidate_id if tr else None
+            tr_id = tr.trial_id if tr else None
+            tr_idx = tr.trial_index if tr else None
+            qual_stat = tr.status if tr else None
+
+            rec = construct_registry_record_from_evidence(
+                evidence=ev,
+                candidate_id=cand_id,
+                search_id=search_space.search_id,
+                search_fingerprint=search_space.fingerprint,
+                trial_id=tr_id,
+                trial_index=tr_idx,
+                selection_assessment=assessment,
+                robustness_assessment=rob_assessment,
+                qualification_status=qual_stat,
+            )
+            registry_records.append(rec)
+            learning_rec = construct_learning_record_from_registry_record(rec)
+            learning_records.append(learning_rec)
+            if registry_store is not None:
+                registry_store.register(rec)
+                registry_store.register_learning_record(learning_rec)
+
+        # Handle failed trials in registry
+        for tr in trial_records:
+            if tr.status == "FAILED":
+                failed_key = f"failed:{tr.trial_id}:{tr.candidate_id}"
+                failed_rec_id = hashlib.sha256(failed_key.encode("utf-8")).hexdigest()[:24]
+                ds_id = _compute_scope_id(dataset_scope)
+                ea_id = _compute_ea_id(execution_assumptions)
+                cp_id = _compute_cp_id(code_provenance)
+
+                from src.evaluation.research_registry import (
+                    RegistryStatus,
+                    ResearchEvidenceLineage,
+                    ResearchReproducibilityDescriptor,
+                )
+                repro = ResearchReproducibilityDescriptor(
+                    experiment_fingerprint=f"failed_{tr.candidate_id}",
+                    evidence_fingerprint=None,
+                    dataset_scope_id=ds_id,
+                    execution_assumptions_id=ea_id,
+                    code_provenance_id=cp_id,
+                    methodology_version=self.criteria.methodology_version,
+                    search_space_fingerprint=search_space.fingerprint,
+                    trial_id=tr.trial_id,
+                    candidate_id=tr.candidate_id,
+                )
+                lin = ResearchEvidenceLineage(
+                    search_id=search_space.search_id,
+                    search_fingerprint=search_space.fingerprint,
+                    trial_id=tr.trial_id,
+                    trial_index=tr.trial_index,
+                    candidate_id=tr.candidate_id,
+                    experiment_fingerprint=f"failed_{tr.candidate_id}",
+                    evidence_fingerprint=None,
+                    qualification_status="REJECTED",
+                    selection_assessment_id=None,
+                    robustness_assessment_id=None,
+                    promotion_status=PromotionStatus.REJECTED.value,
+                )
+                failed_rec = ResearchRegistryRecord(
+                    record_id=failed_rec_id,
+                    experiment_fingerprint=f"failed_{tr.candidate_id}",
+                    evidence_fingerprint=None,
+                    candidate_id=tr.candidate_id,
+                    search_fingerprint=search_space.fingerprint,
+                    search_id=search_space.search_id,
+                    trial_id=tr.trial_id,
+                    trial_index=tr.trial_index,
+                    status=RegistryStatus.FAILED,
+                    qualification_status="REJECTED",
+                    promotion_status=PromotionStatus.REJECTED.value,
+                    rejection_reasons=("SPECIFICATION_INVALID",),
+                    dataset_scope_id=ds_id,
+                    execution_assumptions_id=ea_id,
+                    code_provenance_id=cp_id,
+                    methodology_version=self.criteria.methodology_version,
+                    selection_assessment_id=None,
+                    robustness_assessment_id=None,
+                    benchmark_status=None,
+                    regime_status=None,
+                    error_message=tr.error_message,
+                    reproducibility=repro,
+                    lineage=lin,
+                )
+                registry_records.append(failed_rec)
+                failed_learning_rec = construct_learning_record_from_registry_record(failed_rec)
+                learning_records.append(failed_learning_rec)
+                if registry_store is not None:
+                    registry_store.register(failed_rec)
+                    registry_store.register_learning_record(failed_learning_rec)
+
+        ev_fps = tuple(ev.evidence_id for ev in all_evidence if ev.evidence_id)
+        selected_ids = tuple(
+            tr.candidate_id for tr in trial_records if tr.status == "QUALIFIED"
+        )
+        campaign_status = (
+            ResearchCampaignStatus.TRUNCATED
+            if search_truncated
+            else ResearchCampaignStatus.COMPLETED
+        )
+
+        campaign = ResearchCampaign(
+            campaign_id=campaign_id,
+            search_space_fingerprint=search_space.fingerprint,
+            search_policy_fingerprint=search_policy_fp,
+            criteria_fingerprint=criteria_fp,
+            dataset_scope=dataset_scope,
+            execution_assumptions=execution_assumptions,
+            code_provenance=code_provenance,
+            candidate_ids=cand_ids,
+            evidence_fingerprints=ev_fps,
+            selected_candidate_ids=selected_ids,
+            status=campaign_status,
+            created_at_utc=datetime.now(timezone.utc).isoformat(),
+            definition_fingerprint=definition.definition_fingerprint,
+            trial_plan_fingerprint=plan.plan_fingerprint,
+            executed_trial_count=sum(1 for t in trial_records if t.status in ("COMPLETED", "QUALIFIED", "REJECTED")),
+            failed_trial_count=sum(1 for t in trial_records if t.status == "FAILED"),
+            blocked_trial_count=sum(1 for t in trial_records if t.status == "BLOCKED"),
+        )
+
+        if persist_evidence:
+            try:
+                curr_state = campaign_store.load_lifecycle_state(campaign_id)
+                curr_status = ResearchCampaignStatus(curr_state["status"])
+            except Exception:
+                curr_status = None
+
+            if curr_status != campaign_status:
+                campaign_store.save_lifecycle_state(campaign_id, campaign_status)
+
+            save_research_campaign(
+                campaign,
+                base_dir=persist_registry_dir if persist_registry_dir else DEFAULT_CAMPAIGN_DIR,
+            )
+
+        return DiscoveryRunResult(
+            dataset_scope=dataset_scope,
+            execution_assumptions=execution_assumptions,
+            code_provenance=code_provenance,
+            candidates_evaluated=len(candidates),
+            promoted_evidence=tuple(promoted_sorted),
+            rejected_evidence=tuple(rejected_sorted),
+            search_space_fingerprint=search_space.fingerprint,
+            search_id=search_space.search_id,
+            trial_ledger=tuple(trial_records),
+            search_truncated=search_truncated,
+            selection_assessments=tuple(selection_assessments),
+            robustness_assessments=tuple(robustness_assessments),
+            registry_records=tuple(registry_records),
+            learning_records=tuple(learning_records),
+            research_candidates=tuple(research_candidates),
+            memory_governance_results=tuple(memory_governance_results),
+            discovery_feedback=tuple(discovery_feedback_records),
+            campaign=campaign,
+        )
