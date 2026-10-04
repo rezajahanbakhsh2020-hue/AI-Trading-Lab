@@ -2,7 +2,7 @@
 
 Covers Four-Layer Beta Plus Testing Requirements:
 - Stage 1: Local correctness (construction, AST nodes, canonical serialization, fingerprinting, search space, search budget)
-- Stage 2: Temporal & Adversarial (negative lag, lookback propagation, safe operators, domain violations, NaN/Inf, mutation, lossless numeric precision, exact Decimal constant_precision, recursive lineage, max_window_size, point vs Series temporal equivalence)
+- Stage 2: Temporal & Adversarial (negative lag, lookback propagation, safe operators, domain violations, NaN/Inf, mutation, lossless numeric precision, exact Decimal constant_precision, recursive lineage, max_window_size, point vs Series temporal equivalence, protected operator temporal alignment)
 - Stage 3: Research Integration (DatasetScope, ExecutionAssumptions, CodeProvenance compatibility, roundtrip serialization with hex floats)
 - Stage 4: Boundary & Anti-Recurrence (Zero coupling to ProductionDecision/live execution/risk/P2, fail-closed governance)
 """
@@ -400,6 +400,53 @@ def test_point_vs_series_temporal_evaluation_equivalence():
     # Test 4: Warmup rows are NaN in Series
     for row in range(multi_branch.max_lookback):
         assert pd.isna(s3.iloc[row])
+
+
+def test_adversarial_protected_operators_temporal_alignment():
+    """Adversarial proof: Protected Series domain checks align with final post-shift valid output rows >= max_lookback."""
+    # Source row 2 maps to final output row 2 + 2 (child lag) + 3 (parent lag) = 7.
+    # Total max_lookback = 5. Final valid output starts at index 5.
+    df_div = pd.DataFrame({"close": [10.0, 10.0, 0.0, 10.0, 10.0, 10.0, 10.0, 10.0, 10.0]})
+    f_lag2 = MathematicalExpression(operator=MathematicalOperator.FEATURE, feature_name="close", lag=2)
+    div_lag3 = MathematicalExpression(
+        operator=MathematicalOperator.PROTECTED_DIV,
+        children=(
+            MathematicalExpression(operator=MathematicalOperator.CONSTANT, constant_value=1.0),
+            f_lag2,
+        ),
+        lag=3,
+    )
+    assert div_lag3.max_lookback == 5
+    with pytest.raises(MathematicalDomainError, match="Protected division by zero"):
+        div_lag3.evaluate(df_div, t=None)
+
+    # PROTECTED_LOG with non-positive input at source row 2 mapping to final row 7
+    df_log = pd.DataFrame({"close": [10.0, 10.0, -1.0, 10.0, 10.0, 10.0, 10.0, 10.0, 10.0]})
+    log_lag3 = MathematicalExpression(
+        operator=MathematicalOperator.PROTECTED_LOG,
+        children=(f_lag2,),
+        lag=3,
+    )
+    assert log_lag3.max_lookback == 5
+    with pytest.raises(MathematicalDomainError, match="Protected log domain violation"):
+        log_lag3.evaluate(df_log, t=None)
+
+    # PROTECTED_SQRT with negative input at source row 2 mapping to final row 7
+    df_sqrt = pd.DataFrame({"close": [10.0, 10.0, -4.0, 10.0, 10.0, 10.0, 10.0, 10.0, 10.0]})
+    sqrt_lag3 = MathematicalExpression(
+        operator=MathematicalOperator.PROTECTED_SQRT,
+        children=(f_lag2,),
+        lag=3,
+    )
+    assert sqrt_lag3.max_lookback == 5
+    with pytest.raises(MathematicalDomainError, match="Protected sqrt domain violation"):
+        sqrt_lag3.evaluate(df_sqrt, t=None)
+
+    # Valid historical value case proving no false positive domain rejections
+    df_valid = pd.DataFrame({"close": [10.0, 10.0, 2.0, 10.0, 10.0, 10.0, 10.0, 10.0, 10.0]})
+    div_valid_series = div_lag3.evaluate(df_valid, t=None)
+    for r in range(div_lag3.max_lookback, len(df_valid)):
+        assert div_valid_series.iloc[r] == div_lag3.evaluate(df_valid, t=r)
 
 
 def test_unsafe_protected_division_domain_violation():

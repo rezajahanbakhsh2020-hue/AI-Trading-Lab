@@ -539,6 +539,9 @@ class MathematicalExpression:
 
         child_series = [c.evaluate(data, t=None) for c in self.children]
 
+        # Determine the start row in child-aligned Series that maps to final valid output rows >= self.max_lookback
+        check_start = self.max_lookback - self.lag
+
         if self.operator == MathematicalOperator.ADD:
             res = child_series[0] + child_series[1]
         elif self.operator == MathematicalOperator.SUB:
@@ -547,8 +550,7 @@ class MathematicalExpression:
             res = child_series[0] * child_series[1]
         elif self.operator == MathematicalOperator.PROTECTED_DIV:
             denom = child_series[1]
-            # Check domain violation on valid post-warmup slice for denominator
-            valid_denom = denom.iloc[self.max_lookback:]
+            valid_denom = denom.iloc[check_start:]
             if (valid_denom.abs() < 1e-12).any():
                 raise MathematicalDomainError("Protected division by zero or near-zero denominator encountered in Series.")
             res = child_series[0] / denom
@@ -556,13 +558,13 @@ class MathematicalExpression:
             res = -child_series[0]
         elif self.operator == MathematicalOperator.PROTECTED_LOG:
             val = child_series[0]
-            valid_val = val.iloc[self.max_lookback:]
+            valid_val = val.iloc[check_start:]
             if (valid_val <= 0.0).any():
                 raise MathematicalDomainError("Protected log domain violation: non-positive value in Series.")
             res = np.log(val)
         elif self.operator == MathematicalOperator.PROTECTED_SQRT:
             val = child_series[0]
-            valid_val = val.iloc[self.max_lookback:]
+            valid_val = val.iloc[check_start:]
             if (valid_val < 0.0).any():
                 raise MathematicalDomainError("Protected sqrt domain violation: negative value in Series.")
             res = np.sqrt(val)
