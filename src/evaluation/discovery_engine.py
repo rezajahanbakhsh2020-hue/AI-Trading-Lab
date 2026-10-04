@@ -14,11 +14,14 @@ import hashlib
 from collections.abc import Sequence
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
+from pathlib import Path
+from typing import Any
 
 import pandas as pd
 
 from src.evaluation.candidate_generator import CandidateSpec, ResearchSearchSpace
 from src.evaluation.discovery_feedback import (
+    DiscoveryFeedbackType,
     ResearchDiscoveryFeedback,
     evaluate_candidate_discovery_feedback,
 )
@@ -56,6 +59,7 @@ from src.evaluation.research_constitution import (
 from src.evaluation.research_knowledge import ResearchKnowledgePattern
 from src.evaluation.research_registry import (
     DoNotRepeatConstraint,
+    RegistryValidationError,
     ResearchLearningRecord,
     ResearchRegistryRecord,
     ResearchRegistryStore,
@@ -79,6 +83,24 @@ from src.evaluation.research_store import (
     ResearchCampaignStore,
     save_research_campaign,
     save_research_experiment,
+)
+from src.evaluation.mathematical_expression import (
+    MathematicalSearchSpace,
+)
+from src.evaluation.mathematical_expression_candidate import (
+    MathematicalExpressionCandidate,
+    MathematicalSignalInterpretationPolicy,
+    validate_accepted_hypothesis_against_candidate,
+)
+from src.evaluation.mathematical_expression_strategy import (
+    create_mathematical_research_registry,
+)
+from src.evaluation.mathematical_search import (
+    MathematicalSearchError,
+    MathematicalSearchResult,
+    MathematicalSearchStrategy,
+    SearchTerminationReason,
+    SymbolicSearch,
 )
 from src.evaluation.selection_governance import (
     ResearchSelectionAssessment,
@@ -139,7 +161,7 @@ class ResearchTrialRecord:
     evidence_fingerprint: str | None
     qualification_status: PromotionStatus | None
     rejection_reasons: tuple[RejectionReason, ...]
-    status: str  # PENDING, RUNNING, COMPLETED, FAILED, QUALIFIED, REJECTED
+    status: str  # PENDING, RUNNING, COMPLETED, FAILED, QUALIFIED, REJECTED, BLOCKED
     error_message: str = ""
     campaign_id: str = ""
 
@@ -280,11 +302,9 @@ class DiscoveryEngine:
         knowledge_patterns: Sequence[ResearchKnowledgePattern] | None = None,
         enable_discovery_feedback: bool = True,
     ) -> DiscoveryRunResult:
-        """Execute discovery workflow over candidates using dataset partitioning.
+        """Execute discovery workflow over CandidateSpec candidates.
 
-        Delegates candidate evaluation strictly through run_research_experiment.
-        Registers every trial in an explicit trial ledger and passes results through
-        qualify_research_evidence before findings are synthesized.
+        Delegates directly to the single unified _run_governed_discovery_lifecycle.
         """
         data = validate_and_prepare_dataset(df, dataset_scope)
 
@@ -306,6 +326,170 @@ class DiscoveryEngine:
                 eval_candidates = eval_candidates[: search_policy.max_trials]
                 search_truncated = True
 
+        return self._run_governed_discovery_lifecycle(
+            data=data,
+            search_id=search_space.search_id,
+            search_fingerprint=search_space.search_fingerprint,
+            eval_candidates=eval_candidates,
+            dataset_scope=dataset_scope,
+            execution_assumptions=execution_assumptions,
+            code_provenance=code_provenance,
+            search_policy=search_policy,
+            search_truncated=search_truncated,
+            val_ratio=val_ratio,
+            oos_ratio=oos_ratio,
+            wf_train_size=wf_train_size,
+            wf_test_size=wf_test_size,
+            persist_evidence=persist_evidence,
+            persist_registry_dir=persist_registry_dir,
+            memory_store=memory_store,
+            enable_memory_governance=enable_memory_governance,
+            knowledge_patterns=knowledge_patterns,
+            enable_discovery_feedback=enable_discovery_feedback,
+            execution_registry=self.registry,
+        )
+
+    def run_mathematical_discovery(
+        self,
+        df: pd.DataFrame,
+        search_space: MathematicalSearchSpace,
+        dataset_scope: DatasetScope,
+        execution_assumptions: ExecutionAssumptions,
+        code_provenance: CodeProvenance,
+        *,
+        search_policy: ResearchSearchPolicy | None = None,
+        search_strategy: MathematicalSearchStrategy | None = None,
+        signal_policy: MathematicalSignalInterpretationPolicy | None = None,
+        constant_values: Sequence[float] = (),
+        limit: int | None = None,
+        val_ratio: float = 0.2,
+        oos_ratio: float = 0.3,
+        wf_train_size: int | None = None,
+        wf_test_size: int | None = None,
+        persist_evidence: bool = False,
+        persist_registry_dir: str | Path | None = None,
+        memory_store: ResearchRegistryStore | Sequence[DoNotRepeatConstraint] | None = None,
+        enable_memory_governance: bool = True,
+        knowledge_patterns: Sequence[ResearchKnowledgePattern] | None = None,
+        enable_discovery_feedback: bool = True,
+    ) -> DiscoveryRunResult:
+        """Execute canonical governed mathematical relationship discovery workflow.
+
+        Thin adapter that performs structural candidate generation, lineage validation,
+        and delegates to the ONE unified _run_governed_discovery_lifecycle.
+        """
+        if not isinstance(search_space, MathematicalSearchSpace):
+            raise TypeError(f"search_space must be a MathematicalSearchSpace instance, got {type(search_space)}")
+        if not isinstance(dataset_scope, DatasetScope):
+            raise TypeError("dataset_scope must be a DatasetScope instance.")
+        if not isinstance(execution_assumptions, ExecutionAssumptions):
+            raise TypeError("execution_assumptions must be an ExecutionAssumptions instance.")
+        if not isinstance(code_provenance, CodeProvenance):
+            raise TypeError("code_provenance must be a CodeProvenance instance.")
+
+        if search_space.dataset_scope is not None and search_space.dataset_scope != dataset_scope:
+            raise MathematicalSearchError(
+                f"Supplied DatasetScope ({dataset_scope}) does not match SearchSpace DatasetScope ({search_space.dataset_scope})."
+            )
+        if search_space.execution_assumptions is not None and search_space.execution_assumptions != execution_assumptions:
+            raise MathematicalSearchError(
+                f"Supplied ExecutionAssumptions ({execution_assumptions}) does not match SearchSpace ExecutionAssumptions ({search_space.execution_assumptions})."
+            )
+        if search_space.code_provenance is not None and search_space.code_provenance != code_provenance:
+            raise MathematicalSearchError(
+                f"Supplied CodeProvenance ({code_provenance}) does not match SearchSpace CodeProvenance ({search_space.code_provenance})."
+            )
+
+        data = validate_and_prepare_dataset(df, dataset_scope)
+
+        # 1. Bounded structural search generation (Zero market data evaluation)
+        strategy = search_strategy or SymbolicSearch()
+
+        if limit is not None:
+            if not isinstance(limit, int) or isinstance(limit, bool) or limit <= 0:
+                raise MathematicalSearchError(f"Requested search limit must be a positive integer, got {limit}")
+            eff_limit = min(limit, search_space.max_search_budget)
+        else:
+            eff_limit = search_space.max_search_budget
+
+        if search_policy is not None:
+            if not isinstance(search_policy, ResearchSearchPolicy):
+                raise TypeError("search_policy must be a ResearchSearchPolicy instance.")
+            eff_limit = min(eff_limit, search_policy.max_trials)
+
+        search_result = strategy.search(
+            search_space=search_space,
+            dataset_scope=dataset_scope,
+            execution_assumptions=execution_assumptions,
+            code_provenance=code_provenance,
+            signal_policy=signal_policy,
+            constant_values=constant_values,
+            limit=eff_limit,
+            generator_id=search_space.generator_id,
+            generator_version=search_space.generator_version,
+            random_seed=search_space.random_seed,
+        )
+
+        candidates = search_result.candidates
+        search_truncated = (search_result.termination_reason == SearchTerminationReason.BUDGET_EXHAUSTED)
+
+        # Create research-only StrategyRegistry for mathematical discovery execution
+        research_registry = create_mathematical_research_registry()
+
+        return self._run_governed_discovery_lifecycle(
+            data=data,
+            search_id=search_space.search_id,
+            search_fingerprint=search_space.fingerprint,
+            eval_candidates=candidates,
+            dataset_scope=dataset_scope,
+            execution_assumptions=execution_assumptions,
+            code_provenance=code_provenance,
+            search_policy=search_policy,
+            search_truncated=search_truncated,
+            val_ratio=val_ratio,
+            oos_ratio=oos_ratio,
+            wf_train_size=wf_train_size,
+            wf_test_size=wf_test_size,
+            persist_evidence=persist_evidence,
+            persist_registry_dir=persist_registry_dir,
+            memory_store=memory_store,
+            enable_memory_governance=enable_memory_governance,
+            knowledge_patterns=knowledge_patterns,
+            enable_discovery_feedback=enable_discovery_feedback,
+            execution_registry=research_registry,
+        )
+
+    def _run_governed_discovery_lifecycle(
+        self,
+        *,
+        data: pd.DataFrame,
+        search_id: str,
+        search_fingerprint: str,
+        eval_candidates: Sequence[CandidateSpec | MathematicalExpressionCandidate],
+        dataset_scope: DatasetScope,
+        execution_assumptions: ExecutionAssumptions,
+        code_provenance: CodeProvenance,
+        search_policy: ResearchSearchPolicy | None,
+        search_truncated: bool,
+        val_ratio: float,
+        oos_ratio: float,
+        wf_train_size: int | None,
+        wf_test_size: int | None,
+        persist_evidence: bool,
+        persist_registry_dir: str | Path | None,
+        memory_store: ResearchRegistryStore | Sequence[DoNotRepeatConstraint] | None,
+        enable_memory_governance: bool,
+        knowledge_patterns: Sequence[ResearchKnowledgePattern] | None,
+        enable_discovery_feedback: bool,
+        execution_registry: StrategyRegistry,
+    ) -> DiscoveryRunResult:
+        """SINGLE CANONICAL GOVERNED DISCOVERY LIFECYCLE.
+
+        Orchestrates campaign definition, trial planning, discovery feedback governance,
+        memory governance, hypothesis generation/acceptance/validation, research execution,
+        robustness assessment, qualification, selection governance, registry/learning recording,
+        and campaign lifecycle tracking.
+        """
         effective_search_policy = search_policy or ResearchSearchPolicy(max_trials=max(len(eval_candidates), 1))
         search_policy_fp = compute_search_policy_fingerprint(
             max_trials=effective_search_policy.max_trials,
@@ -315,7 +499,7 @@ class DiscoveryEngine:
         cand_ids = tuple(c.candidate_id for c in eval_candidates)
 
         campaign_id = compute_campaign_fingerprint(
-            search_space_fingerprint=search_space.search_fingerprint,
+            search_space_fingerprint=search_fingerprint,
             search_policy_fingerprint=search_policy_fp,
             criteria_fingerprint=criteria_fp,
             dataset_scope=dataset_scope,
@@ -331,7 +515,7 @@ class DiscoveryEngine:
         )
 
         definition = ResearchCampaignDefinition(
-            search_space_fingerprint=search_space.search_fingerprint,
+            search_space_fingerprint=search_fingerprint,
             search_policy_fingerprint=search_policy_fp,
             criteria_fingerprint=criteria_fp,
             dataset_scope=dataset_scope,
@@ -345,12 +529,12 @@ class DiscoveryEngine:
         planned_trials = [
             ResearchPlannedTrial(
                 campaign_id=campaign_id,
-                trial_id=f"{search_space.search_id}_trial_{idx}",
+                trial_id=f"{search_id}_trial_{idx}",
                 trial_index=idx,
                 candidate_id=cand.candidate_id,
-                candidate_fingerprint=cand.candidate_id,
-                hypothesis_fingerprint=cand.candidate_id,
-                strategy_name=cand.strategy_name,
+                candidate_fingerprint=cand.candidate_id if isinstance(cand, CandidateSpec) else cand.fingerprint,
+                hypothesis_fingerprint=cand.candidate_id if isinstance(cand, CandidateSpec) else cand.fingerprint,
+                strategy_name=cand.strategy_name if isinstance(cand, CandidateSpec) else "mathematical_expression",
                 strategy_version=self.criteria.strategy_version,
                 dataset_id=dataset_scope.dataset_id,
                 execution_assumptions_id=f"ea_{hashlib.sha256(str(execution_assumptions).encode('utf-8')).hexdigest()[:8]}",
@@ -381,7 +565,7 @@ class DiscoveryEngine:
             ):
                 campaign_store.save_lifecycle_state(campaign_id, ResearchCampaignStatus.RUNNING)
 
-        # Resolve effective WalkForwardProtocol from dataset length and optional parameters
+        # Resolve effective WalkForwardProtocol from dataset length
         n = len(data)
         wf_protocol = resolve_walk_forward_protocol(
             n_observations=n,
@@ -420,10 +604,12 @@ class DiscoveryEngine:
             else (ResearchRegistryStore() if persist_evidence else None)
         )
 
-        active_constraints: tuple[DoNotRepeatConstraint, ...] = ()
+        # Resolve active constraints without silent filtering or fail-open fallbacks
+        active_constraints: Sequence[DoNotRepeatConstraint] = ()
+        memory_store_error: str | None = None
         if enable_memory_governance:
             if isinstance(memory_store, (list, tuple)):
-                active_constraints = tuple(c for c in memory_store if isinstance(c, DoNotRepeatConstraint))
+                active_constraints = memory_store  # Unfiltered sequence
             else:
                 eff_store = memory_store if memory_store is not None else self.memory_store
                 if eff_store is not None:
@@ -432,47 +618,145 @@ class DiscoveryEngine:
                             symbol=dataset_scope.symbol,
                             timeframe=dataset_scope.timeframe,
                         )
-                    except Exception:
-                        active_constraints = ()
+                    except Exception as exc:
+                        memory_store_error = f"Governance store constraint resolution failed: {exc}"
 
-        # Resolve knowledge patterns for Controlled Discovery Feedback
-        effective_patterns: tuple[ResearchKnowledgePattern, ...] = ()
+        # Resolve knowledge patterns without silent filtering or fail-open fallbacks
+        effective_patterns: Sequence[ResearchKnowledgePattern] = ()
+        knowledge_store_error: str | None = None
         if enable_discovery_feedback:
             if knowledge_patterns is not None:
-                effective_patterns = tuple(k for k in knowledge_patterns if isinstance(k, ResearchKnowledgePattern))
+                effective_patterns = knowledge_patterns  # Unfiltered sequence
             else:
                 eff_store = memory_store if isinstance(memory_store, ResearchRegistryStore) else self.memory_store
                 if eff_store is not None and hasattr(eff_store, "list_patterns"):
                     try:
                         effective_patterns = eff_store.list_patterns()
-                    except Exception:
-                        effective_patterns = ()
+                    except Exception as exc:
+                        knowledge_store_error = f"Governance store knowledge pattern resolution failed: {exc}"
 
         discovery_feedback_records: list[ResearchDiscoveryFeedback] = []
         seen_candidate_fingerprints: set[str] = set()
 
         for idx, cand in enumerate(eval_candidates):
-            trial_id = f"{search_space.search_id}_trial_{idx}"
-            hypothesis_stmt = (
-                cand.hypothesis_template.replace("{candidate_id}", cand.candidate_id)
-                if cand.hypothesis_template
-                else f"Hypothesis for candidate {cand.candidate_id}"
-            )
-            hypothesis = ResearchHypothesis(
-                statement=hypothesis_stmt,
-                methodology_version=self.criteria.methodology_version,
-                strategy_name=cand.strategy_name,
-                strategy_version=self.criteria.strategy_version,
-                dataset_scope=dataset_scope,
-                execution_assumptions=execution_assumptions,
-                code_provenance=code_provenance,
-                benchmark_reference=self.criteria.benchmark_reference,
-                parameters=dict(cand.parameters),
-                random_seed=cand.random_seed,
-                walk_forward_protocol=wf_protocol,
-            )
+            trial_id = f"{search_id}_trial_{idx}"
+
+            # Fail closed on governance store resolution failures
+            if memory_store_error or knowledge_store_error:
+                store_err_msg = memory_store_error or knowledge_store_error or "Governance store resolution failed."
+                if effective_search_policy.fail_fast:
+                    raise RegistryValidationError(store_err_msg)
+
+                trial_record = ResearchTrialRecord(
+                    search_id=search_id,
+                    trial_id=trial_id,
+                    trial_index=idx,
+                    candidate_id=cand.candidate_id,
+                    candidate_fingerprint=cand.candidate_id if isinstance(cand, CandidateSpec) else cand.fingerprint,
+                    experiment_fingerprint="",
+                    evidence_fingerprint=None,
+                    qualification_status=PromotionStatus.REJECTED,
+                    rejection_reasons=(RejectionReason.SPECIFICATION_INVALID, RejectionReason.GOVERNANCE_BLOCKED),
+                    status="FAILED",
+                    error_message=store_err_msg,
+                    campaign_id=campaign_id,
+                )
+                trial_records.append(trial_record)
+
+                dummy_hyp = (
+                    cand.to_hypothesis(walk_forward_protocol=wf_protocol)
+                    if isinstance(cand, MathematicalExpressionCandidate)
+                    else ResearchHypothesis(
+                        statement=f"Hypothesis for candidate {cand.candidate_id}",
+                        methodology_version=self.criteria.methodology_version,
+                        strategy_name=cand.strategy_name,
+                        strategy_version=self.criteria.strategy_version,
+                        dataset_scope=dataset_scope,
+                        execution_assumptions=execution_assumptions,
+                        code_provenance=code_provenance,
+                        benchmark_reference=self.criteria.benchmark_reference,
+                        parameters=dict(cand.parameters),
+                        random_seed=cand.random_seed,
+                        walk_forward_protocol=wf_protocol,
+                    )
+                )
+
+                research_cand = ResearchCandidate(
+                    candidate_id=cand.candidate_id,
+                    hypothesis=dummy_hyp,
+                    evidence=None,
+                    validation_status=PromotionStatus.REJECTED,
+                    promotion_status=PromotionStatus.REJECTED,
+                    rejection_reasons=(RejectionReason.SPECIFICATION_INVALID, RejectionReason.GOVERNANCE_BLOCKED),
+                )
+                research_candidates.append(research_cand)
+                continue
+
+            # Pre-validation for MathematicalExpressionCandidate
+            if isinstance(cand, MathematicalExpressionCandidate):
+                try:
+                    cand.validate()
+                    if cand.search_space.fingerprint != search_fingerprint:
+                        raise MathematicalSearchError("Candidate search_space.fingerprint does not match SearchSpace fingerprint.")
+                    if (
+                        cand.generator_id != cand.search_space.generator_id
+                        or cand.generator_version != cand.search_space.generator_version
+                        or cand.random_seed != cand.search_space.random_seed
+                    ):
+                        raise MathematicalSearchError("Candidate generator metadata does not match SearchSpace generator metadata.")
+                    if cand.dataset_scope != dataset_scope or cand.execution_assumptions != execution_assumptions or cand.code_provenance != code_provenance:
+                        raise MathematicalSearchError("Candidate research lineage does not match input lineage.")
+                except Exception as exc:
+                    trial_record = ResearchTrialRecord(
+                        search_id=search_id,
+                        trial_id=trial_id,
+                        trial_index=idx,
+                        candidate_id=cand.candidate_id,
+                        candidate_fingerprint=cand.fingerprint,
+                        experiment_fingerprint="",
+                        evidence_fingerprint=None,
+                        qualification_status=PromotionStatus.REJECTED,
+                        rejection_reasons=(RejectionReason.SPECIFICATION_INVALID,),
+                        status="FAILED",
+                        error_message=str(exc),
+                        campaign_id=campaign_id,
+                    )
+                    trial_records.append(trial_record)
+                    if effective_search_policy.fail_fast:
+                        raise
+                    continue
+
+            # Construct initial GENERATED hypothesis
+            if isinstance(cand, CandidateSpec):
+                hypothesis_stmt = (
+                    cand.hypothesis_template.replace("{candidate_id}", cand.candidate_id)
+                    if cand.hypothesis_template
+                    else f"Hypothesis for candidate {cand.candidate_id}"
+                )
+                hypothesis = ResearchHypothesis(
+                    statement=hypothesis_stmt,
+                    methodology_version=self.criteria.methodology_version,
+                    strategy_name=cand.strategy_name,
+                    strategy_version=self.criteria.strategy_version,
+                    dataset_scope=dataset_scope,
+                    execution_assumptions=execution_assumptions,
+                    code_provenance=code_provenance,
+                    benchmark_reference=self.criteria.benchmark_reference,
+                    parameters=dict(cand.parameters),
+                    random_seed=cand.random_seed,
+                    walk_forward_protocol=wf_protocol,
+                )
+            else:
+                hypothesis = cand.to_hypothesis(
+                    walk_forward_protocol=wf_protocol,
+                    benchmark_reference=self.criteria.benchmark_reference,
+                    methodology_version=self.criteria.methodology_version,
+                    strategy_version=self.criteria.strategy_version,
+                )
 
             # Stage 0a: Controlled Discovery Feedback
+            feedback_fail_closed = False
+            fail_closed_reason = ""
             if enable_discovery_feedback:
                 cand_feedbacks = evaluate_candidate_discovery_feedback(
                     candidate=cand,
@@ -480,8 +764,9 @@ class DiscoveryEngine:
                     execution_assumptions=execution_assumptions,
                     code_provenance=code_provenance,
                     knowledge_patterns=effective_patterns,
-                    search_id=search_space.search_id,
-                    search_fingerprint=search_space.search_fingerprint,
+                    hypothesis=hypothesis,
+                    search_id=search_id,
+                    search_fingerprint=search_fingerprint,
                     registry_store=registry_store,
                     methodology_version=self.criteria.methodology_version,
                 )
@@ -492,6 +777,43 @@ class DiscoveryEngine:
                             registry_store.register_feedback(fb)
                         except Exception:
                             pass
+                    if fb.feedback_type == DiscoveryFeedbackType.FAIL_CLOSED:
+                        feedback_fail_closed = True
+                        fail_closed_reason = fb.reason
+
+            # HARD FAIL-CLOSED BOUNDARY FOR DISCOVERY FEEDBACK
+            if feedback_fail_closed:
+                if effective_search_policy.fail_fast:
+                    raise RegistryValidationError(
+                        f"Discovery feedback failed closed for candidate '{cand.candidate_id}': {fail_closed_reason}"
+                    )
+
+                trial_record = ResearchTrialRecord(
+                    search_id=search_id,
+                    trial_id=trial_id,
+                    trial_index=idx,
+                    candidate_id=cand.candidate_id,
+                    candidate_fingerprint=cand.candidate_id if isinstance(cand, CandidateSpec) else cand.fingerprint,
+                    experiment_fingerprint="",
+                    evidence_fingerprint=None,
+                    qualification_status=PromotionStatus.REJECTED,
+                    rejection_reasons=(RejectionReason.SPECIFICATION_INVALID, RejectionReason.GOVERNANCE_BLOCKED),
+                    status="FAILED",
+                    error_message=fail_closed_reason,
+                    campaign_id=campaign_id,
+                )
+                trial_records.append(trial_record)
+
+                research_cand = ResearchCandidate(
+                    candidate_id=cand.candidate_id,
+                    hypothesis=hypothesis,
+                    evidence=None,
+                    validation_status=PromotionStatus.REJECTED,
+                    promotion_status=PromotionStatus.REJECTED,
+                    rejection_reasons=(RejectionReason.SPECIFICATION_INVALID, RejectionReason.GOVERNANCE_BLOCKED),
+                )
+                research_candidates.append(research_cand)
+                continue
 
             # Stage 0b: Memory-Aware Discovery Governance
             if enable_memory_governance and active_constraints:
@@ -501,19 +823,20 @@ class DiscoveryEngine:
                     execution_assumptions=execution_assumptions,
                     code_provenance=code_provenance,
                     active_constraints=active_constraints,
-                    search_id=search_space.search_id,
-                    search_fingerprint=search_space.search_fingerprint,
+                    hypothesis=hypothesis,
+                    search_id=search_id,
+                    search_fingerprint=search_fingerprint,
                     methodology_version=self.criteria.methodology_version,
                 )
                 memory_governance_results.append(gov_res)
 
                 if gov_res.decision == MemoryGovernanceDecision.BLOCKED:
                     trial_record = ResearchTrialRecord(
-                        search_id=search_space.search_id,
+                        search_id=search_id,
                         trial_id=trial_id,
                         trial_index=idx,
                         candidate_id=cand.candidate_id,
-                        candidate_fingerprint=cand.candidate_id,
+                        candidate_fingerprint=cand.candidate_id if isinstance(cand, CandidateSpec) else cand.fingerprint,
                         experiment_fingerprint=gov_res.experiment_fingerprint,
                         evidence_fingerprint=None,
                         qualification_status=PromotionStatus.REJECTED,
@@ -550,13 +873,13 @@ class DiscoveryEngine:
                         execution_assumptions_id=ea_id,
                         code_provenance_id=cp_id,
                         methodology_version=self.criteria.methodology_version,
-                        search_space_fingerprint=search_space.search_fingerprint,
+                        search_space_fingerprint=search_fingerprint,
                         trial_id=trial_id,
                         candidate_id=cand.candidate_id,
                     )
                     lin = ResearchEvidenceLineage(
-                        search_id=search_space.search_id,
-                        search_fingerprint=search_space.search_fingerprint,
+                        search_id=search_id,
+                        search_fingerprint=search_fingerprint,
                         trial_id=trial_id,
                         trial_index=idx,
                         candidate_id=cand.candidate_id,
@@ -574,8 +897,8 @@ class DiscoveryEngine:
                         experiment_fingerprint=gov_res.experiment_fingerprint,
                         evidence_fingerprint=None,
                         candidate_id=cand.candidate_id,
-                        search_fingerprint=search_space.search_fingerprint,
-                        search_id=search_space.search_id,
+                        search_fingerprint=search_fingerprint,
+                        search_id=search_id,
                         trial_id=trial_id,
                         trial_index=idx,
                         status=RegistryStatus.REJECTED,
@@ -601,18 +924,17 @@ class DiscoveryEngine:
                     continue
 
                 elif gov_res.decision == MemoryGovernanceDecision.FAIL_CLOSED:
-                    from src.evaluation.research_registry import RegistryValidationError
-                    if search_policy and search_policy.fail_fast:
+                    if effective_search_policy.fail_fast:
                         raise RegistryValidationError(
                             f"Memory governance failed closed for candidate '{cand.candidate_id}': {gov_res.reason}"
                         )
 
                     trial_record = ResearchTrialRecord(
-                        search_id=search_space.search_id,
+                        search_id=search_id,
                         trial_id=trial_id,
                         trial_index=idx,
                         candidate_id=cand.candidate_id,
-                        candidate_fingerprint=cand.candidate_id,
+                        candidate_fingerprint=cand.candidate_id if isinstance(cand, CandidateSpec) else cand.fingerprint,
                         experiment_fingerprint=gov_res.experiment_fingerprint,
                         evidence_fingerprint=None,
                         qualification_status=PromotionStatus.REJECTED,
@@ -634,16 +956,16 @@ class DiscoveryEngine:
                     research_candidates.append(research_cand)
                     continue
 
-            # Transition candidate hypothesis to ACCEPTED_FOR_RESEARCH for research execution
+            # Transition candidate hypothesis to ACCEPTED_FOR_RESEARCH
             try:
                 accepted_hypothesis = accept_hypothesis_for_research(hypothesis)
             except Exception as exc:
                 trial_record = ResearchTrialRecord(
-                    search_id=search_space.search_id,
+                    search_id=search_id,
                     trial_id=trial_id,
                     trial_index=idx,
                     candidate_id=cand.candidate_id,
-                    candidate_fingerprint=cand.candidate_id,
+                    candidate_fingerprint=cand.candidate_id if isinstance(cand, CandidateSpec) else cand.fingerprint,
                     experiment_fingerprint="",
                     evidence_fingerprint=None,
                     qualification_status=PromotionStatus.REJECTED,
@@ -664,37 +986,77 @@ class DiscoveryEngine:
                 )
                 research_candidates.append(research_cand)
 
-                if search_policy and search_policy.fail_fast:
+                if effective_search_policy.fail_fast:
                     raise
 
                 continue
 
+            # Boundary validation for accepted hypothesis against MathematicalExpressionCandidate
+            if isinstance(cand, MathematicalExpressionCandidate):
+                try:
+                    validate_accepted_hypothesis_against_candidate(
+                        candidate=cand,
+                        accepted_hypothesis=accepted_hypothesis,
+                        walk_forward_protocol=wf_protocol,
+                    )
+                except Exception as exc:
+                    trial_record = ResearchTrialRecord(
+                        search_id=search_id,
+                        trial_id=trial_id,
+                        trial_index=idx,
+                        candidate_id=cand.candidate_id,
+                        candidate_fingerprint=cand.fingerprint,
+                        experiment_fingerprint="",
+                        evidence_fingerprint=None,
+                        qualification_status=PromotionStatus.REJECTED,
+                        rejection_reasons=(RejectionReason.SPECIFICATION_INVALID,),
+                        status="FAILED",
+                        error_message=str(exc),
+                        campaign_id=campaign_id,
+                    )
+                    trial_records.append(trial_record)
+                    if effective_search_policy.fail_fast:
+                        raise
+                    continue
+
+            # Research experiment execution
             try:
-                evidence = self._evaluate_candidate(
-                    cand=cand,
-                    hypothesis=accepted_hypothesis,
-                    df_full=data,
-                    df_is=df_is,
-                    df_val=df_val,
-                    df_oos=df_oos,
-                    dataset_scope=dataset_scope,
-                    execution_assumptions=execution_assumptions,
-                    code_provenance=code_provenance,
-                    wf_protocol=wf_protocol,
-                    wf_train_size=wf_train_size,
-                    wf_test_size=wf_test_size,
-                    seen_fingerprints=seen_candidate_fingerprints,
-                )
+                if isinstance(cand, CandidateSpec):
+                    evidence = self._evaluate_candidate(
+                        cand=cand,
+                        hypothesis=accepted_hypothesis,
+                        df_full=data,
+                        df_is=df_is,
+                        df_val=df_val,
+                        df_oos=df_oos,
+                        dataset_scope=dataset_scope,
+                        execution_assumptions=execution_assumptions,
+                        code_provenance=code_provenance,
+                        wf_protocol=wf_protocol,
+                        wf_train_size=wf_train_size,
+                        wf_test_size=wf_test_size,
+                        seen_fingerprints=seen_candidate_fingerprints,
+                    )
+                else:
+                    evidence = run_research_experiment(
+                        spec=accepted_hypothesis,
+                        df=data,
+                        criteria=self.criteria,
+                        registry=execution_registry,
+                        wf_train_size=wf_train_size,
+                        wf_test_size=wf_test_size,
+                        persist_evidence=False,
+                    )
             except Exception as exc:
-                if search_policy and search_policy.fail_fast:
+                if effective_search_policy.fail_fast:
                     raise
 
                 trial_record = ResearchTrialRecord(
-                    search_id=search_space.search_id,
+                    search_id=search_id,
                     trial_id=trial_id,
                     trial_index=idx,
                     candidate_id=cand.candidate_id,
-                    candidate_fingerprint=cand.candidate_id,
+                    candidate_fingerprint=cand.candidate_id if isinstance(cand, CandidateSpec) else cand.fingerprint,
                     experiment_fingerprint="",
                     evidence_fingerprint=None,
                     qualification_status=PromotionStatus.REJECTED,
@@ -707,7 +1069,7 @@ class DiscoveryEngine:
 
                 research_cand = ResearchCandidate(
                     candidate_id=cand.candidate_id,
-                    hypothesis=hypothesis,
+                    hypothesis=accepted_hypothesis,
                     evidence=None,
                     validation_status=PromotionStatus.REJECTED,
                     promotion_status=PromotionStatus.REJECTED,
@@ -715,6 +1077,27 @@ class DiscoveryEngine:
                 )
                 research_candidates.append(research_cand)
                 continue
+
+            # Identity chain post-execution verification
+            if evidence.experiment_fingerprint != accepted_hypothesis.fingerprint:
+                raise MathematicalSearchError(
+                    f"Identity chain broken post-execution: evidence.experiment_fingerprint ({evidence.experiment_fingerprint}) "
+                    f"does not match accepted_hypothesis fingerprint ({accepted_hypothesis.fingerprint})."
+                )
+
+            if evidence.experiment_fingerprint in seen_candidate_fingerprints and RejectionReason.DUPLICATE_CANDIDATE not in evidence.rejection_reasons:
+                rejection_reasons = list(evidence.rejection_reasons) + [RejectionReason.DUPLICATE_CANDIDATE]
+                evidence = ResearchEvidence(
+                    experiment_fingerprint=evidence.experiment_fingerprint,
+                    spec=evidence.spec,
+                    partitions=evidence.partitions,
+                    robustness_verdict=evidence.robustness_verdict,
+                    benchmark_comparison=evidence.benchmark_comparison,
+                    promotion_status=PromotionStatus.REJECTED,
+                    rejection_reasons=tuple(dict.fromkeys(rejection_reasons)),
+                    critique_notes=evidence.critique_notes,
+                    created_at_utc=evidence.created_at_utc,
+                )
 
             seen_candidate_fingerprints.add(evidence.experiment_fingerprint)
 
@@ -724,14 +1107,13 @@ class DiscoveryEngine:
                     base_dir=persist_registry_dir if persist_registry_dir else DEFAULT_RESEARCH_DIR,
                 )
 
-            # Canonical Robustness Assessment BEFORE qualification (Defect F)
+            # Robustness Assessment and Qualification
             rob_assessment = assess_research_robustness(
                 evidence=evidence,
                 robustness_criteria=self.criteria.robustness_criteria,
             )
             robustness_assessment_by_evidence_id[evidence.experiment_fingerprint] = rob_assessment
 
-            # Qualify evidence consuming the SAME canonical robustness assessment
             from src.evaluation.research_qualification import qualify_research_evidence
             qual_res = qualify_research_evidence(evidence, robustness_assessment=rob_assessment)
             governance_decision_by_evidence_id[evidence.experiment_fingerprint] = qual_res
@@ -744,11 +1126,11 @@ class DiscoveryEngine:
                 trial_status = "REJECTED"
 
             trial_record = ResearchTrialRecord(
-                search_id=search_space.search_id,
+                search_id=search_id,
                 trial_id=trial_id,
                 trial_index=idx,
                 candidate_id=cand.candidate_id,
-                candidate_fingerprint=cand.candidate_id,
+                candidate_fingerprint=cand.candidate_id if isinstance(cand, CandidateSpec) else cand.fingerprint,
                 experiment_fingerprint=evidence.experiment_fingerprint,
                 evidence_fingerprint=evidence.evidence_id,
                 qualification_status=qual_res.status,
@@ -770,7 +1152,7 @@ class DiscoveryEngine:
             )
             research_candidates.append(research_cand)
 
-        # Deterministic ranking key for research findings (OOS Sharpe, Total Return, Fingerprint)
+        # Deterministic ranking
         def _evidence_rank_key(ev: ResearchEvidence) -> tuple[float, float, str]:
             oos_sharpe = next(
                 (p.sharpe_ratio for p in ev.partitions if p.role == EvidencePartitionRole.OUT_OF_SAMPLE),
@@ -785,7 +1167,6 @@ class DiscoveryEngine:
         promoted_sorted = sorted(promoted, key=_evidence_rank_key)
         rejected_sorted = sorted(rejected, key=_evidence_rank_key)
 
-        # Generate selection governance and robustness assessments, and record trial results in registry
         selection_assessments: list[ResearchSelectionAssessment] = []
         robustness_assessments: list[ResearchRobustnessAssessment] = []
 
@@ -794,23 +1175,18 @@ class DiscoveryEngine:
             assessment = assess_research_selection(
                 evidence=ev,
                 trial_records=trial_records,
-                search_fingerprint=search_space.search_fingerprint,
+                search_fingerprint=search_fingerprint,
                 evidence_collection=all_evidence,
             )
             selection_assessments.append(assessment)
 
-            # Reuse the EXACT SAME robustness assessment constructed prior to qualification
-            rob_assessment = robustness_assessment_by_evidence_id.get(
-                ev.experiment_fingerprint
-            )
+            rob_assessment = robustness_assessment_by_evidence_id.get(ev.experiment_fingerprint)
             if rob_assessment is None:
                 raise RuntimeError(
-                    f"Canonical robustness assessment missing for evidence '{ev.experiment_fingerprint}'. "
-                    f"Discovery engine must execute robustness exactly once."
+                    f"Canonical robustness assessment missing for evidence '{ev.experiment_fingerprint}'."
                 )
             robustness_assessments.append(rob_assessment)
 
-            # Match evidence to its trial record
             tr = next((t for t in trial_records if t.experiment_fingerprint == ev.experiment_fingerprint), None)
             cand_id = tr.candidate_id if tr else None
             tr_id = tr.trial_id if tr else None
@@ -820,8 +1196,8 @@ class DiscoveryEngine:
             rec = construct_registry_record_from_evidence(
                 evidence=ev,
                 candidate_id=cand_id,
-                search_id=search_space.search_id,
-                search_fingerprint=search_space.search_fingerprint,
+                search_id=search_id,
+                search_fingerprint=search_fingerprint,
                 trial_id=tr_id,
                 trial_index=tr_idx,
                 selection_assessment=assessment,
@@ -856,13 +1232,13 @@ class DiscoveryEngine:
                     execution_assumptions_id=ea_id,
                     code_provenance_id=cp_id,
                     methodology_version=self.criteria.methodology_version,
-                    search_space_fingerprint=search_space.search_fingerprint,
+                    search_space_fingerprint=search_fingerprint,
                     trial_id=tr.trial_id,
                     candidate_id=tr.candidate_id,
                 )
                 lin = ResearchEvidenceLineage(
-                    search_id=search_space.search_id,
-                    search_fingerprint=search_space.search_fingerprint,
+                    search_id=search_id,
+                    search_fingerprint=search_fingerprint,
                     trial_id=tr.trial_id,
                     trial_index=tr.trial_index,
                     candidate_id=tr.candidate_id,
@@ -878,8 +1254,8 @@ class DiscoveryEngine:
                     experiment_fingerprint=f"failed_{tr.candidate_id}",
                     evidence_fingerprint=None,
                     candidate_id=tr.candidate_id,
-                    search_fingerprint=search_space.search_fingerprint,
-                    search_id=search_space.search_id,
+                    search_fingerprint=search_fingerprint,
+                    search_id=search_id,
                     trial_id=tr.trial_id,
                     trial_index=tr.trial_index,
                     status=RegistryStatus.FAILED,
@@ -905,7 +1281,6 @@ class DiscoveryEngine:
                     registry_store.register(failed_rec)
                     registry_store.register_learning_record(failed_learning_rec)
 
-        # Construct campaign manifest
         ev_fps = tuple(ev.evidence_id for ev in all_evidence if ev.evidence_id)
         selected_ids = tuple(
             tr.candidate_id for tr in trial_records if tr.status == "QUALIFIED"
@@ -918,7 +1293,7 @@ class DiscoveryEngine:
 
         campaign = ResearchCampaign(
             campaign_id=campaign_id,
-            search_space_fingerprint=search_space.search_fingerprint,
+            search_space_fingerprint=search_fingerprint,
             search_policy_fingerprint=search_policy_fp,
             criteria_fingerprint=criteria_fp,
             dataset_scope=dataset_scope,
@@ -958,8 +1333,8 @@ class DiscoveryEngine:
             candidates_evaluated=len(eval_candidates),
             promoted_evidence=tuple(promoted_sorted),
             rejected_evidence=tuple(rejected_sorted),
-            search_space_fingerprint=search_space.search_fingerprint,
-            search_id=search_space.search_id,
+            search_space_fingerprint=search_fingerprint,
+            search_id=search_id,
             trial_ledger=tuple(trial_records),
             search_truncated=search_truncated,
             selection_assessments=tuple(selection_assessments),

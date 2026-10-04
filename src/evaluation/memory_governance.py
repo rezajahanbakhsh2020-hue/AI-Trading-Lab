@@ -25,11 +25,14 @@ import math
 from typing import Any, Mapping, Sequence
 
 from src.evaluation.candidate_generator import CandidateSpec
+from src.evaluation.mathematical_expression_candidate import MathematicalExpressionCandidate
 from src.evaluation.research_constitution import (
     CodeProvenance,
     DatasetScope,
     ExecutionAssumptions,
     ResearchExperimentSpec,
+    ResearchHypothesis,
+    WalkForwardProtocol,
 )
 from src.evaluation.research_registry import (
     DoNotRepeatConstraint,
@@ -166,11 +169,13 @@ class DiscoveryMemoryGovernanceResult:
 
 def evaluate_candidate_memory_governance(
     *,
-    candidate: CandidateSpec,
+    candidate: CandidateSpec | MathematicalExpressionCandidate,
     dataset_scope: DatasetScope,
     execution_assumptions: ExecutionAssumptions,
     code_provenance: CodeProvenance,
     active_constraints: Sequence[DoNotRepeatConstraint],
+    hypothesis: ResearchHypothesis | None = None,
+    walk_forward_protocol: WalkForwardProtocol | None = None,
     search_id: str | None = None,
     search_fingerprint: str | None = None,
     methodology_version: str = "discovery_v1.0",
@@ -180,8 +185,8 @@ def evaluate_candidate_memory_governance(
     Consults active DoNotRepeatConstraint records to determine whether any verified
     prohibition constraint applies to the candidate.
     """
-    if not isinstance(candidate, CandidateSpec):
-        raise TypeError("candidate must be a CandidateSpec instance.")
+    if not isinstance(candidate, (CandidateSpec, MathematicalExpressionCandidate)):
+        raise TypeError("candidate must be a CandidateSpec or MathematicalExpressionCandidate instance.")
     if not isinstance(dataset_scope, DatasetScope):
         raise TypeError("dataset_scope must be a DatasetScope instance.")
     if not isinstance(execution_assumptions, ExecutionAssumptions):
@@ -189,25 +194,45 @@ def evaluate_candidate_memory_governance(
     if not isinstance(code_provenance, CodeProvenance):
         raise TypeError("code_provenance must be a CodeProvenance instance.")
 
-    hypothesis_stmt = (
-        candidate.hypothesis_template.replace("{candidate_id}", candidate.candidate_id)
-        if candidate.hypothesis_template
-        else f"Hypothesis for candidate {candidate.candidate_id}"
-    )
+    if isinstance(candidate, CandidateSpec):
+        hypothesis_stmt = (
+            candidate.hypothesis_template.replace("{candidate_id}", candidate.candidate_id)
+            if candidate.hypothesis_template
+            else f"Hypothesis for candidate {candidate.candidate_id}"
+        )
 
-    spec = ResearchExperimentSpec(
-        hypothesis=hypothesis_stmt,
-        methodology_version=methodology_version,
-        strategy_name=candidate.strategy_name,
-        strategy_version="1.0.0",
-        dataset_scope=dataset_scope,
-        execution_assumptions=execution_assumptions,
-        code_provenance=code_provenance,
-        benchmark_reference="buy_and_hold",
-        parameters=dict(candidate.parameters),
-        random_seed=candidate.random_seed,
-    )
-    cand_exp_fp = spec.fingerprint
+        spec = ResearchExperimentSpec(
+            hypothesis=hypothesis_stmt,
+            methodology_version=methodology_version,
+            strategy_name=candidate.strategy_name,
+            strategy_version="1.0.0",
+            dataset_scope=dataset_scope,
+            execution_assumptions=execution_assumptions,
+            code_provenance=code_provenance,
+            benchmark_reference="buy_and_hold",
+            parameters=dict(candidate.parameters),
+            random_seed=candidate.random_seed,
+        )
+        cand_exp_fp = spec.fingerprint
+        cand_id = candidate.candidate_id
+        strat_name = candidate.strategy_name
+        cand_params = dict(candidate.parameters)
+    else:
+        # MathematicalExpressionCandidate
+        if hypothesis is not None:
+            eff_hyp = hypothesis
+        elif walk_forward_protocol is not None:
+            eff_hyp = candidate.to_hypothesis(
+                walk_forward_protocol=walk_forward_protocol,
+                methodology_version=methodology_version,
+            )
+        else:
+            raise ValueError("MathematicalExpressionCandidate memory governance evaluation requires walk_forward_protocol or hypothesis.")
+
+        cand_exp_fp = eff_hyp.fingerprint
+        cand_id = candidate.candidate_id
+        strat_name = "mathematical_expression"
+        cand_params = dict(eff_hyp.parameters)
 
     # Filter to active constraints and sort deterministically
     raw_active = [c for c in active_constraints if getattr(c, "is_active", True)]
@@ -221,11 +246,9 @@ def evaluate_candidate_memory_governance(
     )
 
     evaluated_count = 0
-    strat_name = candidate.strategy_name
     symbol = dataset_scope.symbol
     tf = dataset_scope.timeframe
     ds_id = _compute_scope_id(dataset_scope)
-    cand_id = candidate.candidate_id
 
     candidate_patterns = {
         cand_id,
@@ -235,7 +258,7 @@ def evaluate_candidate_memory_governance(
         f"{strat_name}:{symbol}:{tf}",
         f"strategy:{strat_name}",
     }
-    for p_key, p_val in candidate.parameters.items():
+    for p_key, p_val in cand_params.items():
         candidate_patterns.add(f"param:{p_key}={p_val}")
         candidate_patterns.add(f"{p_key}={p_val}")
 

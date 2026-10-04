@@ -23,11 +23,14 @@ import json
 from typing import Any, Sequence
 
 from src.evaluation.candidate_generator import CandidateSpec
+from src.evaluation.mathematical_expression_candidate import MathematicalExpressionCandidate
 from src.evaluation.research_constitution import (
     CodeProvenance,
     DatasetScope,
     ExecutionAssumptions,
     ResearchExperimentSpec,
+    ResearchHypothesis,
+    WalkForwardProtocol,
 )
 from src.evaluation.research_knowledge import (
     PatternObservationSummary,
@@ -193,11 +196,13 @@ def _map_category_to_feedback_type(category: ResearchPatternCategory) -> Discove
 
 def evaluate_candidate_discovery_feedback(
     *,
-    candidate: CandidateSpec,
+    candidate: CandidateSpec | MathematicalExpressionCandidate,
     dataset_scope: DatasetScope,
     execution_assumptions: ExecutionAssumptions,
     code_provenance: CodeProvenance,
     knowledge_patterns: Sequence[ResearchKnowledgePattern],
+    hypothesis: ResearchHypothesis | None = None,
+    walk_forward_protocol: WalkForwardProtocol | None = None,
     search_id: str | None = None,
     search_fingerprint: str | None = None,
     registry_store: Any | None = None,
@@ -209,8 +214,8 @@ def evaluate_candidate_discovery_feedback(
     Returns a tuple of ResearchDiscoveryFeedback objects sorted deterministically by pattern_id.
     Fail closed if any knowledge pattern or supporting lineage is malformed, missing, or inconsistent.
     """
-    if not isinstance(candidate, CandidateSpec):
-        raise TypeError("candidate must be a CandidateSpec instance.")
+    if not isinstance(candidate, (CandidateSpec, MathematicalExpressionCandidate)):
+        raise TypeError("candidate must be a CandidateSpec or MathematicalExpressionCandidate instance.")
     if not isinstance(dataset_scope, DatasetScope):
         raise TypeError("dataset_scope must be a DatasetScope instance.")
     if not isinstance(execution_assumptions, ExecutionAssumptions):
@@ -218,28 +223,43 @@ def evaluate_candidate_discovery_feedback(
     if not isinstance(code_provenance, CodeProvenance):
         raise TypeError("code_provenance must be a CodeProvenance instance.")
 
-    hypothesis_stmt = (
-        candidate.hypothesis_template.replace("{candidate_id}", candidate.candidate_id)
-        if candidate.hypothesis_template
-        else f"Hypothesis for candidate {candidate.candidate_id}"
-    )
+    if isinstance(candidate, CandidateSpec):
+        hypothesis_stmt = (
+            candidate.hypothesis_template.replace("{candidate_id}", candidate.candidate_id)
+            if candidate.hypothesis_template
+            else f"Hypothesis for candidate {candidate.candidate_id}"
+        )
 
-    spec = ResearchExperimentSpec(
-        hypothesis=hypothesis_stmt,
-        methodology_version="discovery_v1.0",
-        strategy_name=candidate.strategy_name,
-        strategy_version="1.0.0",
-        dataset_scope=dataset_scope,
-        execution_assumptions=execution_assumptions,
-        code_provenance=code_provenance,
-        benchmark_reference="buy_and_hold",
-        parameters=dict(candidate.parameters),
-        random_seed=candidate.random_seed,
-    )
-    cand_exp_fp = spec.fingerprint
+        spec = ResearchExperimentSpec(
+            hypothesis=hypothesis_stmt,
+            methodology_version="discovery_v1.0",
+            strategy_name=candidate.strategy_name,
+            strategy_version="1.0.0",
+            dataset_scope=dataset_scope,
+            execution_assumptions=execution_assumptions,
+            code_provenance=code_provenance,
+            benchmark_reference="buy_and_hold",
+            parameters=dict(candidate.parameters),
+            random_seed=candidate.random_seed,
+        )
+        cand_exp_fp = spec.fingerprint
+        cand_id = candidate.candidate_id
+        cand_strat = candidate.strategy_name
+    else:
+        # MathematicalExpressionCandidate
+        if hypothesis is not None:
+            eff_hyp = hypothesis
+        elif walk_forward_protocol is not None:
+            eff_hyp = candidate.to_hypothesis(
+                walk_forward_protocol=walk_forward_protocol,
+                methodology_version=methodology_version,
+            )
+        else:
+            raise ValueError("MathematicalExpressionCandidate discovery feedback evaluation requires walk_forward_protocol or hypothesis.")
 
-    cand_id = candidate.candidate_id
-    cand_strat = candidate.strategy_name
+        cand_exp_fp = eff_hyp.fingerprint
+        cand_id = candidate.candidate_id
+        cand_strat = "mathematical_expression"
     cand_symbol = dataset_scope.symbol
     cand_tf = dataset_scope.timeframe
     cand_ds_id = _compute_scope_id(dataset_scope)
