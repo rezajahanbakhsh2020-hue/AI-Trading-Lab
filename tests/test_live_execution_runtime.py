@@ -137,6 +137,26 @@ def make_dummy_df() -> pd.DataFrame:
     return df
 
 
+def test_headless_import_and_constants() -> None:
+    """Verify src.evaluation.live_execution_runtime can be imported cleanly without plotly or streamlit in sys.modules."""
+    import subprocess
+    import sys
+
+    assert runtime_module.DEFAULT_INTERVAL == "5m"
+    assert runtime_module.DEFAULT_LIMIT == 200
+
+    cmd = [
+        sys.executable,
+        "-c",
+        "import sys, src.evaluation.live_execution_runtime; "
+        "assert 'plotly' not in sys.modules, 'plotly loaded'; "
+        "assert 'streamlit' not in sys.modules, 'streamlit loaded'; "
+        "assert 'app_live' not in sys.modules, 'app_live loaded'",
+    ]
+    res = subprocess.run(cmd, capture_output=True, text=True)
+    assert res.returncode == 0, f"Headless import failed: {res.stderr}"
+
+
 def test_requested_symbol_is_not_replaced_by_xauusd() -> None:
     req = {"symbol": "eurusd"}
     resolved = resolve_requested_symbol(req)
