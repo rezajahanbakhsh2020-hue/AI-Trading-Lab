@@ -808,6 +808,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Headless Live Execution Runtime")
     parser.add_argument("--symbol", type=str, default="XAUUSD", help="Target instrument symbol")
     parser.add_argument("--interval", type=str, default="5m", help="Market data timeframe interval")
+    parser.add_argument("--candidate-id", type=str, default=None, help="Explicit promoted candidate ID")
     parser.add_argument("--limit", type=int, default=100, help="Number of candles to fetch")
     parser.add_argument("--publish", action="store_true", help="Enable outbound publishing to Project 2")
     parser.add_argument("--skip-no-trade", action="store_true", help="Skip publishing when decision is NO TRADE")
@@ -817,10 +818,17 @@ def main() -> None:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 
     try:
+        production_config = ProductionRuntimeConfig(
+            symbol=args.symbol,
+            timeframe=args.interval,
+            candidate_id=args.candidate_id,
+            research_dir=DEFAULT_RESEARCH_DIR,
+        )
         runtime = LiveExecutionRuntime(
             symbol=args.symbol,
             interval=args.interval,
             limit=args.limit,
+            production_config=production_config,
         )
         result = runtime.run_once(
             publish=args.publish,
@@ -829,8 +837,17 @@ def main() -> None:
         )
 
         logger.info("Execution complete for %s %s", result["symbol"], result["interval"])
-        logger.info("Decision: %s | Strategy: %s (Stability: %.3f)",
-                    result["decision"], result["strategy"], result["stability_score"])
+        stability_str = (
+            f"{result['stability_score']:.3f}"
+            if isinstance(result.get("stability_score"), (int, float))
+            else "N/A"
+        )
+        logger.info(
+            "Decision: %s | Strategy: %s (Stability: %s)",
+            result["decision"],
+            result["strategy"],
+            stability_str,
+        )
 
         pub_res = result.get("publish_result")
         if pub_res:

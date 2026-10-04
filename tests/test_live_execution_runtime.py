@@ -1246,3 +1246,124 @@ def test_no_blocked_true_with_persisted_decision_invariant(tmp_path) -> None:
 
     if store_file.exists() and len(json.loads(store_file.read_text())) > 0:
         assert res["blocked"] is False, "Forbidden state: decision is persisted in store but returned result claims blocked=True!"
+
+
+def test_explicit_candidate_id_resolves_exact_candidate(tmp_path) -> None:
+    """Verify that specifying candidate_id in ProductionRuntimeConfig resolves exact candidate."""
+    cand1 = persist_momentum_candidate(tmp_path, candidate_id="cand_momentum_1")
+    cand2 = persist_momentum_candidate(tmp_path, candidate_id="cand_momentum_2")
+
+    config = ProductionRuntimeConfig(
+        symbol="XAUUSD",
+        timeframe="5m",
+        candidate_id=cand2,
+        research_dir=tmp_path,
+    )
+    runtime = LiveExecutionRuntime(
+        symbol="XAUUSD",
+        interval="5m",
+        store_path=tmp_path / "store.json",
+        snapshot_path=tmp_path / "snap.json",
+        research_dir=tmp_path,
+        production_config=config,
+    )
+
+    with patch("src.evaluation.live_execution_runtime.load_live_market_data", return_value=make_dummy_df()):
+        res = runtime.run_once(publish=False, persist=False)
+        assert res["blocked"] is False
+        assert res["candidate_id"] == "cand_momentum_2"
+
+
+def test_ambiguity_without_candidate_id_fails_closed(tmp_path) -> None:
+    """Verify that when candidate_id is None and multiple promoted candidates match scope, runtime fails closed."""
+    persist_momentum_candidate(tmp_path, candidate_id="cand_momentum_1")
+    persist_momentum_candidate(tmp_path, candidate_id="cand_momentum_2")
+
+    config = ProductionRuntimeConfig(
+        symbol="XAUUSD",
+        timeframe="5m",
+        candidate_id=None,
+        research_dir=tmp_path,
+    )
+    runtime = LiveExecutionRuntime(
+        symbol="XAUUSD",
+        interval="5m",
+        store_path=tmp_path / "store.json",
+        snapshot_path=tmp_path / "snap.json",
+        research_dir=tmp_path,
+        production_config=config,
+    )
+
+    res = runtime.run_once(publish=False, persist=False)
+    assert res["blocked"] is True
+    assert res["reason"] == "PromotionIntegrityError"
+    assert "Ambiguous promoted candidate resolution" in res["detail"]
+
+
+def test_cli_candidate_id_argument_passed_to_config(monkeypatch, tmp_path) -> None:
+    """Verify --candidate-id CLI option correctly constructs ProductionRuntimeConfig."""
+    persist_momentum_candidate(tmp_path, candidate_id="cand_momentum_cli")
+
+    captured_config = []
+
+    original_run_once = LiveExecutionRuntime.run_once
+
+    def spy_run_once(self, *args, **kwargs):
+        captured_config.append(self.production_config)
+        return {
+            "blocked": False,
+            "symbol": "XAUUSD",
+            "interval": "5m",
+            "decision": "BUY",
+            "strategy": "momentum",
+            "stability_score": 0.85,
+            "publish_result": None,
+        }
+
+    monkeypatch.setattr(LiveExecutionRuntime, "run_once", spy_run_once)
+    monkeypatch.setattr("src.evaluation.live_execution_runtime.DEFAULT_RESEARCH_DIR", tmp_path)
+
+    test_args = [
+        "run_live_execution.py",
+        "--symbol", "XAUUSD",
+        "--interval", "5m",
+        "--candidate-id", "cand_momentum_cli",
+    ]
+    with patch("sys.argv", test_args):
+        from src.evaluation.live_execution_runtime import main
+        main()
+
+    assert len(captured_config) == 1
+    cfg = captured_config[0]
+    assert cfg.symbol == "XAUUSD"
+    assert cfg.timeframe == "5m"
+    assert cfg.candidate_id == "cand_momentum_cli"
+
+
+def test_main_logging_handles_none_stability_score_safely(monkeypatch) -> None:
+    """Verify CLI logging in main() formats stability_score=None safely without TypeError."""
+    mock_result = {
+        "blocked": True,
+        "symbol": "XAUUSD",
+        "interval": "5m",
+        "decision": "NO TRADE",
+        "strategy": None,
+        "stability_score": None,
+        "publish_result": None,
+    }
+
+    def mock_run_once(self, *args, **kwargs):
+        return mock_result
+
+    monkeypatch.setattr(LiveExecutionRuntime, "run_once", mock_run_once)
+
+    test_args = [
+        "run_live_execution.py",
+        "--symbol", "XAUUSD",
+        "--interval", "5m",
+        "--candidate-id", "cand_nonexistent",
+    ]
+    with patch("sys.argv", test_args):
+        from src.evaluation.live_execution_runtime import main
+        # Should execute cleanly without TypeError
+        main()
