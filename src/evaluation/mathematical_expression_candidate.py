@@ -363,6 +363,173 @@ class MathematicalExpressionCandidate:
         )
 
 
+def validate_accepted_hypothesis_against_candidate(
+    candidate: MathematicalExpressionCandidate,
+    accepted_hypothesis: ResearchHypothesis,
+    walk_forward_protocol: WalkForwardProtocol,
+) -> None:
+    """Perform authoritative boundary validation of an ACCEPTED ResearchHypothesis against candidate.
+
+    Enforces:
+    1. accepted_hypothesis.status == ACCEPTED_FOR_RESEARCH
+    2. accepted_hypothesis.strategy_name == "mathematical_expression"
+    3. Outer candidate-owned lineage equality:
+       - dataset_scope
+       - execution_assumptions
+       - code_provenance
+       - random_seed
+       - walk_forward_protocol
+    4. Parameters presence & fingerprint consistency for expression, signal policy, and search space
+    5. Re-derived candidate fingerprint & candidate_id equality against candidate instance
+    """
+    if accepted_hypothesis.status != HypothesisStatus.ACCEPTED_FOR_RESEARCH:
+        raise MathematicalCandidateValidationError(
+            f"Accepted hypothesis status must be ACCEPTED_FOR_RESEARCH, got '{accepted_hypothesis.status.value}'."
+        )
+
+    if accepted_hypothesis.strategy_name != "mathematical_expression":
+        raise MathematicalCandidateValidationError(
+            f"Accepted hypothesis strategy_name must be 'mathematical_expression', got '{accepted_hypothesis.strategy_name}'."
+        )
+
+    # Outer candidate-owned lineage equality
+    if accepted_hypothesis.dataset_scope != candidate.dataset_scope:
+        raise MathematicalCandidateValidationError(
+            f"DatasetScope mismatch between candidate ({candidate.dataset_scope}) and accepted hypothesis ({accepted_hypothesis.dataset_scope})."
+        )
+
+    if accepted_hypothesis.execution_assumptions != candidate.execution_assumptions:
+        raise MathematicalCandidateValidationError(
+            f"ExecutionAssumptions mismatch between candidate ({candidate.execution_assumptions}) and accepted hypothesis ({accepted_hypothesis.execution_assumptions})."
+        )
+
+    if accepted_hypothesis.code_provenance != candidate.code_provenance:
+        raise MathematicalCandidateValidationError(
+            f"CodeProvenance mismatch between candidate ({candidate.code_provenance}) and accepted hypothesis ({accepted_hypothesis.code_provenance})."
+        )
+
+    if accepted_hypothesis.random_seed != candidate.random_seed:
+        raise MathematicalCandidateValidationError(
+            f"random_seed mismatch between candidate ({candidate.random_seed}) and accepted hypothesis ({accepted_hypothesis.random_seed})."
+        )
+
+    if accepted_hypothesis.walk_forward_protocol != walk_forward_protocol:
+        raise MathematicalCandidateValidationError(
+            f"WalkForwardProtocol mismatch between expected ({walk_forward_protocol}) and accepted hypothesis ({accepted_hypothesis.walk_forward_protocol})."
+        )
+
+    params = accepted_hypothesis.parameters
+    if not isinstance(params, dict):
+        raise MathematicalCandidateValidationError("Accepted hypothesis parameters must be a dictionary.")
+
+    required_fields = (
+        "expression_dict",
+        "expression_fingerprint",
+        "search_space_fingerprint",
+        "signal_policy_dict",
+        "signal_policy_fingerprint",
+        "candidate_id",
+        "candidate_fingerprint",
+        "candidate_version",
+        "generator_id",
+        "generator_version",
+        "random_seed",
+    )
+    for field_name in required_fields:
+        if field_name not in params or params[field_name] is None:
+            raise MathematicalCandidateValidationError(
+                f"Accepted hypothesis parameters missing required field '{field_name}'."
+            )
+
+    # Reconstruct expression from dict & verify fingerprint
+    try:
+        reconstructed_expr = MathematicalExpression.from_canonical_dict(params["expression_dict"])
+    except Exception as exc:
+        raise MathematicalCandidateValidationError(f"Failed to reconstruct MathematicalExpression from accepted hypothesis: {exc}") from exc
+
+    if reconstructed_expr.fingerprint != params["expression_fingerprint"]:
+        raise MathematicalCandidateValidationError(
+            f"Reconstructed expression fingerprint ({reconstructed_expr.fingerprint}) mismatch in accepted hypothesis parameters ({params['expression_fingerprint']})."
+        )
+
+    if reconstructed_expr.fingerprint != candidate.expression.fingerprint:
+        raise MathematicalCandidateValidationError(
+            f"Expression fingerprint mismatch between candidate ({candidate.expression.fingerprint}) and accepted hypothesis ({reconstructed_expr.fingerprint})."
+        )
+
+    if params["search_space_fingerprint"] != candidate.search_space.fingerprint:
+        raise MathematicalCandidateValidationError(
+            f"SearchSpace fingerprint mismatch between candidate ({candidate.search_space.fingerprint}) and accepted hypothesis ({params['search_space_fingerprint']})."
+        )
+
+    # Reconstruct signal policy & verify fingerprint
+    try:
+        reconstructed_policy = MathematicalSignalInterpretationPolicy.from_canonical_dict(params["signal_policy_dict"])
+    except Exception as exc:
+        raise MathematicalCandidateValidationError(f"Failed to reconstruct MathematicalSignalInterpretationPolicy from accepted hypothesis: {exc}") from exc
+
+    if reconstructed_policy.fingerprint != params["signal_policy_fingerprint"]:
+        raise MathematicalCandidateValidationError(
+            f"Reconstructed signal policy fingerprint ({reconstructed_policy.fingerprint}) mismatch in accepted hypothesis parameters ({params['signal_policy_fingerprint']})."
+        )
+
+    if reconstructed_policy.fingerprint != candidate.signal_policy.fingerprint:
+        raise MathematicalCandidateValidationError(
+            f"Signal policy fingerprint mismatch between candidate ({candidate.signal_policy.fingerprint}) and accepted hypothesis ({reconstructed_policy.fingerprint})."
+        )
+
+    if params["candidate_version"] != candidate.version:
+        raise MathematicalCandidateValidationError(
+            f"candidate_version mismatch between candidate ({candidate.version}) and accepted hypothesis ({params['candidate_version']})."
+        )
+
+    if params["generator_id"] != candidate.generator_id:
+        raise MathematicalCandidateValidationError(
+            f"generator_id mismatch between candidate ({candidate.generator_id}) and accepted hypothesis ({params['generator_id']})."
+        )
+
+    if params["generator_version"] != candidate.generator_version:
+        raise MathematicalCandidateValidationError(
+            f"generator_version mismatch between candidate ({candidate.generator_version}) and accepted hypothesis ({params['generator_version']})."
+        )
+
+    if params["random_seed"] != candidate.random_seed:
+        raise MathematicalCandidateValidationError(
+            f"Parameter random_seed mismatch between candidate ({candidate.random_seed}) and accepted hypothesis ({params['random_seed']})."
+        )
+
+    # Re-derive expected candidate fingerprint using single canonical helper
+    expected_cand_fp = MathematicalExpressionCandidate.compute_fingerprint_from_components(
+        version=str(params["candidate_version"]),
+        expression_dict=reconstructed_expr.to_canonical_dict(),
+        expression_fingerprint=reconstructed_expr.fingerprint,
+        search_space_fingerprint=str(params["search_space_fingerprint"]),
+        signal_policy_dict=reconstructed_policy.to_canonical_dict(),
+        signal_policy_fingerprint=reconstructed_policy.fingerprint,
+        generator_id=str(params["generator_id"]),
+        generator_version=str(params["generator_version"]),
+        random_seed=int(params["random_seed"]),
+        dataset_scope=accepted_hypothesis.dataset_scope,
+        execution_assumptions=accepted_hypothesis.execution_assumptions,
+        code_provenance=accepted_hypothesis.code_provenance,
+    )
+
+    if expected_cand_fp != params["candidate_fingerprint"]:
+        raise MathematicalCandidateValidationError(
+            f"Candidate fingerprint mismatch in accepted hypothesis parameters: re-derived '{expected_cand_fp}' vs parameter '{params['candidate_fingerprint']}'."
+        )
+
+    if expected_cand_fp != candidate.fingerprint:
+        raise MathematicalCandidateValidationError(
+            f"Candidate fingerprint mismatch between candidate ({candidate.fingerprint}) and accepted hypothesis ({expected_cand_fp})."
+        )
+
+    if params["candidate_id"] != candidate.candidate_id:
+        raise MathematicalCandidateValidationError(
+            f"candidate_id mismatch between candidate ({candidate.candidate_id}) and accepted hypothesis ({params['candidate_id']})."
+        )
+
+
 def run_mathematical_research_experiment(
     candidate: MathematicalExpressionCandidate,
     df: pd.DataFrame | None = None,
@@ -376,11 +543,13 @@ def run_mathematical_research_experiment(
 
     Execution Bridge Flow:
         MathematicalExpressionCandidate
-            -> pre-execution search space & lineage validation (.validate())
-            -> ResearchHypothesis(status=GENERATED)
-            -> accept_hypothesis_for_research() => ACCEPTED_FOR_RESEARCH
-            -> run_research_experiment(registry=research_registry)
-            -> ResearchEvidence
+            -> 1. pre-execution search space & lineage validation (.validate())
+            -> 2. ResearchHypothesis(status=GENERATED)
+            -> 3. accept_hypothesis_for_research() => ACCEPTED_FOR_RESEARCH
+            -> 4. validate_accepted_hypothesis_against_candidate(...)
+            -> 5. create research-only StrategyRegistry
+            -> 6. run_research_experiment(registry=research_registry)
+            -> 7. ResearchEvidence verification
 
     Guarantees identity invariant tracing:
         expression.fingerprint
@@ -401,10 +570,17 @@ def run_mathematical_research_experiment(
     # 3. Transition hypothesis status to ACCEPTED_FOR_RESEARCH via canonical governance entry point
     accepted_hypothesis = accept_hypothesis_for_research(raw_hypothesis)
 
-    # 4. Create dedicated research-only StrategyRegistry
+    # 4. Authoritative boundary validation of ACCEPTED hypothesis against candidate object & outer fields
+    validate_accepted_hypothesis_against_candidate(
+        candidate=candidate,
+        accepted_hypothesis=accepted_hypothesis,
+        walk_forward_protocol=walk_forward_protocol,
+    )
+
+    # 5. Create dedicated research-only StrategyRegistry
     research_registry = create_mathematical_research_registry()
 
-    # 5. Execute via canonical run_research_experiment
+    # 6. Execute via canonical run_research_experiment
     evidence = run_research_experiment(
         spec=accepted_hypothesis,
         df=df,
@@ -413,7 +589,7 @@ def run_mathematical_research_experiment(
         persist_evidence=persist_evidence,
     )
 
-    # 6. Verify end-to-end identity invariant traceability
+    # 7. Verify end-to-end identity invariant traceability
     if evidence.experiment_fingerprint != accepted_hypothesis.fingerprint:
         raise MathematicalCandidateValidationError(
             f"Identity invariant broken: evidence.experiment_fingerprint ({evidence.experiment_fingerprint}) "

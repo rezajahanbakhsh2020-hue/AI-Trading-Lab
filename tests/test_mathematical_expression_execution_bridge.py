@@ -122,6 +122,315 @@ def test_tamper_evident_boundary_expression_dict_tampering(sample_lineage):
         validate_mathematical_hypothesis_parameters(params, strategy_name="mathematical_expression")
 
 
+# --- ADVERSARIAL ACCEPTED HYPOTHESIS BOUNDARY TESTS ---
+
+def test_accepted_hypothesis_dataset_scope_mismatch_fails_closed(sample_lineage):
+    """Adversarial test: accepted_hypothesis DatasetScope mismatch -> Fail Closed."""
+    ds, ea, cp = sample_lineage
+    ds_other = DatasetScope("ds_tampered", "XAUUSD", "1h", "2023-01-01", "2023-01-07")
+    expr = MathematicalExpression(operator=MathematicalOperator.CONSTANT, constant_value=1.0, dataset_scope=ds, execution_assumptions=ea, code_provenance=cp)
+    space = MathematicalSearchSpace(search_id="space_acc", dataset_scope=ds, execution_assumptions=ea, code_provenance=cp)
+    policy = MathematicalSignalInterpretationPolicy()
+    cand = MathematicalExpressionCandidate(expr, space, policy, ds, ea, cp)
+    wf_proto = WalkForwardProtocol(40, 15)
+
+    raw_hyp = cand.to_hypothesis(walk_forward_protocol=wf_proto)
+    acc_hyp = accept_hypothesis_for_research(raw_hyp)
+
+    # Construct tampered accepted hypothesis with ds_other
+    tampered_acc_hyp = ResearchHypothesis(
+        statement=acc_hyp.statement,
+        methodology_version=acc_hyp.methodology_version,
+        strategy_name=acc_hyp.strategy_name,
+        strategy_version=acc_hyp.strategy_version,
+        dataset_scope=ds_other,  # TAMPERED
+        execution_assumptions=acc_hyp.execution_assumptions,
+        code_provenance=acc_hyp.code_provenance,
+        benchmark_reference=acc_hyp.benchmark_reference,
+        parameters=acc_hyp.parameters,
+        random_seed=acc_hyp.random_seed,
+        walk_forward_protocol=acc_hyp.walk_forward_protocol,
+        status=HypothesisStatus.ACCEPTED_FOR_RESEARCH,
+    )
+
+    from src.evaluation.mathematical_expression_candidate import validate_accepted_hypothesis_against_candidate
+    with pytest.raises(MathematicalCandidateValidationError, match="DatasetScope mismatch"):
+        validate_accepted_hypothesis_against_candidate(cand, tampered_acc_hyp, wf_proto)
+
+
+def test_accepted_hypothesis_execution_assumptions_mismatch_fails_closed(sample_lineage):
+    """Adversarial test: accepted_hypothesis ExecutionAssumptions mismatch -> Fail Closed."""
+    ds, ea, cp = sample_lineage
+    ea_other = ExecutionAssumptions(0.005, 0.005, 50.0)
+    expr = MathematicalExpression(operator=MathematicalOperator.CONSTANT, constant_value=1.0, dataset_scope=ds, execution_assumptions=ea, code_provenance=cp)
+    space = MathematicalSearchSpace(search_id="space_acc", dataset_scope=ds, execution_assumptions=ea, code_provenance=cp)
+    policy = MathematicalSignalInterpretationPolicy()
+    cand = MathematicalExpressionCandidate(expr, space, policy, ds, ea, cp)
+    wf_proto = WalkForwardProtocol(40, 15)
+
+    raw_hyp = cand.to_hypothesis(walk_forward_protocol=wf_proto)
+    acc_hyp = accept_hypothesis_for_research(raw_hyp)
+
+    tampered_acc_hyp = ResearchHypothesis(
+        statement=acc_hyp.statement,
+        methodology_version=acc_hyp.methodology_version,
+        strategy_name=acc_hyp.strategy_name,
+        strategy_version=acc_hyp.strategy_version,
+        dataset_scope=acc_hyp.dataset_scope,
+        execution_assumptions=ea_other,  # TAMPERED
+        code_provenance=acc_hyp.code_provenance,
+        benchmark_reference=acc_hyp.benchmark_reference,
+        parameters=acc_hyp.parameters,
+        random_seed=acc_hyp.random_seed,
+        walk_forward_protocol=acc_hyp.walk_forward_protocol,
+        status=HypothesisStatus.ACCEPTED_FOR_RESEARCH,
+    )
+
+    from src.evaluation.mathematical_expression_candidate import validate_accepted_hypothesis_against_candidate
+    with pytest.raises(MathematicalCandidateValidationError, match="ExecutionAssumptions mismatch"):
+        validate_accepted_hypothesis_against_candidate(cand, tampered_acc_hyp, wf_proto)
+
+
+def test_accepted_hypothesis_code_provenance_mismatch_fails_closed(sample_lineage):
+    """Adversarial test: accepted_hypothesis CodeProvenance mismatch -> Fail Closed."""
+    ds, ea, cp = sample_lineage
+    cp_other = CodeProvenance("commit_tampered_999")
+    expr = MathematicalExpression(operator=MathematicalOperator.CONSTANT, constant_value=1.0, dataset_scope=ds, execution_assumptions=ea, code_provenance=cp)
+    space = MathematicalSearchSpace(search_id="space_acc", dataset_scope=ds, execution_assumptions=ea, code_provenance=cp)
+    policy = MathematicalSignalInterpretationPolicy()
+    cand = MathematicalExpressionCandidate(expr, space, policy, ds, ea, cp)
+    wf_proto = WalkForwardProtocol(40, 15)
+
+    raw_hyp = cand.to_hypothesis(walk_forward_protocol=wf_proto)
+    acc_hyp = accept_hypothesis_for_research(raw_hyp)
+
+    tampered_acc_hyp = ResearchHypothesis(
+        statement=acc_hyp.statement,
+        methodology_version=acc_hyp.methodology_version,
+        strategy_name=acc_hyp.strategy_name,
+        strategy_version=acc_hyp.strategy_version,
+        dataset_scope=acc_hyp.dataset_scope,
+        execution_assumptions=acc_hyp.execution_assumptions,
+        code_provenance=cp_other,  # TAMPERED
+        benchmark_reference=acc_hyp.benchmark_reference,
+        parameters=acc_hyp.parameters,
+        random_seed=acc_hyp.random_seed,
+        walk_forward_protocol=acc_hyp.walk_forward_protocol,
+        status=HypothesisStatus.ACCEPTED_FOR_RESEARCH,
+    )
+
+    from src.evaluation.mathematical_expression_candidate import validate_accepted_hypothesis_against_candidate
+    with pytest.raises(MathematicalCandidateValidationError, match="CodeProvenance mismatch"):
+        validate_accepted_hypothesis_against_candidate(cand, tampered_acc_hyp, wf_proto)
+
+
+def test_accepted_hypothesis_random_seed_mismatch_fails_closed(sample_lineage):
+    """Adversarial test: accepted_hypothesis random_seed mismatch -> Fail Closed."""
+    ds, ea, cp = sample_lineage
+    expr = MathematicalExpression(operator=MathematicalOperator.CONSTANT, constant_value=1.0, dataset_scope=ds, execution_assumptions=ea, code_provenance=cp)
+    space = MathematicalSearchSpace(search_id="space_acc", dataset_scope=ds, execution_assumptions=ea, code_provenance=cp)
+    policy = MathematicalSignalInterpretationPolicy()
+    cand = MathematicalExpressionCandidate(expr, space, policy, ds, ea, cp, random_seed=42)
+    wf_proto = WalkForwardProtocol(40, 15)
+
+    raw_hyp = cand.to_hypothesis(walk_forward_protocol=wf_proto)
+    acc_hyp = accept_hypothesis_for_research(raw_hyp)
+
+    tampered_acc_hyp = ResearchHypothesis(
+        statement=acc_hyp.statement,
+        methodology_version=acc_hyp.methodology_version,
+        strategy_name=acc_hyp.strategy_name,
+        strategy_version=acc_hyp.strategy_version,
+        dataset_scope=acc_hyp.dataset_scope,
+        execution_assumptions=acc_hyp.execution_assumptions,
+        code_provenance=acc_hyp.code_provenance,
+        benchmark_reference=acc_hyp.benchmark_reference,
+        parameters=acc_hyp.parameters,
+        random_seed=999,  # TAMPERED
+        walk_forward_protocol=acc_hyp.walk_forward_protocol,
+        status=HypothesisStatus.ACCEPTED_FOR_RESEARCH,
+    )
+
+    from src.evaluation.mathematical_expression_candidate import validate_accepted_hypothesis_against_candidate
+    with pytest.raises(MathematicalCandidateValidationError, match="random_seed mismatch"):
+        validate_accepted_hypothesis_against_candidate(cand, tampered_acc_hyp, wf_proto)
+
+
+def test_accepted_hypothesis_strategy_name_mismatch_fails_closed(sample_lineage):
+    """Adversarial test: accepted_hypothesis strategy_name mismatch -> Fail Closed."""
+    ds, ea, cp = sample_lineage
+    expr = MathematicalExpression(operator=MathematicalOperator.CONSTANT, constant_value=1.0, dataset_scope=ds, execution_assumptions=ea, code_provenance=cp)
+    space = MathematicalSearchSpace(search_id="space_acc", dataset_scope=ds, execution_assumptions=ea, code_provenance=cp)
+    policy = MathematicalSignalInterpretationPolicy()
+    cand = MathematicalExpressionCandidate(expr, space, policy, ds, ea, cp)
+    wf_proto = WalkForwardProtocol(40, 15)
+
+    raw_hyp = cand.to_hypothesis(walk_forward_protocol=wf_proto)
+    acc_hyp = accept_hypothesis_for_research(raw_hyp)
+
+    tampered_acc_hyp = ResearchHypothesis(
+        statement=acc_hyp.statement,
+        methodology_version=acc_hyp.methodology_version,
+        strategy_name="momentum",  # TAMPERED
+        strategy_version=acc_hyp.strategy_version,
+        dataset_scope=acc_hyp.dataset_scope,
+        execution_assumptions=acc_hyp.execution_assumptions,
+        code_provenance=acc_hyp.code_provenance,
+        benchmark_reference=acc_hyp.benchmark_reference,
+        parameters=acc_hyp.parameters,
+        random_seed=acc_hyp.random_seed,
+        walk_forward_protocol=acc_hyp.walk_forward_protocol,
+        status=HypothesisStatus.ACCEPTED_FOR_RESEARCH,
+    )
+
+    from src.evaluation.mathematical_expression_candidate import validate_accepted_hypothesis_against_candidate
+    with pytest.raises(MathematicalCandidateValidationError, match="strategy_name must be 'mathematical_expression'"):
+        validate_accepted_hypothesis_against_candidate(cand, tampered_acc_hyp, wf_proto)
+
+
+def test_accepted_hypothesis_walk_forward_protocol_mismatch_fails_closed(sample_lineage):
+    """Adversarial test: accepted_hypothesis WalkForwardProtocol mismatch -> Fail Closed."""
+    ds, ea, cp = sample_lineage
+    expr = MathematicalExpression(operator=MathematicalOperator.CONSTANT, constant_value=1.0, dataset_scope=ds, execution_assumptions=ea, code_provenance=cp)
+    space = MathematicalSearchSpace(search_id="space_acc", dataset_scope=ds, execution_assumptions=ea, code_provenance=cp)
+    policy = MathematicalSignalInterpretationPolicy()
+    cand = MathematicalExpressionCandidate(expr, space, policy, ds, ea, cp)
+    wf_proto = WalkForwardProtocol(40, 15)
+    wf_proto_other = WalkForwardProtocol(50, 20)
+
+    raw_hyp = cand.to_hypothesis(walk_forward_protocol=wf_proto)
+    acc_hyp = accept_hypothesis_for_research(raw_hyp)
+
+    tampered_acc_hyp = ResearchHypothesis(
+        statement=acc_hyp.statement,
+        methodology_version=acc_hyp.methodology_version,
+        strategy_name=acc_hyp.strategy_name,
+        strategy_version=acc_hyp.strategy_version,
+        dataset_scope=acc_hyp.dataset_scope,
+        execution_assumptions=acc_hyp.execution_assumptions,
+        code_provenance=acc_hyp.code_provenance,
+        benchmark_reference=acc_hyp.benchmark_reference,
+        parameters=acc_hyp.parameters,
+        random_seed=acc_hyp.random_seed,
+        walk_forward_protocol=wf_proto_other,  # TAMPERED
+        status=HypothesisStatus.ACCEPTED_FOR_RESEARCH,
+    )
+
+    from src.evaluation.mathematical_expression_candidate import validate_accepted_hypothesis_against_candidate
+    with pytest.raises(MathematicalCandidateValidationError, match="WalkForwardProtocol mismatch"):
+        validate_accepted_hypothesis_against_candidate(cand, tampered_acc_hyp, wf_proto)
+
+
+def test_accepted_hypothesis_candidate_fingerprint_parameter_mismatch_fails_closed(sample_lineage):
+    """Adversarial test: accepted_hypothesis parameters candidate_fingerprint mismatch -> Fail Closed."""
+    ds, ea, cp = sample_lineage
+    expr = MathematicalExpression(operator=MathematicalOperator.CONSTANT, constant_value=1.0, dataset_scope=ds, execution_assumptions=ea, code_provenance=cp)
+    space = MathematicalSearchSpace(search_id="space_acc", dataset_scope=ds, execution_assumptions=ea, code_provenance=cp)
+    policy = MathematicalSignalInterpretationPolicy()
+    cand = MathematicalExpressionCandidate(expr, space, policy, ds, ea, cp)
+    wf_proto = WalkForwardProtocol(40, 15)
+
+    raw_hyp = cand.to_hypothesis(walk_forward_protocol=wf_proto)
+    acc_hyp = accept_hypothesis_for_research(raw_hyp)
+
+    tampered_params = dict(acc_hyp.parameters)
+    tampered_params["candidate_fingerprint"] = "0" * 64  # TAMPERED
+
+    tampered_acc_hyp = ResearchHypothesis(
+        statement=acc_hyp.statement,
+        methodology_version=acc_hyp.methodology_version,
+        strategy_name=acc_hyp.strategy_name,
+        strategy_version=acc_hyp.strategy_version,
+        dataset_scope=acc_hyp.dataset_scope,
+        execution_assumptions=acc_hyp.execution_assumptions,
+        code_provenance=acc_hyp.code_provenance,
+        benchmark_reference=acc_hyp.benchmark_reference,
+        parameters=tampered_params,
+        random_seed=acc_hyp.random_seed,
+        walk_forward_protocol=acc_hyp.walk_forward_protocol,
+        status=HypothesisStatus.ACCEPTED_FOR_RESEARCH,
+    )
+
+    from src.evaluation.mathematical_expression_candidate import validate_accepted_hypothesis_against_candidate
+    with pytest.raises(MathematicalCandidateValidationError, match="Candidate fingerprint mismatch"):
+        validate_accepted_hypothesis_against_candidate(cand, tampered_acc_hyp, wf_proto)
+
+
+def test_accepted_hypothesis_candidate_id_parameter_mismatch_fails_closed(sample_lineage):
+    """Adversarial test: accepted_hypothesis parameters candidate_id mismatch -> Fail Closed."""
+    ds, ea, cp = sample_lineage
+    expr = MathematicalExpression(operator=MathematicalOperator.CONSTANT, constant_value=1.0, dataset_scope=ds, execution_assumptions=ea, code_provenance=cp)
+    space = MathematicalSearchSpace(search_id="space_acc", dataset_scope=ds, execution_assumptions=ea, code_provenance=cp)
+    policy = MathematicalSignalInterpretationPolicy()
+    cand = MathematicalExpressionCandidate(expr, space, policy, ds, ea, cp)
+    wf_proto = WalkForwardProtocol(40, 15)
+
+    raw_hyp = cand.to_hypothesis(walk_forward_protocol=wf_proto)
+    acc_hyp = accept_hypothesis_for_research(raw_hyp)
+
+    tampered_params = dict(acc_hyp.parameters)
+    tampered_params["candidate_id"] = "math_cand_fakeid12345678"  # TAMPERED
+
+    tampered_acc_hyp = ResearchHypothesis(
+        statement=acc_hyp.statement,
+        methodology_version=acc_hyp.methodology_version,
+        strategy_name=acc_hyp.strategy_name,
+        strategy_version=acc_hyp.strategy_version,
+        dataset_scope=acc_hyp.dataset_scope,
+        execution_assumptions=acc_hyp.execution_assumptions,
+        code_provenance=acc_hyp.code_provenance,
+        benchmark_reference=acc_hyp.benchmark_reference,
+        parameters=tampered_params,
+        random_seed=acc_hyp.random_seed,
+        walk_forward_protocol=acc_hyp.walk_forward_protocol,
+        status=HypothesisStatus.ACCEPTED_FOR_RESEARCH,
+    )
+
+    from src.evaluation.mathematical_expression_candidate import validate_accepted_hypothesis_against_candidate
+    with pytest.raises(MathematicalCandidateValidationError, match="candidate_id mismatch"):
+        validate_accepted_hypothesis_against_candidate(cand, tampered_acc_hyp, wf_proto)
+
+
+def test_accepted_hypothesis_sentinel_tampered_outer_field_fails_before_evaluate(sample_lineage, synthetic_ohlcv, monkeypatch):
+    """Mandatory Pre-Execution Sentinel Test: Prove that tampering with outer candidate-owned field fails BEFORE MathematicalExpression.evaluate is called."""
+    ds, ea, cp = sample_lineage
+    ds_tampered = DatasetScope("ds_tampered", "XAUUSD", "1h", "2023-01-01", "2023-01-07")
+    expr = MathematicalExpression(operator=MathematicalOperator.CONSTANT, constant_value=1.0, dataset_scope=ds, execution_assumptions=ea, code_provenance=cp)
+    space = MathematicalSearchSpace(search_id="space_sentinel", dataset_scope=ds, execution_assumptions=ea, code_provenance=cp)
+    policy = MathematicalSignalInterpretationPolicy()
+    cand = MathematicalExpressionCandidate(expr, space, policy, ds, ea, cp)
+    wf_proto = WalkForwardProtocol(40, 15)
+
+    # Spy sentinel on MathematicalExpression.evaluate
+    eval_spy = MagicMock(side_effect=AssertionError("MathematicalExpression.evaluate MUST NOT be called on tampered accepted hypothesis!"))
+    monkeypatch.setattr(MathematicalExpression, "evaluate", eval_spy)
+
+    # Spy on accept_hypothesis_for_research to return tampered ResearchHypothesis with ds_tampered
+    def tampered_accept_hypothesis(hypothesis: ResearchHypothesis) -> ResearchHypothesis:
+        accepted = accept_hypothesis_for_research(hypothesis)
+        return ResearchHypothesis(
+            statement=accepted.statement,
+            methodology_version=accepted.methodology_version,
+            strategy_name=accepted.strategy_name,
+            strategy_version=accepted.strategy_version,
+            dataset_scope=ds_tampered,  # TAMPERED
+            execution_assumptions=accepted.execution_assumptions,
+            code_provenance=accepted.code_provenance,
+            benchmark_reference=accepted.benchmark_reference,
+            parameters=accepted.parameters,
+            random_seed=accepted.random_seed,
+            walk_forward_protocol=accepted.walk_forward_protocol,
+            status=HypothesisStatus.ACCEPTED_FOR_RESEARCH,
+        )
+
+    monkeypatch.setattr("src.evaluation.mathematical_expression_candidate.accept_hypothesis_for_research", tampered_accept_hypothesis)
+
+    with pytest.raises(MathematicalCandidateValidationError, match="DatasetScope mismatch"):
+        run_mathematical_research_experiment(candidate=cand, df=synthetic_ohlcv, walk_forward_protocol=wf_proto)
+
+    eval_spy.assert_not_called()
+
+
 def test_tamper_evident_boundary_expression_fingerprint_tampering(sample_lineage):
     """Adversarial test: Mutate expression_fingerprint while keeping expression_dict unchanged -> Fail Closed."""
     ds, ea, cp = sample_lineage
