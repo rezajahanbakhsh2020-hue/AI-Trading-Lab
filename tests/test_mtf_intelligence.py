@@ -590,10 +590,39 @@ def test_phase11_exactly_once_evaluation_and_identity_continuity():
     for tf in timeframes:
         assert tf_call_counts[tf] == 1, f"Timeframe {tf} was evaluated {tf_call_counts[tf]} times instead of exactly 1"
 
-    # 2. Assert Identity Continuity: Published decision matches 5m PerTimeframeSignal projection EXACTLY
+    # 2. Assert Complete Identity and Lineage Continuity across MTF evaluation & publication
     published_cld = result.local_result.canonical_decision
     source_5m_signal = next(s for s in result.mtf_intelligence.signals if s.timeframe == CanonicalTimeframe.FIVE_MINUTES)
 
+    # A. Decision Identity
     assert published_cld.decision.decision_id == source_5m_signal.decision_id
     assert published_cld.signal.signal_id == source_5m_signal.signal_id
     assert published_cld.live_decision_id == source_5m_signal.decision_id
+
+    # B. Canonical Live Decision Identity
+    matching_tr = next(
+        (tr for tr in published_cld.transition_history if tr.artifact_fingerprint == source_5m_signal.canonical_live_decision_fingerprint),
+        None,
+    )
+    assert matching_tr is not None
+
+    # C. Authorization Lineage
+    assert published_cld.authorization_receipt.authorization_fingerprint == source_5m_signal.authorization_fingerprint
+    assert published_cld.authorization_receipt.candidate_id == source_5m_signal.candidate_id
+
+    # D. Research / Candidate Lineage
+    assert published_cld.decision.candidate_id == source_5m_signal.candidate_id
+    assert published_cld.decision.evidence_id == source_5m_signal.evidence_id
+    assert published_cld.decision.experiment_fingerprint == source_5m_signal.experiment_fingerprint
+
+    # E. Scope Identity
+    assert published_cld.decision.symbol == source_5m_signal.symbol
+    assert published_cld.decision.timeframe == source_5m_signal.timeframe.value
+    assert published_cld.authorization_receipt.strategy_name == source_5m_signal.strategy_name
+    assert published_cld.authorization_receipt.strategy_version == source_5m_signal.strategy_version
+
+    # F. Publication Continuity (Exactly ONE publication call)
+    assert mock_pub.publish.call_count == 1
+    pub_payload = mock_pub.publish.call_args[0][0]
+    assert pub_payload.decision_id == source_5m_signal.decision_id
+    assert pub_payload.signal_id == source_5m_signal.signal_id
