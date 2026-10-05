@@ -5,10 +5,13 @@ import argparse
 import datetime
 import json
 import logging
+import signal
 import sys
+import threading
+import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any, Callable, Sequence
 
 import pandas as pd
 
@@ -38,6 +41,7 @@ from src.evaluation.live_runtime import (
 from src.evaluation.live_runtime_context import (
     create_authorized_runtime_context,
 )
+from src.evaluation.mtf_intelligence import CanonicalTimeframe
 from src.evaluation.research_store import (
     DEFAULT_RESEARCH_DIR,
     PromotionEligibilityError,
@@ -804,6 +808,392 @@ class LiveExecutionRuntime:
         return execution_result
 
 
+def get_canonical_timeframe_duration(timeframe: str | CanonicalTimeframe) -> datetime.timedelta:
+    """Return exact timedelta duration for a canonical timeframe. Fails closed on unsupported timeframes."""
+    tf = CanonicalTimeframe.from_str(timeframe)
+    if tf == CanonicalTimeframe.FIVE_MINUTES:
+        return datetime.timedelta(minutes=5)
+    elif tf == CanonicalTimeframe.FIFTEEN_MINUTES:
+        return datetime.timedelta(minutes=15)
+    elif tf == CanonicalTimeframe.THIRTY_MINUTES:
+        return datetime.timedelta(minutes=30)
+    elif tf == CanonicalTimeframe.ONE_HOUR:
+        return datetime.timedelta(hours=1)
+    elif tf == CanonicalTimeframe.FOUR_HOURS:
+        return datetime.timedelta(hours=4)
+    elif tf == CanonicalTimeframe.ONE_DAY:
+        return datetime.timedelta(days=1)
+    else:
+        raise ValueError(f"Unsupported timeframe duration: {timeframe}")
+
+
+def is_candle_closed(
+    row: pd.Series,
+    timeframe: str | CanonicalTimeframe,
+    reference_now: datetime.datetime,
+) -> bool:
+    """Deterministically ascertain closed state of a candle row.
+
+    1. Uses explicit provider open/closed boolean state if present in columns.
+    2. Fallback: candle_open_timestamp + exact canonical duration <= reference_now.
+    """
+    for open_col in ("isOpen", "is_open"):
+        if open_col in row.index and not pd.isna(row[open_col]):
+            return not bool(row[open_col])
+
+    for closed_col in ("isClosed", "is_closed"):
+        if closed_col in row.index and not pd.isna(row[closed_col]):
+            return bool(row[closed_col])
+
+    ts = row.get("timestamp") if "timestamp" in row.index else row.get("openTime")
+    if pd.isna(ts) or ts is None:
+        return False
+
+    if isinstance(ts, pd.Timestamp):
+        open_dt = ts.to_pydatetime()
+    elif isinstance(ts, datetime.datetime):
+        open_dt = ts
+    else:
+        try:
+            open_dt = datetime.datetime.fromisoformat(str(ts).replace("Z", "+00:00"))
+        except Exception:
+            return False
+
+    if open_dt.tzinfo is None:
+        open_dt = open_dt.replace(tzinfo=datetime.timezone.utc)
+
+    ref_dt = reference_now
+    if ref_dt.tzinfo is None:
+        ref_dt = ref_dt.replace(tzinfo=datetime.timezone.utc)
+
+    duration = get_canonical_timeframe_duration(timeframe)
+    return (open_dt + duration) <= ref_dt
+
+
+def parse_continuous_candidate_ids(
+    arg_str: str | None,
+    timeframes: Sequence[str],
+) -> dict[str, str]:
+    """Parse candidate ID mappings for continuous multi-timeframe execution.
+
+    Explicit per-timeframe format: '5m=cand_5m,15m=cand_15m'
+    Single candidate ID is accepted ONLY when exactly 1 timeframe is configured.
+    Blind copying of a single candidate across multiple continuous timeframes is strictly rejected.
+    """
+    if not arg_str or not str(arg_str).strip():
+        return {}
+
+    cleaned = str(arg_str).strip()
+    result: dict[str, str] = {}
+
+    if "=" in cleaned:
+        parts = [p.strip() for p in cleaned.split(",") if p.strip()]
+        for part in parts:
+            if "=" not in part:
+                raise ValueError(f"Invalid candidate-id mapping part '{part}'. Expected 'timeframe=candidate_id'.")
+            tf, cand = part.split("=", 1)
+            tf_canonical = CanonicalTimeframe.from_str(tf.strip()).value
+            cand_id = cand.strip()
+            if not cand_id:
+                raise ValueError(f"Empty candidate_id supplied for timeframe '{tf}'.")
+            result[tf_canonical] = cand_id
+        return result
+
+    # Plain string without '='
+    canonical_tfs = [CanonicalTimeframe.from_str(tf).value for tf in timeframes]
+    if len(canonical_tfs) == 1:
+        result[canonical_tfs[0]] = cleaned
+        return result
+    else:
+        raise ValueError(
+            f"In continuous mode with multiple timeframes {canonical_tfs}, "
+            f"--candidate-id must specify explicit per-timeframe mappings "
+            f"(e.g. '5m=cand1,15m=cand2') rather than copying a single candidate ID '{cleaned}' across timeframes."
+        )
+
+
+class ContinuousLiveRuntime:
+    """Reusable continuous live-runtime orchestration layer.
+
+    Repeatedly polls for market data across configured canonical timeframes,
+    detects due closed candles, deduplicates evaluations, isolates recoverable
+    failures, and delegates strictly to the existing authoritative LiveExecutionRuntime.run_once()
+    primitive for production decisions and Project 2 publication.
+    """
+
+    def __init__(
+        self,
+        symbol: str = "XAUUSD",
+        timeframes: Sequence[str] | str | None = None,
+        poll_interval: float = 1.0,
+        publish: bool = True,
+        skip_if_no_trade: bool = False,
+        persist: bool = True,
+        max_age_seconds: float = 300.0,
+        limit: int = DEFAULT_LIMIT,
+        research_dir: Path | str = DEFAULT_RESEARCH_DIR,
+        store_path: Path | str = DEFAULT_STORE_PATH,
+        snapshot_path: Path | str = DEFAULT_SNAPSHOT_PATH,
+        publisher: Project2Publisher | None = None,
+        market_data_loaders: dict[str, Callable[[], pd.DataFrame]] | Callable[[str], pd.DataFrame] | None = None,
+        candidate_ids: dict[str, str] | None = None,
+        clock: Callable[[], datetime.datetime] | None = None,
+        sleep_fn: Callable[[float], None] | None = None,
+    ) -> None:
+        self.symbol = symbol.upper()
+        if timeframes is None:
+            tf_list = [DEFAULT_INTERVAL]
+        elif isinstance(timeframes, str):
+            tf_list = [timeframes]
+        else:
+            tf_list = list(timeframes)
+
+        # Enforce repository's existing canonical timeframe vocabulary.
+        # Fails closed on unsupported timeframes (e.g. '1m').
+        self.timeframes = tuple(CanonicalTimeframe.from_str(tf).value for tf in tf_list)
+
+        self.poll_interval = max(0.0, poll_interval)
+        self.publish = publish
+        self.skip_if_no_trade = skip_if_no_trade
+        self.persist = persist
+        self.max_age_seconds = max_age_seconds
+        self.limit = limit
+        self.research_dir = Path(research_dir)
+        self.store_path = Path(store_path)
+        self.snapshot_path = Path(snapshot_path)
+        self.publisher = publisher or Project2Publisher(max_age_seconds=int(max_age_seconds))
+        self.market_data_loaders = market_data_loaders
+        self.candidate_ids = candidate_ids or {}
+        self.clock = clock or (lambda: datetime.datetime.now(datetime.timezone.utc))
+        self.sleep_fn = sleep_fn or time.sleep
+
+        self._stop_event = threading.Event()
+        self._lock = threading.Lock()
+        self._evaluated_candles: set[tuple[str, str, str, str | None]] = set()
+        self._tick_count = 0
+        self._execution_history: list[dict[str, Any]] = []
+
+    @property
+    def is_running(self) -> bool:
+        return not self._stop_event.is_set()
+
+    def stop(self) -> None:
+        """Signal the continuous runtime loop to stop deterministically."""
+        self._stop_event.set()
+
+    def reset_deduplication(self) -> None:
+        """Clear the evaluated candle deduplication cache."""
+        self._evaluated_candles.clear()
+
+    def _acquire_market_data(self, timeframe: str) -> pd.DataFrame:
+        """Acquire market data snapshot for a given timeframe using injected loaders or default provider."""
+        if self.market_data_loaders is not None:
+            if callable(self.market_data_loaders):
+                return self.market_data_loaders(timeframe)
+            elif isinstance(self.market_data_loaders, dict) and timeframe in self.market_data_loaders:
+                loader = self.market_data_loaders[timeframe]
+                return loader()
+
+        return load_live_market_data(
+            symbol=self.symbol,
+            interval=timeframe,
+            limit=self.limit,
+        )
+
+    def _get_latest_closed_candle(
+        self,
+        df: pd.DataFrame,
+        timeframe: str,
+        reference_now: datetime.datetime,
+    ) -> tuple[int, pd.Series, str] | None:
+        """Locate the latest row in df that satisfies the closed-candle boundary.
+
+        Returns (index, row, candle_timestamp_iso) or None if no closed candle exists.
+        """
+        for i in range(len(df) - 1, -1, -1):
+            row = df.iloc[i]
+            if is_candle_closed(row, timeframe, reference_now):
+                ts = row["timestamp"]
+                open_dt = (
+                    ts.to_pydatetime()
+                    if isinstance(ts, pd.Timestamp)
+                    else ts
+                )
+                if open_dt.tzinfo is None:
+                    open_dt = open_dt.replace(tzinfo=datetime.timezone.utc)
+                return i, row, open_dt.isoformat()
+        return None
+
+    def tick(self, reference_now: datetime.datetime | None = None) -> dict[str, Any]:
+        """Execute one continuous orchestration tick across all configured canonical timeframes."""
+        if not self._lock.acquire(blocking=False):
+            logger.warning("Tick skipped: previous tick evaluation still in progress.")
+            return {"skipped": True, "reason": "concurrent_tick_locked", "evaluations": {}}
+
+        try:
+            ref_now = reference_now if reference_now is not None else self.clock()
+            if ref_now.tzinfo is None:
+                ref_now = ref_now.replace(tzinfo=datetime.timezone.utc)
+
+            self._tick_count += 1
+            tick_evaluations: dict[str, Any] = {}
+
+            for tf in self.timeframes:
+                if self._stop_event.is_set():
+                    break
+
+                canonical_tf = CanonicalTimeframe.from_str(tf).value
+
+                # 1. Acquire market data snapshot for timeframe
+                try:
+                    raw_df = self._acquire_market_data(canonical_tf)
+                    prepared_df = validate_and_prepare_market_snapshot(raw_df, symbol=self.symbol)
+                except Exception as exc:
+                    logger.error("Recoverable failure acquiring market data for %s %s: %s", self.symbol, canonical_tf, exc)
+                    tick_evaluations[canonical_tf] = {
+                        "status": "FAILED_RECOVERABLE",
+                        "error": str(exc),
+                        "symbol": self.symbol,
+                        "timeframe": canonical_tf,
+                    }
+                    continue
+
+                # 2. Closed-candle gate: verify explicit provider state or duration calculation
+                closed_info = self._get_latest_closed_candle(prepared_df, canonical_tf, ref_now)
+                if closed_info is None:
+                    tick_evaluations[canonical_tf] = {
+                        "status": "SKIPPED_NO_CLOSED_CANDLE",
+                        "reason": "latest_candle_is_open_or_unavailable",
+                        "symbol": self.symbol,
+                        "timeframe": canonical_tf,
+                    }
+                    continue
+
+                closed_idx, closed_row, closed_ts_iso = closed_info
+
+                # Slice market data up to and including the closed candle
+                eval_df = prepared_df.iloc[: closed_idx + 1].copy()
+
+                # 3. Candidate resolution for exact timeframe
+                config = ProductionRuntimeConfig(
+                    symbol=self.symbol,
+                    timeframe=canonical_tf,
+                    candidate_id=self.candidate_ids.get(canonical_tf),
+                    research_dir=self.research_dir,
+                )
+                resolved = resolve_authoritative_promoted_candidate(config)
+                if isinstance(resolved, PromotedCandidateArtifact):
+                    # Validate candidate timeframe matches exact requested timeframe
+                    candidate_tf = CanonicalTimeframe.from_str(resolved.timeframe).value
+                    if candidate_tf != canonical_tf:
+                        resolved = ProductionBlocked(
+                            reason="PromotionEligibilityError",
+                            detail=(
+                                f"Promoted candidate '{resolved.candidate_id}' timeframe "
+                                f"'{candidate_tf}' does not match requested timeframe '{canonical_tf}'."
+                            ),
+                            candidate_id=resolved.candidate_id,
+                            strategy_id=resolved.strategy_name,
+                            symbol=self.symbol,
+                            timeframe=canonical_tf,
+                        )
+
+                cand_id = resolved.candidate_id if resolved is not None else None
+
+                # 4. Construct 4-field deduplication key
+                dedup_key = (self.symbol, canonical_tf, closed_ts_iso, cand_id)
+
+                # 5. Deduplication check BEFORE evaluation
+                if dedup_key in self._evaluated_candles:
+                    tick_evaluations[canonical_tf] = {
+                        "status": "SKIPPED_DEDUPLICATED",
+                        "reason": "candle_already_evaluated",
+                        "candle_timestamp": closed_ts_iso,
+                        "candidate_id": cand_id,
+                        "timeframe": canonical_tf,
+                    }
+                    continue
+
+                # 6. Delegate strictly to existing authoritative run_once() primitive
+                try:
+                    runtime = LiveExecutionRuntime(
+                        symbol=self.symbol,
+                        interval=canonical_tf,
+                        limit=self.limit,
+                        publisher=self.publisher,
+                        store_path=self.store_path,
+                        snapshot_path=self.snapshot_path,
+                        max_age_seconds=self.max_age_seconds,
+                        research_dir=self.research_dir,
+                        production_config=config,
+                    )
+
+                    result = runtime.run_once(
+                        publish=self.publish,
+                        skip_if_no_trade=self.skip_if_no_trade,
+                        persist=self.persist,
+                        reference_now=ref_now,
+                        market_data=eval_df,
+                    )
+
+                    tick_evaluations[canonical_tf] = result
+
+                    # 7. Add to deduplication set ONLY AFTER successful evaluation execution
+                    if result.get("blocked") is not True:
+                        self._evaluated_candles.add(dedup_key)
+
+                except Exception as exc:
+                    logger.error("Recoverable failure evaluating %s %s: %s", self.symbol, canonical_tf, exc)
+                    tick_evaluations[canonical_tf] = {
+                        "status": "FAILED_RECOVERABLE",
+                        "error": str(exc),
+                        "symbol": self.symbol,
+                        "timeframe": canonical_tf,
+                    }
+
+            tick_summary = {
+                "tick_number": self._tick_count,
+                "timestamp": ref_now.isoformat(),
+                "evaluations": tick_evaluations,
+            }
+            self._execution_history.append(tick_summary)
+            return tick_summary
+        finally:
+            self._lock.release()
+
+    def run_ticks(self, max_ticks: int, reference_now: datetime.datetime | None = None) -> list[dict[str, Any]]:
+        """Run a fixed number of continuous ticks deterministically."""
+        results = []
+        for _ in range(max_ticks):
+            if self._stop_event.is_set():
+                break
+            res = self.tick(reference_now=reference_now)
+            results.append(res)
+            if self.poll_interval > 0 and not self._stop_event.is_set():
+                self.sleep_fn(self.poll_interval)
+        return results
+
+    def run_continuous(self, max_ticks: int | None = None) -> None:
+        """Run continuous market polling loop until explicit stop or max_ticks reached."""
+        self._stop_event.clear()
+        ticks_executed = 0
+        logger.info("Starting ContinuousLiveRuntime loop for %s timeframes=%s", self.symbol, self.timeframes)
+        try:
+            while not self._stop_event.is_set():
+                if max_ticks is not None and ticks_executed >= max_ticks:
+                    logger.info("Reached max_ticks=%d, stopping continuous loop.", max_ticks)
+                    break
+                self.tick()
+                ticks_executed += 1
+                if self.poll_interval > 0 and not self._stop_event.is_set():
+                    self.sleep_fn(self.poll_interval)
+        except KeyboardInterrupt:
+            logger.info("ContinuousLiveRuntime interrupted by user (SIGINT).")
+        finally:
+            self._stop_event.set()
+            logger.info("ContinuousLiveRuntime loop stopped after %d ticks.", ticks_executed)
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Headless Live Execution Runtime")
     parser.add_argument("--symbol", type=str, default="XAUUSD", help="Target instrument symbol")
@@ -813,9 +1203,43 @@ def main() -> None:
     parser.add_argument("--publish", action="store_true", help="Enable outbound publishing to Project 2")
     parser.add_argument("--skip-no-trade", action="store_true", help="Skip publishing when decision is NO TRADE")
     parser.add_argument("--no-persist", action="store_true", help="Disable history persistence")
+    parser.add_argument("--continuous", action="store_true", help="Enable continuous live runtime orchestration")
+    parser.add_argument("--poll-interval", type=float, default=1.0, help="Polling interval in seconds for continuous mode")
+    parser.add_argument("--max-ticks", type=int, default=None, help="Maximum number of continuous loop ticks")
+    parser.add_argument("--timeframes", type=str, default=None, help="Comma-separated timeframes for continuous mode (e.g. '5m,15m')")
 
     args = parser.parse_args()
     logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
+
+    if args.continuous:
+        if args.timeframes:
+            tfs = [t.strip() for t in args.timeframes.split(",") if t.strip()]
+        else:
+            tfs = [args.interval]
+
+        candidate_map = parse_continuous_candidate_ids(args.candidate_id, timeframes=tfs)
+
+        cont_runtime = ContinuousLiveRuntime(
+            symbol=args.symbol,
+            timeframes=tfs,
+            poll_interval=args.poll_interval,
+            publish=args.publish,
+            skip_if_no_trade=args.skip_no_trade,
+            persist=not args.no_persist,
+            limit=args.limit,
+            research_dir=DEFAULT_RESEARCH_DIR,
+            candidate_ids=candidate_map,
+        )
+
+        def handle_signal(sig, frame):
+            logger.info("Signal %s received, stopping continuous runtime...", sig)
+            cont_runtime.stop()
+
+        signal.signal(signal.SIGINT, handle_signal)
+        signal.signal(signal.SIGTERM, handle_signal)
+
+        cont_runtime.run_continuous(max_ticks=args.max_ticks)
+        return
 
     try:
         production_config = ProductionRuntimeConfig(
