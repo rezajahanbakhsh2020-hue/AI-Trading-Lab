@@ -13,7 +13,10 @@ import hashlib
 import json
 import math
 from numbers import Real
-from typing import Any, Optional
+from typing import TYPE_CHECKING, Any, Optional
+
+if TYPE_CHECKING:
+    from src.evaluation.mtf_intelligence import MTFIntelligence
 
 import pandas as pd
 
@@ -1161,6 +1164,7 @@ class ProductionIntelligencePublication:
     risk_reward_ratio: Optional[float]
     operational_stability_score: float
     provenance: dict[str, Any]
+    mtf_intelligence: Optional[MTFIntelligence] = None
 
     def __post_init__(self) -> None:
         if not self.schema_version or not self.schema_version.strip():
@@ -1220,6 +1224,7 @@ class ProductionIntelligencePublication:
         authorization: Optional[ProductionRuntimeAuthorization | ProductionAuthorizationReceipt] = None,
         confidence: Optional[float] = None,
         schema_version: str = "1.0",
+        mtf_intelligence: Optional[MTFIntelligence] = None,
     ) -> ProductionIntelligencePublication:
         if not isinstance(decision, ProductionDecision):
             raise TypeError("decision must be a ProductionDecision instance.")
@@ -1339,9 +1344,45 @@ class ProductionIntelligencePublication:
             risk_reward_ratio=risk.risk_reward_ratio,
             operational_stability_score=stab_score,
             provenance=provenance,
+            mtf_intelligence=mtf_intelligence,
         )
 
     def as_dict(self) -> dict[str, Any]:
+        res = {
+            "schema_version": self.schema_version,
+            "publication_id": self.publication_id,
+            "signal_id": self.signal_id,
+            "decision_id": self.decision_id,
+            "strategy_id": self.strategy_id,
+            "candidate_id": self.candidate_id,
+            "research_evidence_id": self.research_evidence_id,
+            "research_fingerprint": self.research_fingerprint,
+            "symbol": self.symbol,
+            "timeframe": self.timeframe,
+            "decision_timestamp": self.decision_timestamp,
+            "market_data_timestamp": self.market_data_timestamp,
+            "decision": self.decision,
+            "confidence": self.confidence,
+            "entry": self.entry,
+            "invalidation": self.invalidation,
+            "stop_loss": self.stop_loss,
+            "tp1": self.tp1,
+            "tp2": self.tp2,
+            "tp3": self.tp3,
+            "trailing_stop": self.trailing_stop,
+            "risk_reward_ratio": self.risk_reward_ratio,
+            "operational_stability_score": self.operational_stability_score,
+            "provenance": dict(self.provenance),
+        }
+        if self.mtf_intelligence is not None:
+            res["mtf"] = (
+                self.mtf_intelligence.as_dict()
+                if hasattr(self.mtf_intelligence, "as_dict") and callable(self.mtf_intelligence.as_dict)
+                else self.mtf_intelligence
+            )
+        return res
+
+    def _as_dict_legacy(self) -> dict[str, Any]:
         return {
             "schema_version": self.schema_version,
             "publication_id": self.publication_id,
@@ -1390,7 +1431,7 @@ class ProductionIntelligencePublication:
         # Uses TP2 if set, else TP1, else None.
         tp_take = self.tp2 if self.tp2 is not None else (self.tp1 if self.tp1 is not None else None)
 
-        return {
+        payload = {
             "contract_version": self.schema_version,
             "event_id": self.publication_id,
             "event_type": "TRADING_SIGNAL",
@@ -1424,6 +1465,13 @@ class ProductionIntelligencePublication:
             },
             "provenance": prov,
         }
+        if self.mtf_intelligence is not None:
+            payload["mtf"] = (
+                self.mtf_intelligence.as_dict()
+                if hasattr(self.mtf_intelligence, "as_dict") and callable(self.mtf_intelligence.as_dict)
+                else self.mtf_intelligence
+            )
+        return payload
 
 
 # Legacy wrapper function for backward compatibility with existing codebase/tests

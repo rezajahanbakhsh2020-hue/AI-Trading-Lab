@@ -156,6 +156,7 @@ def publish_canonical_live_decision(
     actor: str = "live_publication_store",
     timestamp_utc: Optional[str] = None,
     delivery_path: Optional[str | Path] = None,
+    mtf_intelligence: Optional[Any] = None,
 ) -> tuple[CanonicalLiveDecision, ProductionIntelligencePublication, Any]:
     """Harden publication lifecycle boundary for a CanonicalLiveDecision.
 
@@ -188,6 +189,7 @@ def publish_canonical_live_decision(
                     risk=canonical_decision.risk_levels,
                     candidate=candidate,
                     authorization=canonical_decision.authorization_receipt,
+                    mtf_intelligence=mtf_intelligence,
                 )
                 existing_receipt = find_delivery_receipt(
                     publication.publication_id,
@@ -220,6 +222,7 @@ def publish_canonical_live_decision(
         risk=canonical_decision.risk_levels,
         candidate=candidate,
         authorization=canonical_decision.authorization_receipt,
+        mtf_intelligence=mtf_intelligence,
     )
 
     if publication.provenance.get("canonical_live_decision_fingerprint") != canonical_decision.canonical_live_decision_fingerprint:

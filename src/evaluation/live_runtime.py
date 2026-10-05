@@ -71,6 +71,7 @@ def evaluate_authorized_live_runtime(
     skip_if_no_trade: bool = False,
     persist: bool = True,
     actor: str = "live_runtime",
+    mtf_intelligence: Any | None = None,
 ) -> LiveRuntimeResult:
     """Canonical downstream execution boundary for Project 1 live execution.
 
@@ -250,57 +251,12 @@ def evaluate_authorized_live_runtime(
         reason="canonical_artifact_presentable",
     )
 
-    # Enforce persistence boundary
-    st_path = Path(store_path) if store_path is not None else DEFAULT_STORE_PATH
-    if persist:
-        final_cld = persist_canonical_live_decision(
-            canonical_dec,
-            path=st_path,
-            actor=actor,
-            timestamp_utc=ts_now,
-        )
-    else:
-        final_cld = canonical_dec
-
-    # Enforce publication boundary
-    pub_result = None
-    if publish and publisher is not None:
-        pub_store_path = st_path.parent / "publication_history.json"
-        pub_ts_now = ts_now
-        try:
-            cld_last_ts = final_cld.transition_history[-1].timestamp_utc
-            if cld_last_ts > pub_ts_now:
-                pub_ts_now = cld_last_ts
-        except Exception:
-            pass
-        try:
-            published_dec, _, pub_res = publish_canonical_live_decision(
-                final_cld,
-                publisher=publisher,
-                candidate=resolved_candidate,
-                path=pub_store_path,
-                skip_if_no_trade=skip_if_no_trade,
-                actor=actor,
-                timestamp_utc=pub_ts_now,
-            )
-            final_cld = published_dec
-            pub_result = pub_res
-        except Exception as exc:
-            pub_result = {
-                "status": "FAILED",
-                "published": False,
-                "reason": f"Publication boundary exception: {exc}",
-                "error": str(exc),
-                "delivery_status": "FAILED_PERMANENT",
-                "current_lifecycle_state": final_cld.current_state.value,
-            }
-
     # Presentation display consumer
     try:
         if evaluation.fresh:
             display = build_live_trade_display(
                 data,
-                canonical_decision=final_cld,
+                canonical_decision=canonical_dec,
                 stable_strategy=stable_strategy,
                 stability_score=effective_stability_score,
                 min_stability_score=min_stability_score,
@@ -401,8 +357,8 @@ def evaluate_authorized_live_runtime(
         "evidence_id": resolved_candidate.evidence.evidence_id,
         "experiment_fingerprint": resolved_candidate.evidence.experiment_fingerprint,
         "decision_id": final_decision_obj.decision_id,
-        "canonical_live_decision_fingerprint": final_cld.canonical_live_decision_fingerprint,
-        "current_lifecycle_state": final_cld.current_state.value,
+        "canonical_live_decision_fingerprint": canonical_dec.canonical_live_decision_fingerprint,
+        "current_lifecycle_state": canonical_dec.current_state.value,
         "runtime_authorization_fingerprint": receipt.authorization_fingerprint,
         "authorization_policy_version": receipt.authorization_policy_version,
         "authorized_at_utc": receipt.authorized_at_utc,
@@ -412,14 +368,128 @@ def evaluate_authorized_live_runtime(
         "context_fingerprint": context.context_fingerprint,
         "evaluation_fingerprint": evaluation.evaluation_fingerprint,
     }
-    if pub_result:
-        decision_dict["publish_result"] = pub_result
 
     if display["decision"] != decision_dict["decision"]:
         raise ValueError("Live decision and live display decisions do not match.")
 
-    return LiveRuntimeResult(
+    initial_result = LiveRuntimeResult(
         decision=decision_dict,
+        display=display,
+        canonical_decision=canonical_dec,
+    )
+
+    if persist or publish:
+        return finalize_authorized_live_runtime(
+            initial_result,
+            context=context,
+            mtf_intelligence=mtf_intelligence,
+            store_path=store_path,
+            publisher=publisher,
+            publish=publish,
+            skip_if_no_trade=skip_if_no_trade,
+            persist=persist,
+            actor=actor,
+        )
+
+    return initial_result
+
+
+def finalize_authorized_live_runtime(
+    runtime_result: LiveRuntimeResult,
+    *,
+    context: AuthorizedProductionRuntimeContext,
+    mtf_intelligence: Any | None = None,
+    store_path: Path | str | None = None,
+    publisher: Any | None = None,
+    publish: bool = False,
+    skip_if_no_trade: bool = False,
+    persist: bool = True,
+    actor: str = "live_runtime",
+) -> LiveRuntimeResult:
+    """Finalizes an already-evaluated LiveRuntimeResult without re-evaluating market data or strategy logic.
+
+    Consumes the retained authoritative CanonicalLiveDecision from Phase A (state PRESENTABLE),
+    enforces persistence boundary (PERSISTED), and enforces publication boundary (PUBLISHED iff DELIVERED).
+    Attaches MTF intelligence to the publication artifact and decision dictionary.
+    """
+    if not isinstance(runtime_result, LiveRuntimeResult):
+        raise TypeError(f"runtime_result must be a LiveRuntimeResult, got {type(runtime_result).__name__}")
+    if runtime_result.canonical_decision is None:
+        raise ValueError("runtime_result does not contain a canonical_decision.")
+
+    canonical_dec = runtime_result.canonical_decision
+    resolved_candidate = context.candidate
+    st_path = Path(store_path) if store_path is not None else DEFAULT_STORE_PATH
+
+    ts_now = (
+        canonical_dec.transition_history[-1].timestamp_utc
+        if canonical_dec.transition_history
+        else datetime.now(timezone.utc).isoformat()
+    )
+
+    # 1. Enforce persistence boundary on the EXACT SAME canonical decision
+    if persist and canonical_dec.current_state == LiveDecisionLifecycleState.PRESENTABLE:
+        final_cld = persist_canonical_live_decision(
+            canonical_dec,
+            path=st_path,
+            actor=actor,
+            timestamp_utc=ts_now,
+        )
+    else:
+        final_cld = canonical_dec
+
+    # 2. Enforce publication boundary on the EXACT SAME canonical decision
+    pub_result = None
+    if publish and publisher is not None:
+        pub_store_path = st_path.parent / "publication_history.json"
+        pub_ts_now = ts_now
+        try:
+            cld_last_ts = final_cld.transition_history[-1].timestamp_utc
+            if cld_last_ts > pub_ts_now:
+                pub_ts_now = cld_last_ts
+        except Exception:
+            pass
+        try:
+            published_dec, _, pub_res = publish_canonical_live_decision(
+                final_cld,
+                publisher=publisher,
+                candidate=resolved_candidate,
+                path=pub_store_path,
+                skip_if_no_trade=skip_if_no_trade,
+                actor=actor,
+                timestamp_utc=pub_ts_now,
+                mtf_intelligence=mtf_intelligence,
+            )
+            final_cld = published_dec
+            pub_result = pub_res
+        except Exception as exc:
+            pub_result = {
+                "status": "FAILED",
+                "published": False,
+                "reason": f"Publication boundary exception: {exc}",
+                "error": str(exc),
+                "delivery_status": "FAILED_PERMANENT",
+                "current_lifecycle_state": final_cld.current_state.value,
+            }
+
+    # 3. Update decision dictionary with final state, fingerprints, pub result, and mtf
+    dec_dict = dict(runtime_result.decision)
+    dec_dict["canonical_live_decision_fingerprint"] = final_cld.canonical_live_decision_fingerprint
+    dec_dict["current_lifecycle_state"] = final_cld.current_state.value
+
+    if mtf_intelligence is not None:
+        dec_dict["mtf"] = (
+            mtf_intelligence.as_dict()
+            if hasattr(mtf_intelligence, "as_dict") and callable(mtf_intelligence.as_dict)
+            else mtf_intelligence
+        )
+    if pub_result is not None:
+        dec_dict["publish_result"] = pub_result
+
+    display = dict(runtime_result.display)
+
+    return LiveRuntimeResult(
+        decision=dec_dict,
         display=display,
         canonical_decision=final_cld,
     )
