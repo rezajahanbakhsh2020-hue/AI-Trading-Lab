@@ -612,24 +612,33 @@ def evaluate_mtf_live_runtime(
 ) -> MTFLiveRuntimeResult:
     """Orchestrates authoritative per-timeframe live evaluations and constructs MTF intelligence.
 
-    Dispatches evaluation for each timeframe independently through:
-      timeframe request
-      -> resolve_promoted_candidate(timeframe)
-      -> authorize_production_runtime(candidate, timeframe)
-      -> create_authorized_runtime_context()
-      -> create_live_market_evaluation()
-      -> evaluate_authorized_live_runtime()
-      -> PerTimeframeSignal projection
-      -> build_mtf_intelligence()
-      -> publication with MTF intelligence on real authoritative publication path.
+    Lifecycle semantics:
+    Phase A (Evaluation):
+      For each requested timeframe:
+        -> resolve_promoted_candidate(timeframe)
+        -> authorize_production_runtime(candidate, timeframe)
+        -> create_authorized_runtime_context()
+        -> create_live_market_evaluation()
+        -> evaluate_authorized_live_runtime(..., persist=False, publish=False) [EXACTLY ONCE PER TIMEFRAME]
+        -> PerTimeframeSignal projection
+
+    Phase B (MTF Composition):
+      -> build_mtf_intelligence(signals, local_timeframe) [PURE DETERMINISTIC DOMAIN CALCULATION]
+
+    Phase C (Finalization):
+      -> finalize_authorized_live_runtime(local_res, context=local_context, mtf_intelligence=mtf_intel)
+         [FINALIZES THE EXISTING PHASE-A RESULT WITHOUT RE-EVALUATING MARKET OR STRATEGY LOGIC]
     """
-    from src.data.provider import validate_and_prepare_market_snapshot
+    from src.evaluation.live_execution_runtime import validate_and_prepare_market_snapshot
     from src.evaluation.live_market_evaluation import create_live_market_evaluation
     from src.evaluation.live_production_decision import (
         ProductionAuthorizationReceipt,
         authorize_production_runtime,
     )
-    from src.evaluation.live_runtime import evaluate_authorized_live_runtime
+    from src.evaluation.live_runtime import (
+        evaluate_authorized_live_runtime,
+        finalize_authorized_live_runtime,
+    )
     from src.evaluation.live_runtime_context import create_authorized_runtime_context
     from src.evaluation.research_store import (
         DEFAULT_RESEARCH_DIR,
@@ -651,6 +660,7 @@ def evaluate_mtf_live_runtime(
     per_tf_evaluations: Dict[CanonicalTimeframe, Any] = {}
     per_tf_candidates: Dict[CanonicalTimeframe, Any] = {}
 
+    # PHASE A: EVALUATION (EXACTLY ONCE PER TIMEFRAME)
     for tf_key, raw_df in data_by_timeframe.items():
         tf = CanonicalTimeframe.from_str(tf_key)
         prepared_df = validate_and_prepare_market_snapshot(raw_df, symbol=symbol)
@@ -692,7 +702,7 @@ def evaluate_mtf_live_runtime(
             max_age_seconds=300.0,
         )
 
-        # 5. Evaluate authorized live runtime (without publishing yet; publication happens after MTF calculation)
+        # 5. Evaluate authorized live runtime (Phase A evaluation: persist=False, publish=False)
         res = evaluate_authorized_live_runtime(
             data=prepared_df,
             evaluation=evaluation,
@@ -704,7 +714,7 @@ def evaluate_mtf_live_runtime(
             publisher=None,
             publish=False,
             skip_if_no_trade=skip_if_no_trade,
-            persist=persist,
+            persist=False,
             actor=actor,
         )
 
@@ -718,29 +728,23 @@ def evaluate_mtf_live_runtime(
             ptf_sig = PerTimeframeSignal.from_canonical_live_decision(cld, candidate=candidate)
             per_tf_signals.append(ptf_sig)
 
-    # 6. Pure deterministic build_mtf_intelligence
+    # PHASE B: MTF COMPOSITION
     mtf_intel = build_mtf_intelligence(per_tf_signals, local_timeframe=local_tf)
 
-    # 7. Evaluate local timeframe with publish=publish and attach mtf_intel to real publication path
-    local_df = validate_and_prepare_market_snapshot(data_by_timeframe[local_tf], symbol=symbol)
-    local_cand = per_tf_candidates[local_tf]
+    # PHASE C: FINALIZATION (FINALIZE EXISTING PHASE-A LOCAL RESULT WITHOUT RE-EVALUATION)
+    local_initial_res = per_tf_results[local_tf]
     local_context = per_tf_contexts[local_tf]
-    local_eval = per_tf_evaluations[local_tf]
 
-    final_local_res = evaluate_authorized_live_runtime(
-        data=local_df,
-        evaluation=local_eval,
+    final_local_res = finalize_authorized_live_runtime(
+        local_initial_res,
         context=local_context,
-        stable_strategy=local_cand.strategy_name,
-        stability_score=local_cand.operational_stability_score,
-        min_stability_score=0.50,
+        mtf_intelligence=mtf_intel,
         store_path=store_path,
         publisher=publisher,
         publish=publish,
         skip_if_no_trade=skip_if_no_trade,
         persist=persist,
         actor=actor,
-        mtf_intelligence=mtf_intel,
     )
 
     per_tf_results[local_tf] = final_local_res

@@ -1,10 +1,12 @@
 """Comprehensive Adversarial Unit and Integration Tests for Project 1 MTF Intelligence."""
 
 from types import MappingProxyType
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
+import pandas as pd
 import pytest
 
+from src.evaluation import live_runtime as live_rt_mod
 from src.evaluation.live_decision_lifecycle import (
     CanonicalLiveDecision,
     LiveDecisionLifecycleState,
@@ -17,6 +19,7 @@ from src.evaluation.live_production_decision import (
     ProductionDecision,
     ProductionIntelligencePublication,
     ProductionRiskLevels,
+    ProductionRuntimeAuthorization,
     ProductionSignal,
     PromotedCandidateArtifact,
     calculate_production_risk_levels,
@@ -30,6 +33,7 @@ from src.evaluation.mtf_intelligence import (
     MTFLiveRuntimeResult,
     PerTimeframeSignal,
     build_mtf_intelligence,
+    evaluate_mtf_live_runtime,
 )
 
 
@@ -222,7 +226,7 @@ def test_phase11_j_mixed_symbols():
 
 
 def test_phase11_k_distinct_timeframe_identity():
-    """Phase 11.K: 5m BUY and 15m BUY with identical metadata have distinct constituent fingerprints."""
+    """Phase 11.K: 5m BUY and 15m BUY with otherwise identical metadata have distinct constituent fingerprints."""
     sig5m = _make_signal("5m", Direction.BUY, decision_id="dec_same", signal_id="sig_same")
     sig15m = _make_signal("15m", Direction.BUY, decision_id="dec_same", signal_id="sig_same")
 
@@ -492,3 +496,104 @@ def test_phase11_t_provenance_regression():
     assert pub.provenance["source"] == "AI-Trading-Lab"
     assert pub.provenance["provenance_type"] == "live_signal"
     assert pub.provenance["is_live"] is True
+
+
+def test_phase11_exactly_once_evaluation_and_identity_continuity():
+    """Anti-recurrence test: Proves each timeframe is evaluated EXACTLY ONCE and identity is continuous."""
+    eval_calls = []
+
+    orig_eval = live_rt_mod.evaluate_authorized_live_runtime
+
+    def spy_eval(*args, **kwargs):
+        ctx = kwargs.get("context")
+        if ctx is not None:
+            eval_calls.append((ctx.timeframe, ctx.candidate_id))
+        return orig_eval(*args, **kwargs)
+
+    timeframes = ["5m", "15m", "30m", "1H", "4H", "1D"]
+    dates = pd.date_range("2026-03-30 10:00", periods=50, freq="5min", tz="UTC")
+    data_by_tf = {}
+    for tf in timeframes:
+        data_by_tf[tf] = pd.DataFrame({
+            "openTime": [d.isoformat() for d in dates],
+            "open": [2000.0 + i for i in range(50)],
+            "high": [2005.0 + i for i in range(50)],
+            "low": [1995.0 + i for i in range(50)],
+            "close": [2002.0 + i for i in range(50)],
+        })
+
+    cand = MagicMock(spec=PromotedCandidateArtifact)
+    cand.strategy_name = "momentum"
+    cand.candidate_id = "cand_test"
+    cand.symbol = "XAUUSD"
+    cand.evidence = MagicMock()
+    cand.evidence.evidence_id = "ev_test"
+    cand.evidence.experiment_fingerprint = "exp_fp"
+    cand.operational_stability_score = 0.9
+    cand.artifact_fingerprint = "art_fp"
+    cand.policy = MagicMock()
+    cand.policy.policy_version = "1.0"
+    cand.strategy_version = "1.0"
+    cand.campaign_selection_decision_fingerprint = "csd_fp"
+    cand.governance_decision_fingerprint = "gov_fp"
+    cand.parameters = {"stop_loss_pct": 0.01, "take_profit_pct": 0.02, "window": 10}
+
+    def mock_auth(candidate, symbol, timeframe, now=None):
+        candidate.timeframe = timeframe
+        return ProductionRuntimeAuthorization(
+            operational_stability_score=0.9,
+            candidate_id=candidate.candidate_id,
+            strategy_name=candidate.strategy_name,
+            strategy_version=candidate.strategy_version,
+            symbol=symbol,
+            timeframe=timeframe,
+            promoted_artifact_fingerprint=candidate.artifact_fingerprint,
+            governance_decision_fingerprint=candidate.governance_decision_fingerprint,
+            campaign_selection_decision_fingerprint=candidate.campaign_selection_decision_fingerprint,
+            authorization_policy_version="1.0",
+            authorized_at_utc="2026-03-30T12:00:00+00:00",
+        )
+
+    mock_pub = MagicMock()
+    mock_pub.publish.return_value = {
+        "status": "PUBLISHED",
+        "published": True,
+        "event_id": "pub_123",
+        "remote_event_id": "pub_123",
+    }
+
+    import tempfile
+    from pathlib import Path
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        st_path = Path(tmpdir) / "decision_history.json"
+        with patch("src.evaluation.research_store.resolve_promoted_candidate", return_value=cand):
+            with patch("src.evaluation.live_production_decision.authorize_production_runtime", side_effect=mock_auth):
+                with patch("src.evaluation.live_runtime.evaluate_authorized_live_runtime", side_effect=spy_eval):
+                    result = evaluate_mtf_live_runtime(
+                        data_by_timeframe=data_by_tf,
+                        symbol="XAUUSD",
+                        local_timeframe="5m",
+                        stable_strategy="momentum",
+                        candidate_id="cand_test",
+                        store_path=st_path,
+                        publisher=mock_pub,
+                        publish=True,
+                        persist=True,
+                    )
+
+    # 1. Assert EXACTLY ONE evaluation call per timeframe (Anti-recurrence control)
+    tf_call_counts = {tf: 0 for tf in timeframes}
+    for tf, c_id in eval_calls:
+        tf_call_counts[tf] += 1
+
+    for tf in timeframes:
+        assert tf_call_counts[tf] == 1, f"Timeframe {tf} was evaluated {tf_call_counts[tf]} times instead of exactly 1"
+
+    # 2. Assert Identity Continuity: Published decision matches 5m PerTimeframeSignal projection EXACTLY
+    published_cld = result.local_result.canonical_decision
+    source_5m_signal = next(s for s in result.mtf_intelligence.signals if s.timeframe == CanonicalTimeframe.FIVE_MINUTES)
+
+    assert published_cld.decision.decision_id == source_5m_signal.decision_id
+    assert published_cld.signal.signal_id == source_5m_signal.signal_id
+    assert published_cld.live_decision_id == source_5m_signal.decision_id
