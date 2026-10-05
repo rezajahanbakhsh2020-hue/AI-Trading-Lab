@@ -1139,7 +1139,8 @@ class ContinuousLiveRuntime:
                     tick_evaluations[canonical_tf] = result
 
                     # 7. Add to deduplication set ONLY AFTER successful evaluation execution
-                    self._evaluated_candles.add(dedup_key)
+                    if result.get("blocked") is not True:
+                        self._evaluated_candles.add(dedup_key)
 
                 except Exception as exc:
                     logger.error("Recoverable failure evaluating %s %s: %s", self.symbol, canonical_tf, exc)

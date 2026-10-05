@@ -446,6 +446,7 @@ def test_15_explicit_candidate_timeframe_mismatch_fails_closed(tmp_path) -> None
     assert eval_15m["reason"] == "PromotionEligibilityError"
     assert "timeframe '5m'" in eval_15m["detail"]
     assert "15m" in eval_15m["detail"]
+    assert len(cont._evaluated_candles) == 0
 
 
 def test_16_missing_candidate_fails_closed(tmp_path) -> None:
@@ -644,6 +645,53 @@ def test_25_26_27_28_delegates_to_run_once_primitive(tmp_path) -> None:
 
         assert mock_run_once.called
         assert res["evaluations"]["5m"]["decision"] == "BUY"
+
+
+# -----------------------------------------------------------------------------
+# Regression test for blocked state not being recorded in deduplication set
+# -----------------------------------------------------------------------------
+
+def test_blocked_result_not_deduplicated_and_retryable(tmp_path) -> None:
+    """Regression test: ProductionBlocked results must NEVER enter deduplication state and must remain retryable."""
+    # 1. Candidate created for 15m
+    cand_15m = persist_momentum_candidate(tmp_path, candidate_id="cand_15m", timeframe="15m")
+
+    # 2. Configured for 5m initially with candidate cand_15m (causes ProductionBlocked)
+    df_5m = make_tf_market_data("2025-01-01 10:00", "5m")
+    ref_now = pd.to_datetime("2025-01-01 12:00:00Z").to_pydatetime()
+
+    cont = ContinuousLiveRuntime(
+        symbol="XAUUSD",
+        timeframes=["5m"],
+        poll_interval=0.0,
+        publish=False,
+        persist=False,
+        research_dir=tmp_path,
+        market_data_loaders=lambda tf: df_5m,
+        candidate_ids={"5m": cand_15m},  # Mismatched timeframe!
+    )
+
+    # 3. Poll 1: Reaches ProductionBlocked
+    t1 = cont.tick(reference_now=ref_now)
+
+    assert t1["evaluations"]["5m"]["blocked"] is True
+    assert len(cont._evaluated_candles) == 0
+
+    # 4. Fix candidate for 5m
+    cand_5m = persist_momentum_candidate(tmp_path, candidate_id="cand_5m", timeframe="5m")
+    cont.candidate_ids["5m"] = cand_5m
+
+    # 5. Poll 2: Same candle polled again
+    t2 = cont.tick(reference_now=ref_now)
+
+    # 6. Evaluation now succeeds and is recorded in dedup set
+    assert t2["evaluations"]["5m"]["blocked"] is False
+    assert len(cont._evaluated_candles) == 1
+
+    # 7. Poll 3: Same candle polled again is now deduplicated
+    t3 = cont.tick(reference_now=ref_now)
+    assert t3["evaluations"]["5m"]["status"] == "SKIPPED_DEDUPLICATED"
+    assert len(cont._evaluated_candles) == 1
 
 
 # -----------------------------------------------------------------------------
