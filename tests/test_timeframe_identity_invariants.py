@@ -1,12 +1,18 @@
-"""Deterministic P1 Contract and Multi-Timeframe Identity Invariant Tests.
+"""Deterministic P1 contract and multi-timeframe identity invariant tests.
 
-Proves P1-owned invariants for timeframe identity, fail-closed scope matching,
-live provenance, and outbound Project2Publisher contract payload preservation.
+Level 1:
+These tests verify P1-owned timeframe identity, fail-closed behavior,
+live provenance, and outbound Project2Publisher contract preservation.
 
-Note on Proof Levels:
-- Level 1 (Code/Contract Proof): Verified by these unit/contract tests.
-- Level 2 (P1->P2 Integration Proof): Verified by test_e2e_http_publication.py against a local gateway endpoint.
-- Level 3 (Genuine Deployed Runtime Proof): Requires an actual reachable/authenticated live remote environment.
+Level 2:
+The repository already contains tests/test_e2e_http_publication.py.
+That test exercises P1 publication through a local HTTP gateway boundary.
+It is not a deployed Project 2 runtime test.
+
+Level 3:
+A genuine deployed P1 -> P2 -> persistence -> adapter -> UI runtime proof
+requires a reachable/authenticated deployed environment and is NOT claimed
+by this test module.
 """
 
 from datetime import datetime, timedelta, timezone
@@ -290,11 +296,14 @@ def test_live_provenance_preservation() -> None:
 
 
 def test_project2_publisher_preserves_authoritative_payload() -> None:
-    """D: Project2Publisher preserves and transmits P1 contract payload verbatim.
+    """Proves P1 Project2Publisher serialization/transmission contract under mocked transport.
 
-    Note: This test proves that Project2Publisher correctly serializes and transmits
-    the P1 payload under mocked transport. It does NOT prove P2 server-side ingestion,
-    persistence, or UI presentation.
+    Does not prove:
+    - P2 server-side ingestion,
+    - P2 persistence,
+    - P2 adapter presentation,
+    - terminal/UI rendering,
+    - deployed runtime delivery.
     """
     pub_url = "http://localhost:8000/api/v1/integration/project1/ingest"
     publisher = Project2Publisher(publish_url=pub_url, api_key="test_key", enabled=True)
