@@ -13,7 +13,10 @@ import hashlib
 import json
 import math
 from numbers import Real
-from typing import Any, Optional
+from typing import TYPE_CHECKING, Any, Optional
+
+if TYPE_CHECKING:
+    from src.evaluation.mtf_intelligence import MTFIntelligence
 
 import pandas as pd
 
@@ -1161,7 +1164,7 @@ class ProductionIntelligencePublication:
     risk_reward_ratio: Optional[float]
     operational_stability_score: float
     provenance: dict[str, Any]
-    mtf_intelligence: Optional[Any] = None
+    mtf_intelligence: Optional[MTFIntelligence] = None
 
     def __post_init__(self) -> None:
         if not self.schema_version or not self.schema_version.strip():
@@ -1221,7 +1224,7 @@ class ProductionIntelligencePublication:
         authorization: Optional[ProductionRuntimeAuthorization | ProductionAuthorizationReceipt] = None,
         confidence: Optional[float] = None,
         schema_version: str = "1.0",
-        mtf_intelligence: Optional[Any] = None,
+        mtf_intelligence: Optional[MTFIntelligence] = None,
     ) -> ProductionIntelligencePublication:
         if not isinstance(decision, ProductionDecision):
             raise TypeError("decision must be a ProductionDecision instance.")

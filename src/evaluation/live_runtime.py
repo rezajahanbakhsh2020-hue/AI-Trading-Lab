@@ -71,6 +71,7 @@ def evaluate_authorized_live_runtime(
     skip_if_no_trade: bool = False,
     persist: bool = True,
     actor: str = "live_runtime",
+    mtf_intelligence: Any | None = None,
 ) -> LiveRuntimeResult:
     """Canonical downstream execution boundary for Project 1 live execution.
 
@@ -282,6 +283,7 @@ def evaluate_authorized_live_runtime(
                 skip_if_no_trade=skip_if_no_trade,
                 actor=actor,
                 timestamp_utc=pub_ts_now,
+                mtf_intelligence=mtf_intelligence,
             )
             final_cld = published_dec
             pub_result = pub_res
@@ -412,6 +414,12 @@ def evaluate_authorized_live_runtime(
         "context_fingerprint": context.context_fingerprint,
         "evaluation_fingerprint": evaluation.evaluation_fingerprint,
     }
+    if mtf_intelligence is not None:
+        decision_dict["mtf"] = (
+            mtf_intelligence.as_dict()
+            if hasattr(mtf_intelligence, "as_dict") and callable(mtf_intelligence.as_dict)
+            else mtf_intelligence
+        )
     if pub_result:
         decision_dict["publish_result"] = pub_result
 

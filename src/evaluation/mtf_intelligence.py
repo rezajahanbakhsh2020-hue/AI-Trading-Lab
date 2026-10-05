@@ -13,7 +13,8 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from enum import Enum
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Sequence, Tuple, Union
+from types import MappingProxyType
+from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple, Union
 
 import pandas as pd
 
@@ -27,6 +28,7 @@ from src.evaluation.live_production_decision import (
     ProductionRuntimeAuthorization,
     ProductionSignal,
     PromotedCandidateArtifact,
+    authorize_production_runtime,
 )
 
 logger = logging.getLogger(__name__)
@@ -148,7 +150,7 @@ class PerTimeframeSignal:
     experiment_fingerprint: str
     canonical_live_decision_fingerprint: str
     authorization_fingerprint: str
-    provenance: Dict[str, Any] = field(default_factory=dict)
+    provenance: Mapping[str, Any] = field(default_factory=dict)
     constituent_fingerprint: str = field(default="", init=False)
 
     def __post_init__(self) -> None:
@@ -191,6 +193,10 @@ class PerTimeframeSignal:
             raise ValueError("authorization_fingerprint must be a non-empty string.")
         if not self.decision_timestamp or not str(self.decision_timestamp).strip():
             raise ValueError("decision_timestamp must be a non-empty string.")
+
+        # Ensure provenance is immutable via MappingProxyType
+        if isinstance(self.provenance, Mapping):
+            object.__setattr__(self, "provenance", MappingProxyType(dict(self.provenance)))
 
         # Compute deterministic constituent_fingerprint incorporating timeframe and full signal identity
         fp_payload = {
@@ -350,6 +356,8 @@ class MTFIntelligence:
     classification: MTFClassification
     higher_timeframe_context: HigherTimeframeContext
     constituent_fingerprints: Tuple[str, ...]
+    matching_signal_count: int = 0
+    available_signal_count: int = 0
     intelligence_fingerprint: str = field(default="", init=False)
 
     def __post_init__(self) -> None:
@@ -395,6 +403,8 @@ class MTFIntelligence:
             "participating_timeframes": [tf.value for tf in self.participating_timeframes],
             "alignment_count": self.alignment_count,
             "alignment_coverage": self.alignment_coverage,
+            "matching_signal_count": self.matching_signal_count,
+            "available_signal_count": self.available_signal_count,
             "classification": self.classification.value,
             "higher_timeframe_context": self.higher_timeframe_context.as_dict(),
             "constituent_fingerprints": list(cfps),
@@ -405,7 +415,7 @@ class MTFIntelligence:
 
     @property
     def star_representation(self) -> str:
-        """Authoritative star representation of MTF alignment coverage (1..6)."""
+        """Authoritative star representation of contiguous MTF alignment coverage (1..6)."""
         return "⭐" * self.alignment_coverage
 
     def as_dict(self) -> Dict[str, Any]:
@@ -417,6 +427,8 @@ class MTFIntelligence:
             "signals": [sig.as_dict() for sig in self.signals],
             "alignment_count": self.alignment_count,
             "alignment_coverage": self.alignment_coverage,
+            "matching_signal_count": self.matching_signal_count,
+            "available_signal_count": self.available_signal_count,
             "star_representation": self.star_representation,
             "classification": self.classification.value,
             "higher_timeframe_context": self.higher_timeframe_context.as_dict(),
@@ -441,7 +453,8 @@ def build_mtf_intelligence(
     - Fails closed on duplicate timeframes in signals.
     - Fails closed on mismatched symbols across signals.
     - Fails closed if local_timeframe is missing from signals.
-    - Fails closed on unknown timeframe or invalid direction values.
+    - Contiguous alignment coverage starts from local_timeframe along 5m->15m->30m->1H->4H->1D.
+    - Missing intermediate timeframes break contiguous alignment coverage.
     - Higher-timeframe disagreement NEVER invalidates or erases lower-timeframe BUY/SELL decision.
     """
     if not signals:
@@ -516,15 +529,30 @@ def build_mtf_intelligence(
         context_direction=context_direction,
     )
 
-    if local_direction in (Direction.BUY, Direction.SELL):
-        matching_count = sum(
-            1 for sig in ordered_signals if sig.direction == local_direction
-        )
-    else:
-        matching_count = 0
+    # Calculate matching_signal_count across all available signals
+    matching_signal_count = (
+        sum(1 for sig in ordered_signals if sig.direction == local_direction)
+        if local_direction in (Direction.BUY, Direction.SELL)
+        else 0
+    )
+    available_signal_count = len(ordered_signals)
 
-    alignment_count = matching_count
-    alignment_coverage = max(1, min(6, alignment_count if alignment_count >= 1 else 1))
+    # Contiguous Ladder Coverage Semantics:
+    # Start at local_tf in canonical ladder and count contiguous matching timeframes.
+    # Any gap (missing timeframe or direction mismatch) breaks the contiguous prefix chain.
+    start_index = canonical_ladder.index(local_tf)
+    ladder_from_local = canonical_ladder[start_index:]
+
+    contiguous_coverage = 0
+    if local_direction in (Direction.BUY, Direction.SELL):
+        for tf in ladder_from_local:
+            if tf in timeframe_map and timeframe_map[tf].direction == local_direction:
+                contiguous_coverage += 1
+            else:
+                break
+
+    alignment_coverage = max(1, min(6, contiguous_coverage if contiguous_coverage >= 1 else 1))
+    alignment_count = matching_signal_count
 
     if local_direction not in (Direction.BUY, Direction.SELL) or not present_htfs:
         classification = MTFClassification.INSUFFICIENT_CONTEXT
@@ -541,6 +569,8 @@ def build_mtf_intelligence(
         signals=ordered_signals,
         alignment_count=alignment_count,
         alignment_coverage=alignment_coverage,
+        matching_signal_count=matching_signal_count,
+        available_signal_count=available_signal_count,
         classification=classification,
         higher_timeframe_context=htf_context,
         constituent_fingerprints=tuple(sig.constituent_fingerprint for sig in ordered_signals),
@@ -553,7 +583,15 @@ class MTFLiveRuntimeResult:
 
     local_result: Any
     mtf_intelligence: MTFIntelligence
-    per_timeframe_results: Dict[CanonicalTimeframe, Any]
+    per_timeframe_results: Mapping[CanonicalTimeframe, Any]
+
+    def __post_init__(self) -> None:
+        if isinstance(self.per_timeframe_results, Mapping):
+            object.__setattr__(
+                self,
+                "per_timeframe_results",
+                MappingProxyType(dict(self.per_timeframe_results)),
+            )
 
 
 def evaluate_mtf_live_runtime(
@@ -570,66 +608,145 @@ def evaluate_mtf_live_runtime(
     skip_if_no_trade: bool = False,
     persist: bool = True,
     reference_now: Optional[datetime] = None,
+    actor: str = "mtf_live_runtime",
 ) -> MTFLiveRuntimeResult:
     """Orchestrates authoritative per-timeframe live evaluations and constructs MTF intelligence.
 
-    Dispatches evaluation to build_live_runtime for each timeframe provided in data_by_timeframe,
-    constructs PerTimeframeSignal from each resulting CanonicalLiveDecision, delegates to
-    build_mtf_intelligence for pure deterministic MTF intelligence calculation, and attaches
-    the resulting MTFIntelligence to the local timeframe publication artifact.
+    Dispatches evaluation for each timeframe independently through:
+      timeframe request
+      -> resolve_promoted_candidate(timeframe)
+      -> authorize_production_runtime(candidate, timeframe)
+      -> create_authorized_runtime_context()
+      -> create_live_market_evaluation()
+      -> evaluate_authorized_live_runtime()
+      -> PerTimeframeSignal projection
+      -> build_mtf_intelligence()
+      -> publication with MTF intelligence on real authoritative publication path.
     """
-    from src.evaluation.live_runtime import build_live_runtime
-    from src.evaluation.research_store import DEFAULT_RESEARCH_DIR
+    from src.data.provider import validate_and_prepare_market_snapshot
+    from src.evaluation.live_market_evaluation import create_live_market_evaluation
+    from src.evaluation.live_production_decision import (
+        ProductionAuthorizationReceipt,
+        authorize_production_runtime,
+    )
+    from src.evaluation.live_runtime import evaluate_authorized_live_runtime
+    from src.evaluation.live_runtime_context import create_authorized_runtime_context
+    from src.evaluation.research_store import (
+        DEFAULT_RESEARCH_DIR,
+        resolve_promoted_candidate,
+    )
 
     if not data_by_timeframe or not isinstance(data_by_timeframe, dict):
         raise ValueError("data_by_timeframe must be a non-empty dict mapping timeframes to pandas DataFrames.")
 
     r_dir = research_dir if research_dir is not None else DEFAULT_RESEARCH_DIR
     local_tf = CanonicalTimeframe.from_str(local_timeframe)
+    ref_now = reference_now if reference_now is not None else datetime.now(timezone.utc)
+    if ref_now.tzinfo is None:
+        ref_now = ref_now.replace(tzinfo=timezone.utc)
 
     per_tf_results: Dict[CanonicalTimeframe, Any] = {}
     per_tf_signals: List[PerTimeframeSignal] = []
+    per_tf_contexts: Dict[CanonicalTimeframe, Any] = {}
+    per_tf_evaluations: Dict[CanonicalTimeframe, Any] = {}
+    per_tf_candidates: Dict[CanonicalTimeframe, Any] = {}
 
-    for tf_key, df in data_by_timeframe.items():
+    for tf_key, raw_df in data_by_timeframe.items():
         tf = CanonicalTimeframe.from_str(tf_key)
-        res = build_live_runtime(
-            data=df,
-            stable_strategy=stable_strategy,
+        prepared_df = validate_and_prepare_market_snapshot(raw_df, symbol=symbol)
+
+        # 1. Resolve candidate FOR THAT EXACT TIMEFRAME
+        candidate = resolve_promoted_candidate(
             candidate_id=candidate_id,
+            strategy_id=stable_strategy,
             symbol=symbol,
-            interval=tf.value,
-            research_dir=r_dir,
+            timeframe=tf.value,
+            base_dir=r_dir,
+        )
+        if candidate is None:
+            raise ValueError(
+                f"No authoritative promoted candidate resolved for timeframe '{tf.value}'."
+            )
+
+        # 2. Authorize production runtime FOR THAT EXACT TIMEFRAME
+        authorization = authorize_production_runtime(
+            candidate,
+            symbol=symbol,
+            timeframe=tf.value,
+            now=ref_now,
+        )
+        receipt = ProductionAuthorizationReceipt.from_authorization(authorization)
+
+        # 3. Create authorized runtime context
+        context = create_authorized_runtime_context(
+            candidate=candidate,
+            authorization=authorization,
+            authorization_receipt=receipt,
+        )
+
+        # 4. Create live market evaluation
+        evaluation = create_live_market_evaluation(
+            data=prepared_df,
+            context=context,
+            reference_now=ref_now,
+            max_age_seconds=300.0,
+        )
+
+        # 5. Evaluate authorized live runtime (without publishing yet; publication happens after MTF calculation)
+        res = evaluate_authorized_live_runtime(
+            data=prepared_df,
+            evaluation=evaluation,
+            context=context,
+            stable_strategy=candidate.strategy_name,
+            stability_score=candidate.operational_stability_score,
+            min_stability_score=0.50,
             store_path=store_path,
-            publisher=publisher if (publish and tf == local_tf) else None,
-            publish=publish if tf == local_tf else False,
+            publisher=None,
+            publish=False,
             skip_if_no_trade=skip_if_no_trade,
             persist=persist,
-            reference_now=reference_now,
+            actor=actor,
         )
+
         per_tf_results[tf] = res
+        per_tf_contexts[tf] = context
+        per_tf_evaluations[tf] = evaluation
+        per_tf_candidates[tf] = candidate
+
         cld = res.canonical_decision
         if cld is not None:
-            ptf_sig = PerTimeframeSignal.from_canonical_live_decision(cld)
+            ptf_sig = PerTimeframeSignal.from_canonical_live_decision(cld, candidate=candidate)
             per_tf_signals.append(ptf_sig)
 
+    # 6. Pure deterministic build_mtf_intelligence
     mtf_intel = build_mtf_intelligence(per_tf_signals, local_timeframe=local_tf)
 
-    local_res = per_tf_results[local_tf]
+    # 7. Evaluate local timeframe with publish=publish and attach mtf_intel to real publication path
+    local_df = validate_and_prepare_market_snapshot(data_by_timeframe[local_tf], symbol=symbol)
+    local_cand = per_tf_candidates[local_tf]
+    local_context = per_tf_contexts[local_tf]
+    local_eval = per_tf_evaluations[local_tf]
 
-    # Attach MTF intelligence to local publication if canonical_decision is present
-    if local_res.canonical_decision is not None:
-        local_cld = local_res.canonical_decision
-        pub = ProductionIntelligencePublication.from_artifacts(
-            decision=local_cld.decision,
-            signal=local_cld.signal,
-            risk=local_cld.risk_levels,
-            candidate=local_cld.authorization_receipt,  # authorization receipt or promoted candidate
-            authorization=local_cld.authorization_receipt,
-            mtf_intelligence=mtf_intel,
-        ) if hasattr(ProductionIntelligencePublication, "from_artifacts") else None
+    final_local_res = evaluate_authorized_live_runtime(
+        data=local_df,
+        evaluation=local_eval,
+        context=local_context,
+        stable_strategy=local_cand.strategy_name,
+        stability_score=local_cand.operational_stability_score,
+        min_stability_score=0.50,
+        store_path=store_path,
+        publisher=publisher,
+        publish=publish,
+        skip_if_no_trade=skip_if_no_trade,
+        persist=persist,
+        actor=actor,
+        mtf_intelligence=mtf_intel,
+    )
+
+    per_tf_results[local_tf] = final_local_res
 
     return MTFLiveRuntimeResult(
-        local_result=local_res,
+        local_result=final_local_res,
         mtf_intelligence=mtf_intel,
         per_timeframe_results=per_tf_results,
     )
