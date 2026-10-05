@@ -221,8 +221,8 @@ def run_app() -> None:
 
     interval = st.sidebar.selectbox(
         "Interval",
-        options=["1m", "5m", "15m", "30m", "1h", "4h", "1d"],
-        index=1,
+        options=["5m", "15m", "30m", "1h", "4h", "1d"],
+        index=0,
     )
 
     limit = st.sidebar.slider(

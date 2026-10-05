@@ -21,7 +21,6 @@ DEFAULT_LIMIT = 200
 DEFAULT_REFRESH_SECONDS = 15
 
 SUPPORTED_INTERVALS = (
-    "1m",
     "5m",
     "15m",
     "30m",
