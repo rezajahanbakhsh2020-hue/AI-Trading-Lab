@@ -808,6 +808,110 @@ class LiveExecutionRuntime:
         return execution_result
 
 
+def get_canonical_timeframe_duration(timeframe: str | CanonicalTimeframe) -> datetime.timedelta:
+    """Return exact timedelta duration for a canonical timeframe. Fails closed on unsupported timeframes."""
+    tf = CanonicalTimeframe.from_str(timeframe)
+    if tf == CanonicalTimeframe.FIVE_MINUTES:
+        return datetime.timedelta(minutes=5)
+    elif tf == CanonicalTimeframe.FIFTEEN_MINUTES:
+        return datetime.timedelta(minutes=15)
+    elif tf == CanonicalTimeframe.THIRTY_MINUTES:
+        return datetime.timedelta(minutes=30)
+    elif tf == CanonicalTimeframe.ONE_HOUR:
+        return datetime.timedelta(hours=1)
+    elif tf == CanonicalTimeframe.FOUR_HOURS:
+        return datetime.timedelta(hours=4)
+    elif tf == CanonicalTimeframe.ONE_DAY:
+        return datetime.timedelta(days=1)
+    else:
+        raise ValueError(f"Unsupported timeframe duration: {timeframe}")
+
+
+def is_candle_closed(
+    row: pd.Series,
+    timeframe: str | CanonicalTimeframe,
+    reference_now: datetime.datetime,
+) -> bool:
+    """Deterministically ascertain closed state of a candle row.
+
+    1. Uses explicit provider open/closed boolean state if present in columns.
+    2. Fallback: candle_open_timestamp + exact canonical duration <= reference_now.
+    """
+    for open_col in ("isOpen", "is_open"):
+        if open_col in row.index and not pd.isna(row[open_col]):
+            return not bool(row[open_col])
+
+    for closed_col in ("isClosed", "is_closed"):
+        if closed_col in row.index and not pd.isna(row[closed_col]):
+            return bool(row[closed_col])
+
+    ts = row.get("timestamp") if "timestamp" in row.index else row.get("openTime")
+    if pd.isna(ts) or ts is None:
+        return False
+
+    if isinstance(ts, pd.Timestamp):
+        open_dt = ts.to_pydatetime()
+    elif isinstance(ts, datetime.datetime):
+        open_dt = ts
+    else:
+        try:
+            open_dt = datetime.datetime.fromisoformat(str(ts).replace("Z", "+00:00"))
+        except Exception:
+            return False
+
+    if open_dt.tzinfo is None:
+        open_dt = open_dt.replace(tzinfo=datetime.timezone.utc)
+
+    ref_dt = reference_now
+    if ref_dt.tzinfo is None:
+        ref_dt = ref_dt.replace(tzinfo=datetime.timezone.utc)
+
+    duration = get_canonical_timeframe_duration(timeframe)
+    return (open_dt + duration) <= ref_dt
+
+
+def parse_continuous_candidate_ids(
+    arg_str: str | None,
+    timeframes: Sequence[str],
+) -> dict[str, str]:
+    """Parse candidate ID mappings for continuous multi-timeframe execution.
+
+    Explicit per-timeframe format: '5m=cand_5m,15m=cand_15m'
+    Single candidate ID is accepted ONLY when exactly 1 timeframe is configured.
+    Blind copying of a single candidate across multiple continuous timeframes is strictly rejected.
+    """
+    if not arg_str or not str(arg_str).strip():
+        return {}
+
+    cleaned = str(arg_str).strip()
+    result: dict[str, str] = {}
+
+    if "=" in cleaned:
+        parts = [p.strip() for p in cleaned.split(",") if p.strip()]
+        for part in parts:
+            if "=" not in part:
+                raise ValueError(f"Invalid candidate-id mapping part '{part}'. Expected 'timeframe=candidate_id'.")
+            tf, cand = part.split("=", 1)
+            tf_canonical = CanonicalTimeframe.from_str(tf.strip()).value
+            cand_id = cand.strip()
+            if not cand_id:
+                raise ValueError(f"Empty candidate_id supplied for timeframe '{tf}'.")
+            result[tf_canonical] = cand_id
+        return result
+
+    # Plain string without '='
+    canonical_tfs = [CanonicalTimeframe.from_str(tf).value for tf in timeframes]
+    if len(canonical_tfs) == 1:
+        result[canonical_tfs[0]] = cleaned
+        return result
+    else:
+        raise ValueError(
+            f"In continuous mode with multiple timeframes {canonical_tfs}, "
+            f"--candidate-id must specify explicit per-timeframe mappings "
+            f"(e.g. '5m=cand1,15m=cand2') rather than copying a single candidate ID '{cleaned}' across timeframes."
+        )
+
+
 class ContinuousLiveRuntime:
     """Reusable continuous live-runtime orchestration layer.
 
@@ -896,6 +1000,30 @@ class ContinuousLiveRuntime:
             limit=self.limit,
         )
 
+    def _get_latest_closed_candle(
+        self,
+        df: pd.DataFrame,
+        timeframe: str,
+        reference_now: datetime.datetime,
+    ) -> tuple[int, pd.Series, str] | None:
+        """Locate the latest row in df that satisfies the closed-candle boundary.
+
+        Returns (index, row, candle_timestamp_iso) or None if no closed candle exists.
+        """
+        for i in range(len(df) - 1, -1, -1):
+            row = df.iloc[i]
+            if is_candle_closed(row, timeframe, reference_now):
+                ts = row["timestamp"]
+                open_dt = (
+                    ts.to_pydatetime()
+                    if isinstance(ts, pd.Timestamp)
+                    else ts
+                )
+                if open_dt.tzinfo is None:
+                    open_dt = open_dt.replace(tzinfo=datetime.timezone.utc)
+                return i, row, open_dt.isoformat()
+        return None
+
     def tick(self, reference_now: datetime.datetime | None = None) -> dict[str, Any]:
         """Execute one continuous orchestration tick across all configured canonical timeframes."""
         if not self._lock.acquire(blocking=False):
@@ -914,55 +1042,83 @@ class ContinuousLiveRuntime:
                 if self._stop_event.is_set():
                     break
 
+                canonical_tf = CanonicalTimeframe.from_str(tf).value
+
+                # 1. Acquire market data snapshot for timeframe
                 try:
-                    # 1. Acquire market data snapshot for timeframe
-                    raw_df = self._acquire_market_data(tf)
+                    raw_df = self._acquire_market_data(canonical_tf)
                     prepared_df = validate_and_prepare_market_snapshot(raw_df, symbol=self.symbol)
+                except Exception as exc:
+                    logger.error("Recoverable failure acquiring market data for %s %s: %s", self.symbol, canonical_tf, exc)
+                    tick_evaluations[canonical_tf] = {
+                        "status": "FAILED_RECOVERABLE",
+                        "error": str(exc),
+                        "symbol": self.symbol,
+                        "timeframe": canonical_tf,
+                    }
+                    continue
 
-                    latest_ts = prepared_df["timestamp"].iloc[-1]
-                    if pd.isna(latest_ts):
-                        raise ValueError(f"Invalid timestamp in market data for {self.symbol} {tf}")
+                # 2. Closed-candle gate: verify explicit provider state or duration calculation
+                closed_info = self._get_latest_closed_candle(prepared_df, canonical_tf, ref_now)
+                if closed_info is None:
+                    tick_evaluations[canonical_tf] = {
+                        "status": "SKIPPED_NO_CLOSED_CANDLE",
+                        "reason": "latest_candle_is_open_or_unavailable",
+                        "symbol": self.symbol,
+                        "timeframe": canonical_tf,
+                    }
+                    continue
 
-                    latest_dt = (
-                        latest_ts.to_pydatetime()
-                        if isinstance(latest_ts, pd.Timestamp)
-                        else latest_ts
-                    )
-                    if latest_dt.tzinfo is None:
-                        latest_dt = latest_dt.replace(tzinfo=datetime.timezone.utc)
-                    latest_dt_iso = latest_dt.isoformat()
+                closed_idx, closed_row, closed_ts_iso = closed_info
 
-                    # 2. Candidate resolution for exact timeframe
-                    config = ProductionRuntimeConfig(
-                        symbol=self.symbol,
-                        timeframe=tf,
-                        candidate_id=self.candidate_ids.get(tf),
-                        research_dir=self.research_dir,
-                    )
-                    resolved = resolve_authoritative_promoted_candidate(config)
-                    cand_id = (
-                        resolved.candidate_id
-                        if isinstance(resolved, PromotedCandidateArtifact)
-                        else resolved.candidate_id
-                    )
+                # Slice market data up to and including the closed candle
+                eval_df = prepared_df.iloc[: closed_idx + 1].copy()
 
-                    dedup_key = (self.symbol, tf, latest_dt_iso, cand_id)
+                # 3. Candidate resolution for exact timeframe
+                config = ProductionRuntimeConfig(
+                    symbol=self.symbol,
+                    timeframe=canonical_tf,
+                    candidate_id=self.candidate_ids.get(canonical_tf),
+                    research_dir=self.research_dir,
+                )
+                resolved = resolve_authoritative_promoted_candidate(config)
+                if isinstance(resolved, PromotedCandidateArtifact):
+                    # Validate candidate timeframe matches exact requested timeframe
+                    candidate_tf = CanonicalTimeframe.from_str(resolved.timeframe).value
+                    if candidate_tf != canonical_tf:
+                        resolved = ProductionBlocked(
+                            reason="PromotionEligibilityError",
+                            detail=(
+                                f"Promoted candidate '{resolved.candidate_id}' timeframe "
+                                f"'{candidate_tf}' does not match requested timeframe '{canonical_tf}'."
+                            ),
+                            candidate_id=resolved.candidate_id,
+                            strategy_id=resolved.strategy_name,
+                            symbol=self.symbol,
+                            timeframe=canonical_tf,
+                        )
 
-                    # 3. Deduplication check: prevent duplicate evaluation/publication of same closed candle
-                    if dedup_key in self._evaluated_candles:
-                        tick_evaluations[tf] = {
-                            "status": "SKIPPED_DEDUPLICATED",
-                            "reason": "candle_already_evaluated",
-                            "candle_timestamp": latest_dt_iso,
-                            "candidate_id": cand_id,
-                            "timeframe": tf,
-                        }
-                        continue
+                cand_id = resolved.candidate_id if resolved is not None else None
 
-                    # 4. Delegate strictly to existing authoritative run_once() primitive
+                # 4. Construct 4-field deduplication key
+                dedup_key = (self.symbol, canonical_tf, closed_ts_iso, cand_id)
+
+                # 5. Deduplication check BEFORE evaluation
+                if dedup_key in self._evaluated_candles:
+                    tick_evaluations[canonical_tf] = {
+                        "status": "SKIPPED_DEDUPLICATED",
+                        "reason": "candle_already_evaluated",
+                        "candle_timestamp": closed_ts_iso,
+                        "candidate_id": cand_id,
+                        "timeframe": canonical_tf,
+                    }
+                    continue
+
+                # 6. Delegate strictly to existing authoritative run_once() primitive
+                try:
                     runtime = LiveExecutionRuntime(
                         symbol=self.symbol,
-                        interval=tf,
+                        interval=canonical_tf,
                         limit=self.limit,
                         publisher=self.publisher,
                         store_path=self.store_path,
@@ -977,19 +1133,21 @@ class ContinuousLiveRuntime:
                         skip_if_no_trade=self.skip_if_no_trade,
                         persist=self.persist,
                         reference_now=ref_now,
-                        market_data=prepared_df,
+                        market_data=eval_df,
                     )
 
-                    tick_evaluations[tf] = result
+                    tick_evaluations[canonical_tf] = result
+
+                    # 7. Add to deduplication set ONLY AFTER successful evaluation execution
                     self._evaluated_candles.add(dedup_key)
 
                 except Exception as exc:
-                    logger.error("Recoverable failure during tick for %s %s: %s", self.symbol, tf, exc)
-                    tick_evaluations[tf] = {
+                    logger.error("Recoverable failure evaluating %s %s: %s", self.symbol, canonical_tf, exc)
+                    tick_evaluations[canonical_tf] = {
                         "status": "FAILED_RECOVERABLE",
                         "error": str(exc),
                         "symbol": self.symbol,
-                        "timeframe": tf,
+                        "timeframe": canonical_tf,
                     }
 
             tick_summary = {
@@ -1058,7 +1216,7 @@ def main() -> None:
         else:
             tfs = [args.interval]
 
-        candidate_map = {tf: args.candidate_id} if args.candidate_id else None
+        candidate_map = parse_continuous_candidate_ids(args.candidate_id, timeframes=tfs)
 
         cont_runtime = ContinuousLiveRuntime(
             symbol=args.symbol,
