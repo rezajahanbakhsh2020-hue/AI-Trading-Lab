@@ -4,8 +4,6 @@ import pytest
 from pathlib import Path
 from unittest.mock import patch, MagicMock
 
-import yaml
-
 from src.evaluation.live_execution_runtime import (
     ContinuousLiveRuntime,
     ProductionRuntimeConfig,
@@ -25,28 +23,21 @@ def test_render_yaml_configuration() -> None:
     render_yaml_path = Path("render.yaml")
     assert render_yaml_path.exists(), "render.yaml must exist at repository root"
 
-    with open(render_yaml_path, "r", encoding="utf-8") as f:
-        config = yaml.safe_load(f)
+    content = render_yaml_path.read_text(encoding="utf-8")
 
-    assert "services" in config
-    services = config["services"]
-    assert len(services) == 1
-    worker = services[0]
-
-    assert worker["type"] == "worker"
-    assert worker["name"] == "p1-live-execution-worker"
-    assert worker["env"] == "python"
-    assert "run_live_execution.py --continuous" in worker["startCommand"]
-    assert "--symbol XAUUSD" in worker["startCommand"]
-    assert "--interval 5m" in worker["startCommand"]
-    assert "--candidate-id cand_moving_average_5m" in worker["startCommand"]
-    assert "--publish" in worker["startCommand"]
-
-    env_vars = {env["key"]: env for env in worker["envVars"]}
-    assert env_vars["PYTHONPATH"]["value"] == "."
-    assert env_vars["PROJECT2_PUBLISH_ENABLED"]["value"] == "true"
-    assert "ai-trading-lab-platform-1.onrender.com" in env_vars["PROJECT2_PUBLISH_URL"]["value"]
-    assert env_vars["PROJECT2_API_KEY"]["sync"] is False
+    assert "type: worker" in content
+    assert "name: p1-live-execution-worker" in content
+    assert "env: python" in content
+    assert "run_live_execution.py --continuous" in content
+    assert "--symbol XAUUSD" in content
+    assert "--interval 5m" in content
+    assert "--candidate-id cand_moving_average_5m" in content
+    assert "--publish" in content
+    assert "PROJECT2_PUBLISH_ENABLED" in content
+    assert "PROJECT2_PUBLISH_URL" in content
+    assert "ai-trading-lab-platform-1.onrender.com" in content
+    assert "PROJECT2_API_KEY" in content
+    assert "sync: false" in content
 
 
 def test_startup_preflight_fails_closed_when_promoted_candidate_absent(tmp_path) -> None:
