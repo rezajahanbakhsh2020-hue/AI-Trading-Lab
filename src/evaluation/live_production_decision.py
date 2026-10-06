@@ -511,9 +511,12 @@ def validate_production_scope(
             from src.evaluation.mtf_intelligence import CanonicalTimeframe
             curr_tf = CanonicalTimeframe.from_str(current_timeframe).value
             cand_tf = CanonicalTimeframe.from_str(candidate.timeframe).value
-        except Exception:
-            curr_tf = str(current_timeframe).strip()
-            cand_tf = candidate.timeframe
+        except (ValueError, TypeError) as exc:
+            raise ValueError(
+                f"Invalid canonical timeframe identity: "
+                f"configured={current_timeframe!r}, "
+                f"candidate={candidate.timeframe!r}"
+            ) from exc
 
         if cand_tf != curr_tf:
             raise ValueError(

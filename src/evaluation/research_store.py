@@ -729,9 +729,12 @@ def resolve_promoted_candidate(
                 from src.evaluation.mtf_intelligence import CanonicalTimeframe
                 req_tf = CanonicalTimeframe.from_str(requested_timeframe).value
                 art_tf = CanonicalTimeframe.from_str(artifact.timeframe).value
-            except Exception:
-                req_tf = requested_timeframe
-                art_tf = artifact.timeframe
+            except (ValueError, TypeError) as exc:
+                raise PromotionEligibilityError(
+                    f"Invalid canonical timeframe identity: "
+                    f"requested={requested_timeframe!r}, "
+                    f"artifact={artifact.timeframe!r}"
+                ) from exc
 
             if art_tf != req_tf:
                 raise PromotionEligibilityError(
@@ -785,9 +788,12 @@ def resolve_promoted_candidate(
                 from src.evaluation.mtf_intelligence import CanonicalTimeframe
                 req_tf = CanonicalTimeframe.from_str(timeframe).value
                 art_tf = CanonicalTimeframe.from_str(artifact.timeframe).value
-            except Exception:
-                req_tf = str(timeframe).strip()
-                art_tf = artifact.timeframe
+            except (ValueError, TypeError) as exc:
+                raise PromotionIntegrityError(
+                    f"Invalid canonical timeframe identity in candidate search: "
+                    f"requested={timeframe!r}, "
+                    f"artifact={artifact.timeframe!r}"
+                ) from exc
 
             if art_tf != req_tf:
                 continue

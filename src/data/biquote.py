@@ -84,9 +84,18 @@ def fetch_xauusd_ohlc(
             f"limit must be between {MIN_LIMIT} and {MAX_LIMIT}."
         )
 
-    # BiQuote API expects lowercase timeframe intervals (e.g., "1h", "4h", "1d").
-    # Normalize interval at the network boundary while preserving input interval for payload validation.
-    provider_interval = interval.lower() if isinstance(interval, str) else interval
+    from src.evaluation.mtf_intelligence import CanonicalTimeframe
+
+    canonical_tf = CanonicalTimeframe.from_str(interval).value
+    provider_interval_map = {
+        "5m": "5m",
+        "15m": "15m",
+        "30m": "30m",
+        "1H": "1h",
+        "4H": "4h",
+        "1D": "1d",
+    }
+    provider_interval = provider_interval_map[canonical_tf]
 
     params = urlencode(
         {
