@@ -30,8 +30,8 @@ def test_render_yaml_configuration() -> None:
     assert "env: python" in content
     assert "run_live_execution.py --continuous" in content
     assert "--symbol XAUUSD" in content
-    assert "--interval 5m" in content
-    assert "--candidate-id cand_moving_average_5m" in content
+    assert "--timeframes 5m,1D" in content
+    assert "--candidate-id 5m=cand_moving_average_5m,1D=cand_moving_average_1d" in content
     assert "--publish" in content
     assert "PROJECT2_PUBLISH_ENABLED" in content
     assert "PROJECT2_PUBLISH_URL" in content

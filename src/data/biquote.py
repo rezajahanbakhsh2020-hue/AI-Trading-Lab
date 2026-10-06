@@ -16,8 +16,11 @@ SUPPORTED_INTERVALS = (
     "15m",
     "30m",
     "1h",
+    "1H",
     "4h",
+    "4H",
     "1d",
+    "1D",
 )
 
 DEFAULT_INTERVAL = "5m"
@@ -81,9 +84,22 @@ def fetch_xauusd_ohlc(
             f"limit must be between {MIN_LIMIT} and {MAX_LIMIT}."
         )
 
+    from src.evaluation.mtf_intelligence import CanonicalTimeframe
+
+    canonical_tf = CanonicalTimeframe.from_str(interval).value
+    provider_interval_map = {
+        "5m": "5m",
+        "15m": "15m",
+        "30m": "30m",
+        "1H": "1h",
+        "4H": "4h",
+        "1D": "1d",
+    }
+    provider_interval = provider_interval_map[canonical_tf]
+
     params = urlencode(
         {
-            "interval": interval,
+            "interval": provider_interval,
             "limit": limit,
         }
     )
@@ -98,7 +114,7 @@ def fetch_xauusd_ohlc(
     if payload.get("symbol") != XAUUSD_SYMBOL:
         raise RuntimeError("BiQuote returned an unexpected symbol.")
 
-    if payload.get("interval") != interval:
+    if payload.get("interval") != provider_interval:
         raise RuntimeError("BiQuote returned an unexpected interval.")
 
     bars = payload.get("bars")

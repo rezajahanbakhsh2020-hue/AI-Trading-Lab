@@ -725,7 +725,18 @@ def resolve_promoted_candidate(
                 )
         if timeframe is not None and str(timeframe).strip():
             requested_timeframe = str(timeframe).strip()
-            if artifact.timeframe != requested_timeframe:
+            try:
+                from src.evaluation.mtf_intelligence import CanonicalTimeframe
+                req_tf = CanonicalTimeframe.from_str(requested_timeframe).value
+                art_tf = CanonicalTimeframe.from_str(artifact.timeframe).value
+            except (ValueError, TypeError) as exc:
+                raise PromotionEligibilityError(
+                    f"Invalid canonical timeframe identity: "
+                    f"requested={requested_timeframe!r}, "
+                    f"artifact={artifact.timeframe!r}"
+                ) from exc
+
+            if art_tf != req_tf:
                 raise PromotionEligibilityError(
                     f"Requested timeframe '{requested_timeframe}' does not match "
                     f"persisted candidate '{artifact.candidate_id}' timeframe '{artifact.timeframe}'."
@@ -773,7 +784,18 @@ def resolve_promoted_candidate(
             if artifact.symbol.upper() != str(symbol).strip().upper():
                 continue
         if timeframe is not None and str(timeframe).strip():
-            if artifact.timeframe != str(timeframe).strip():
+            try:
+                from src.evaluation.mtf_intelligence import CanonicalTimeframe
+                req_tf = CanonicalTimeframe.from_str(timeframe).value
+                art_tf = CanonicalTimeframe.from_str(artifact.timeframe).value
+            except (ValueError, TypeError) as exc:
+                raise PromotionIntegrityError(
+                    f"Invalid canonical timeframe identity in candidate search: "
+                    f"requested={timeframe!r}, "
+                    f"artifact={artifact.timeframe!r}"
+                ) from exc
+
+            if art_tf != req_tf:
                 continue
         matches.append(artifact)
 

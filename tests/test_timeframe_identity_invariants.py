@@ -23,6 +23,7 @@ from unittest.mock import MagicMock, patch
 import pandas as pd
 import pytest
 
+from src.data.biquote import fetch_xauusd_ohlc
 from src.evaluation.live_decision_lifecycle import create_canonical_live_decision
 from src.evaluation.live_execution_runtime import (
     ContinuousLiveRuntime,
@@ -39,7 +40,9 @@ from src.evaluation.live_production_decision import (
     PromotedCandidateArtifact,
     calculate_production_risk_levels,
 )
-from src.evaluation.mtf_intelligence import PerTimeframeSignal, build_mtf_intelligence
+from src.evaluation.mtf_intelligence import CanonicalTimeframe, PerTimeframeSignal, build_mtf_intelligence
+from src.evaluation.research_store import DEFAULT_RESEARCH_DIR, PromotionEligibilityError
+from src.evaluation.live_production_decision import validate_production_scope
 from src.evaluation.research_constitution import (
     CodeProvenance,
     DatasetScope,
@@ -293,6 +296,71 @@ def test_live_provenance_preservation() -> None:
     assert payload["provenance"]["provenance_type"] == "live_signal"
     assert payload["provenance"]["is_live"] is True
     assert payload["provenance"]["source"] == "AI-Trading-Lab"
+
+
+@pytest.mark.parametrize(
+    ("canonical", "provider"),
+    [
+        ("5m", "5m"),
+        ("15m", "15m"),
+        ("30m", "30m"),
+        ("1H", "1h"),
+        ("4H", "4h"),
+        ("1D", "1d"),
+    ],
+)
+def test_biquote_provider_interval_mapping(canonical: str, provider: str, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Verify that canonical timeframes map correctly to BiQuote API provider lowercase intervals."""
+    called_url = {}
+
+    def mock_get_json(url: str, timeout: int = 10) -> dict:
+        called_url["url"] = url
+        return {
+            "symbol": "XAUUSD",
+            "interval": provider,
+            "bars": [
+                {
+                    "openTime": "2025-01-01T00:00:00Z",
+                    "open": 2000.0,
+                    "high": 2005.0,
+                    "low": 1995.0,
+                    "close": 2002.0,
+                }
+            ],
+        }
+
+    monkeypatch.setattr("src.data.biquote._get_json", mock_get_json)
+
+    df = fetch_xauusd_ohlc(interval=canonical, limit=1)
+    assert not df.empty
+    assert f"interval={provider}" in called_url["url"]
+
+
+def test_invalid_timeframe_never_falls_back_to_raw_string() -> None:
+    """Anti-recurrence test ensuring invalid timeframe parsing fails closed rather than falling back to raw-string comparison."""
+    with pytest.raises(ValueError, match="Unknown or unsupported timeframe '1m'"):
+        CanonicalTimeframe.from_str("1m")
+
+    with pytest.raises(ValueError, match="Unknown or unsupported timeframe 'not-a-timeframe'"):
+        CanonicalTimeframe.from_str("not-a-timeframe")
+
+
+def test_production_scope_is_not_derived_from_default_interval() -> None:
+    """Anti-recurrence test proving production runtime scope is explicitly defined and not derived from DEFAULT_INTERVAL."""
+    from src.data.biquote import DEFAULT_INTERVAL
+
+    cont_runtime = ContinuousLiveRuntime(
+        symbol="XAUUSD",
+        timeframes=["5m", "1D"],
+        candidate_ids={
+            "5m": "cand_moving_average_5m",
+            "1D": "cand_moving_average_1d",
+        },
+    )
+
+    assert cont_runtime.timeframes == ("5m", "1D")
+    assert DEFAULT_INTERVAL == "5m"
+    assert cont_runtime.timeframes != (DEFAULT_INTERVAL,)
 
 
 def test_project2_publisher_preserves_authoritative_payload() -> None:

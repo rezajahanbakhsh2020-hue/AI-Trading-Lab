@@ -507,7 +507,18 @@ def validate_production_scope(
                 f"resolved candidate symbol '{candidate.symbol}'."
             )
     if current_timeframe is not None and str(current_timeframe).strip():
-        if candidate.timeframe != str(current_timeframe).strip():
+        try:
+            from src.evaluation.mtf_intelligence import CanonicalTimeframe
+            curr_tf = CanonicalTimeframe.from_str(current_timeframe).value
+            cand_tf = CanonicalTimeframe.from_str(candidate.timeframe).value
+        except (ValueError, TypeError) as exc:
+            raise ValueError(
+                f"Invalid canonical timeframe identity: "
+                f"configured={current_timeframe!r}, "
+                f"candidate={candidate.timeframe!r}"
+            ) from exc
+
+        if cand_tf != curr_tf:
             raise ValueError(
                 f"Configured timeframe '{current_timeframe}' does not match "
                 f"resolved candidate timeframe '{candidate.timeframe}'."
