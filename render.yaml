@@ -1,0 +1,15 @@
+services:
+  - type: worker
+    name: p1-live-execution-worker
+    env: python
+    buildCommand: pip install -r requirements.txt
+    startCommand: python run_live_execution.py --continuous --symbol XAUUSD --interval 5m --candidate-id cand_moving_average_5m --publish
+    envVars:
+      - key: PYTHONPATH
+        value: "."
+      - key: PROJECT2_PUBLISH_ENABLED
+        value: "true"
+      - key: PROJECT2_PUBLISH_URL
+        value: "https://ai-trading-lab-platform-1.onrender.com/api/v1/integration/project1/ingest"
+      - key: PROJECT2_API_KEY
+        sync: false

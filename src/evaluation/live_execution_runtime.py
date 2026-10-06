@@ -1173,8 +1173,36 @@ class ContinuousLiveRuntime:
                 self.sleep_fn(self.poll_interval)
         return results
 
+    def verify_startup_readiness(self) -> dict[str, Any]:
+        """Perform preflight checks ensuring authoritative promoted candidate artifacts are resolvable before starting loop.
+
+        Fails closed with PromotionUnavailable / RuntimeError if any configured timeframe candidate cannot be resolved.
+        """
+        readiness_results = {}
+        for tf in self.timeframes:
+            canonical_tf = CanonicalTimeframe.from_str(tf).value
+            config = ProductionRuntimeConfig(
+                symbol=self.symbol,
+                timeframe=canonical_tf,
+                candidate_id=self.candidate_ids.get(canonical_tf),
+                research_dir=self.research_dir,
+            )
+            resolved = resolve_authoritative_promoted_candidate(config)
+            if isinstance(resolved, ProductionBlocked):
+                msg = (
+                    f"Startup readiness preflight failed for {self.symbol} {canonical_tf}: "
+                    f"[{resolved.reason}] {resolved.detail}"
+                )
+                logger.error(msg)
+                raise PromotionUnavailable(msg)
+            readiness_results[canonical_tf] = resolved
+        return readiness_results
+
     def run_continuous(self, max_ticks: int | None = None) -> None:
         """Run continuous market polling loop until explicit stop or max_ticks reached."""
+        # Execute startup preflight check
+        self.verify_startup_readiness()
+
         self._stop_event.clear()
         ticks_executed = 0
         logger.info("Starting ContinuousLiveRuntime loop for %s timeframes=%s", self.symbol, self.timeframes)
@@ -1238,7 +1266,11 @@ def main() -> None:
         signal.signal(signal.SIGINT, handle_signal)
         signal.signal(signal.SIGTERM, handle_signal)
 
-        cont_runtime.run_continuous(max_ticks=args.max_ticks)
+        try:
+            cont_runtime.run_continuous(max_ticks=args.max_ticks)
+        except Exception as exc:
+            logger.error("Continuous live execution failed: %s", exc)
+            sys.exit(1)
         return
 
     try:
