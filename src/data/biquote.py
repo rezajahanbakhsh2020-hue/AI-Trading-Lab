@@ -16,8 +16,11 @@ SUPPORTED_INTERVALS = (
     "15m",
     "30m",
     "1h",
+    "1H",
     "4h",
+    "4H",
     "1d",
+    "1D",
 )
 
 DEFAULT_INTERVAL = "5m"
@@ -81,9 +84,13 @@ def fetch_xauusd_ohlc(
             f"limit must be between {MIN_LIMIT} and {MAX_LIMIT}."
         )
 
+    # BiQuote API expects lowercase timeframe intervals (e.g., "1h", "4h", "1d").
+    # Normalize interval at the network boundary while preserving input interval for payload validation.
+    provider_interval = interval.lower() if isinstance(interval, str) else interval
+
     params = urlencode(
         {
-            "interval": interval,
+            "interval": provider_interval,
             "limit": limit,
         }
     )
@@ -98,7 +105,7 @@ def fetch_xauusd_ohlc(
     if payload.get("symbol") != XAUUSD_SYMBOL:
         raise RuntimeError("BiQuote returned an unexpected symbol.")
 
-    if payload.get("interval") != interval:
+    if payload.get("interval") != provider_interval:
         raise RuntimeError("BiQuote returned an unexpected interval.")
 
     bars = payload.get("bars")

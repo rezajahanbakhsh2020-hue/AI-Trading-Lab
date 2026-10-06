@@ -1085,17 +1085,18 @@ class ContinuousLiveRuntime:
                 if isinstance(resolved, PromotedCandidateArtifact):
                     # Validate candidate timeframe matches exact requested timeframe
                     candidate_tf = CanonicalTimeframe.from_str(resolved.timeframe).value
-                    if candidate_tf != canonical_tf:
+                    req_tf = CanonicalTimeframe.from_str(canonical_tf).value
+                    if candidate_tf != req_tf:
                         resolved = ProductionBlocked(
                             reason="PromotionEligibilityError",
                             detail=(
                                 f"Promoted candidate '{resolved.candidate_id}' timeframe "
-                                f"'{candidate_tf}' does not match requested timeframe '{canonical_tf}'."
+                                f"'{candidate_tf}' does not match requested timeframe '{req_tf}'."
                             ),
                             candidate_id=resolved.candidate_id,
                             strategy_id=resolved.strategy_name,
                             symbol=self.symbol,
-                            timeframe=canonical_tf,
+                            timeframe=req_tf,
                         )
 
                 cand_id = resolved.candidate_id if resolved is not None else None

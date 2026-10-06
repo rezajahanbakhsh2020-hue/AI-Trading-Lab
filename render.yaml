@@ -3,7 +3,7 @@ services:
     name: p1-live-execution-worker
     env: python
     buildCommand: pip install -r requirements.txt
-    startCommand: python run_live_execution.py --continuous --symbol XAUUSD --interval 5m --candidate-id cand_moving_average_5m --publish
+    startCommand: python run_live_execution.py --continuous --symbol XAUUSD --timeframes 5m,1D --candidate-id 5m=cand_moving_average_5m,1D=cand_moving_average_1d --publish
     envVars:
       - key: PYTHONPATH
         value: "."
