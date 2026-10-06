@@ -765,6 +765,7 @@ def test_33_one_shot_mode_backward_compatible(tmp_path) -> None:
 
 def test_34_35_36_37_graceful_shutdown_and_max_ticks(tmp_path) -> None:
     """34, 35, 36, 37. Graceful shutdown, stop() signal, and max_ticks loop termination work deterministically."""
+    cand_id = persist_momentum_candidate(tmp_path, candidate_id="cand_momentum_live", timeframe="5m")
     cont = ContinuousLiveRuntime(
         symbol="XAUUSD",
         timeframes=["5m"],
@@ -773,6 +774,7 @@ def test_34_35_36_37_graceful_shutdown_and_max_ticks(tmp_path) -> None:
         persist=False,
         research_dir=tmp_path,
         market_data_loaders=lambda tf: make_tf_market_data("2025-01-01 10:00", "5m"),
+        candidate_ids={"5m": cand_id},
     )
 
     assert cont.is_running is True
