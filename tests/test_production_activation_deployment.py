@@ -78,7 +78,7 @@ def test_startup_preflight_accepts_valid_authoritative_promoted_candidate(tmp_pa
 
     readiness = cont.verify_startup_readiness()
     assert "5m" in readiness
-    assert readiness["5m"].candidate_id == cand_id
+    assert readiness["5m"]["candidate_id"] == cand_id
 
 
 def test_candidate_id_not_copied_across_multiple_timeframes() -> None:
