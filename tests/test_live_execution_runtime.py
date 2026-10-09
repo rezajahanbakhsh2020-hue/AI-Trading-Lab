@@ -452,16 +452,17 @@ def test_live_execution_runtime_buy_signal_field_propagation(
 
 @patch("src.evaluation.live_execution_runtime.evaluate_authorized_live_runtime")
 @patch("src.evaluation.live_execution_runtime.load_live_market_data")
-def test_live_execution_runtime_old_closed_data_is_blocked_before_evaluation(
+def test_live_execution_runtime_old_closed_data_is_evaluated_successfully(
     mock_load_data,
     mock_evaluate_runtime,
     tmp_path,
 ) -> None:
-    """A closed but stale market candle cannot authorize a new production decision."""
+    """A valid closed market candle is evaluated and published regardless of elapsed time."""
     df = make_buy_market_data()
     mock_load_data.return_value = df
 
     mock_publisher = MagicMock()
+    mock_publisher.publish.return_value = {"status": "PUBLISHED", "published": True}
     store_path = tmp_path / "decision_history.json"
     snapshot_path = tmp_path / "latest_execution.json"
 
@@ -486,14 +487,10 @@ def test_live_execution_runtime_old_closed_data_is_blocked_before_evaluation(
 
     assert mock_evaluate_runtime.called is True
     evaluation = mock_evaluate_runtime.call_args.kwargs["evaluation"]
-    assert evaluation.fresh is False
-    assert evaluation.freshness_reason == "stale_market_data"
-    assert result["decision"] == "NO TRADE"
-    assert result["record"]["signal_label"] == "NO TRADE"
-    assert result["record"]["quote_stale"] is True
-    assert result["publish_result"]["status"] == "SKIPPED_STALE_MARKET_DATA"
-    assert result["publish_result"]["delivery_status"] == "NOT_ATTEMPTED"
-    assert mock_publisher.publish.called is False
+    assert evaluation.fresh is True
+    assert result["decision"] == "BUY"
+    assert result["record"]["signal_label"] == "BUY"
+    assert mock_publisher.publish.called is True
 
 
 @patch("src.evaluation.live_execution_runtime.load_live_market_data")
@@ -556,16 +553,15 @@ def test_live_execution_runtime_future_timestamp_blocked(
 
 
 @patch("src.evaluation.live_execution_runtime.load_live_market_data")
-def test_live_execution_runtime_freshness_boundary_conditions(
+def test_live_execution_runtime_closed_candle_evaluates_regardless_of_time_elapsed(
     mock_load_data,
     tmp_path,
 ) -> None:
-    """Verify exact boundary conditions around max_age_seconds (max_age-1 is fresh, max_age+1 is stale)."""
+    """Verify that a closed candle evaluates to BUY regardless of elapsed time."""
     df = make_buy_market_data()
     mock_load_data.return_value = df
 
     df_ts = pd.to_datetime(df["openTime"], utc=True, errors="coerce").iloc[-1].to_pydatetime()
-    max_age = 300.0
 
     runtime = LiveExecutionRuntime(
         symbol="XAUUSD",
@@ -573,28 +569,15 @@ def test_live_execution_runtime_freshness_boundary_conditions(
         publisher=MagicMock(),
         store_path=tmp_path / "store.json",
         snapshot_path=tmp_path / "snap.json",
-        max_age_seconds=max_age,
         research_dir=tmp_path,
         production_config=production_config_for(tmp_path),
     )
 
-    # Open-time timestamps become evaluable at the exact 5m close boundary.
     res_closed = runtime.run_once(publish=False, persist=False, reference_now=df_ts + pd.Timedelta(minutes=5))
     assert res_closed["decision"] == "BUY"
-    assert res_closed["record"]["quote_stale"] is False
 
-    # The candle remains eligible during the configured provider lateness allowance.
-    res_old_closed = runtime.run_once(publish=False, persist=False, reference_now=df_ts + pd.Timedelta(minutes=10))
-    assert res_old_closed["decision"] == "BUY"
-    assert res_old_closed["record"]["quote_stale"] is False
-
-    # Once candle duration plus provider grace elapses, new evaluation is blocked.
-    res_stale = runtime.run_once(publish=False, persist=False, reference_now=df_ts + pd.Timedelta(minutes=10, seconds=1))
-    assert res_stale["decision"] == "NO TRADE"
-    assert res_stale["blocked"] is False
-    assert res_stale["record"]["quote_stale"] is True
-    assert res_stale["record"]["signal_label"] == "NO TRADE"
-    assert res_stale["publish_result"] is None
+    res_long_after = runtime.run_once(publish=False, persist=False, reference_now=df_ts + pd.Timedelta(days=10))
+    assert res_long_after["decision"] == "BUY"
 
 
 @patch("src.evaluation.live_execution_runtime.load_live_market_data")

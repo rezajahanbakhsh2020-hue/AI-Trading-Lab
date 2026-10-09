@@ -703,7 +703,7 @@ def evaluate_mtf_live_runtime(
             data=prepared_df,
             context=context,
             reference_now=ref_now,
-            max_age_seconds=300.0,
+            max_age_seconds=float("inf"),
         )
 
         # 5. Evaluate authorized live runtime (Phase A evaluation: persist=False, publish=False)

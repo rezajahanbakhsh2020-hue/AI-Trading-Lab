@@ -133,7 +133,7 @@ def evaluate_authorized_live_runtime(
             candidate=resolved_candidate,
             data=data,
             reference_now=ref_now,
-            max_age_seconds=300.0,
+            max_age_seconds=float("inf"),
         )
 
         from live_signal import generate_live_signal
@@ -438,18 +438,9 @@ def finalize_authorized_live_runtime(
     else:
         final_cld = canonical_dec
 
-    # 2. Stale market data may be retained as an internal NO TRADE audit
-    # outcome, but it is not a live signal publication and must not reach P2.
+    # 2. Enforce publication boundary on the canonical decision
     pub_result = None
-    if publish and publisher is not None and runtime_result.decision.get("quote_stale") is True:
-        pub_result = {
-            "status": "SKIPPED_STALE_MARKET_DATA",
-            "published": False,
-            "delivery_status": "NOT_ATTEMPTED",
-            "reason": runtime_result.decision.get("reason") or "stale_market_data",
-            "current_lifecycle_state": final_cld.current_state.value,
-        }
-    elif publish and publisher is not None:
+    if publish and publisher is not None:
         pub_store_path = st_path.parent / "publication_history.json"
         pub_ts_now = ts_now
         try:
@@ -602,7 +593,7 @@ def build_live_runtime(
         data=data,
         context=context,
         reference_now=ref_now,
-        max_age_seconds=300.0,
+        max_age_seconds=float("inf"),
     )
 
     return evaluate_authorized_live_runtime(

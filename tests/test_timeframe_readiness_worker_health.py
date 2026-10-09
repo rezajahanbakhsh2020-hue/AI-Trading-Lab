@@ -84,18 +84,20 @@ def test_worker_health_diagnostics_states():
 
     # Execute a tick
     with patch("src.evaluation.live_execution_runtime.resolve_authoritative_promoted_candidate", return_value=MagicMock(candidate_id="cand_5m", timeframe="5m")):
-        with patch("src.evaluation.live_execution_runtime.LiveExecutionRuntime.run_once", return_value={"blocked": False}):
+        with patch("src.evaluation.live_execution_runtime.LiveExecutionRuntime.run_once", return_value={"blocked": False, "publish_result": {"published": True}}):
             runtime.tick(reference_now=now_dt)
 
     # 2. Immediately after tick -> WORKER_HEALTHY
     h1 = runtime.get_health_status(reference_now=now_dt)
     assert h1["status"] == "WORKER_HEALTHY"
     assert h1["healthy"] is True
-    assert h1["seconds_since_last_evaluation"] == 0.0
+    assert h1["seconds_since_last_tick"] == 0.0
+    assert h1["last_successful_evaluation_at_utc"] == now_dt.isoformat()
+    assert h1["last_successful_publication_at_utc"] == now_dt.isoformat()
 
     # 3. 10 minutes later (> 300s threshold) -> WORKER_STALE
     future_dt = now_dt + datetime.timedelta(minutes=10)
     h2 = runtime.get_health_status(reference_now=future_dt, staleness_threshold_seconds=300.0)
     assert h2["status"] == "WORKER_STALE"
     assert h2["healthy"] is False
-    assert h2["seconds_since_last_evaluation"] == 600.0
+    assert h2["seconds_since_last_tick"] == 600.0

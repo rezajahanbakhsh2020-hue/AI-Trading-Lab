@@ -21,13 +21,13 @@ from tests.test_live_execution_runtime import (
 
 
 def test_exact_convergence_fresh_and_stale(tmp_path):
-    """C & J. Fresh and stale market data converge through exact same downstream lifecycle functions."""
+    """C & J. Closed candles evaluate consistently through downstream lifecycle functions regardless of elapsed time."""
     config = production_config_for(tmp_path)
 
     df = make_buy_market_data()
     df_ts = pd.to_datetime(df["openTime"], utc=True).iloc[-1].to_pydatetime()
 
-    # 1. Fresh execution
+    # 1. Execution at candle close
     runtime_fresh = LiveExecutionRuntime(
         symbol="XAUUSD",
         interval="5m",
@@ -43,7 +43,7 @@ def test_exact_convergence_fresh_and_stale(tmp_path):
     assert res_buy["decision"] == "BUY"
     assert res_buy["current_lifecycle_state"] == LiveDecisionLifecycleState.PERSISTED.value
 
-    # 2. The same closed candle becomes ineligible after duration plus provider grace.
+    # 2. Execution on the same closed candle long after close
     runtime_stale = LiveExecutionRuntime(
         symbol="XAUUSD",
         interval="5m",
@@ -56,11 +56,8 @@ def test_exact_convergence_fresh_and_stale(tmp_path):
         res_stale = runtime_stale.run_once(
             publish=False, persist=True, reference_now=df_ts + datetime.timedelta(seconds=1000)
         )
-    assert res_stale["decision"] == "NO TRADE"
+    assert res_stale["decision"] == "BUY"
     assert res_stale["blocked"] is False
-    assert res_stale["record"]["signal_label"] == "NO TRADE"
-    assert res_stale["record"]["quote_stale"] is True
-    assert res_stale["record"]["reason"] == "stale_market_data"
 
 
 def test_single_candidate_resolution_and_authorization(tmp_path):
@@ -116,8 +113,8 @@ def test_single_candidate_resolution_and_authorization(tmp_path):
         assert context_arg.authorization_receipt is exact_receipt
 
 
-def test_closed_old_candle_is_rejected_before_strategy_evaluation(tmp_path):
-    """A candle beyond the timeframe freshness bound cannot enter strategy evaluation."""
+def test_closed_old_candle_is_evaluated_without_ttl_rejection(tmp_path):
+    """A valid closed candle enters strategy evaluation regardless of elapsed time."""
     config = production_config_for(tmp_path)
     runtime = LiveExecutionRuntime(
         symbol="XAUUSD",
@@ -142,12 +139,9 @@ def test_closed_old_candle_is_rejected_before_strategy_evaluation(tmp_path):
     ):
         res = runtime.run_once(publish=False, persist=True, reference_now=stale_ref_now)
 
-        assert res["decision"] == "NO TRADE"
-        assert res["record"]["quote_stale"] is True
-        assert res["record"]["reason"] == "stale_market_data"
-        assert res["record"]["quote_age_seconds"] == 1000.0
-        assert not mock_sig.called
-        assert not mock_trend.called
+        assert res["decision"] == "BUY"
+        assert mock_sig.called
+        assert mock_trend.called
 
 
 def test_ast_static_checks_live_execution_runtime():

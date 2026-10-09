@@ -183,27 +183,54 @@ def validate_and_prepare_market_snapshot(
     data: pd.DataFrame,
     symbol: str = "XAUUSD",
 ) -> pd.DataFrame:
-    """Centralized validation and defensive copy helper for live OHLC market snapshots."""
+    """Centralized validation and defensive copy helper for live OHLC market snapshots.
+
+    Enforces strict chronological sorting, timestamp parseability, non-negative finite OHLC prices,
+    and deduplicates identical timestamps while preserving valid candle structure.
+    """
     if data is None or not isinstance(data, pd.DataFrame) or data.empty:
         raise ValueError(f"Supplied market data for {symbol} must be a non-empty pandas DataFrame.")
 
-    required = {"openTime", "open", "high", "low", "close"}
-    missing = required.difference(data.columns)
-    if missing:
+    if "timestamp" in data.columns:
+        raw_ts = data["timestamp"]
+    elif "openTime" in data.columns:
+        raw_ts = data["openTime"]
+    else:
+        raise ValueError(f"Missing required timestamp column ('timestamp' or 'openTime') for {symbol}.")
+
+    required_numeric = {"open", "high", "low", "close"}
+    missing_numeric = required_numeric.difference(data.columns)
+    if missing_numeric:
         raise ValueError(
-            f"Missing required live columns for {symbol}: " + ", ".join(sorted(missing))
+            f"Missing required live columns for {symbol}: " + ", ".join(sorted(missing_numeric))
         )
 
     data_copy = data.copy()
-    data_copy["timestamp"] = pd.to_datetime(data_copy["openTime"], utc=True, errors="coerce")
+    data_copy["timestamp"] = pd.to_datetime(raw_ts, utc=True, errors="coerce")
+
+    # Reject unparseable timestamps
+    if data_copy["timestamp"].isna().any():
+        raise ValueError(f"Market data for {symbol} contains unparseable or naive invalid timestamps.")
+
     for col in ("open", "high", "low", "close"):
         data_copy[col] = pd.to_numeric(data_copy[col], errors="coerce")
+        # Validate finite numeric positive values
+        if data_copy[col].isna().any() or not data_copy[col].apply(math.isfinite).all():
+            raise ValueError(f"Market data for {symbol} contains non-finite/NaN values in '{col}'.")
+        if (data_copy[col] <= 0).any():
+            raise ValueError(f"Market data for {symbol} contains non-positive price values in '{col}'.")
 
-    data_copy = data_copy.dropna(subset=["timestamp", "open", "high", "low", "close"])
+    # Ensure chronological ascending sort and deduplicate identical open timestamps
+    data_copy = (
+        data_copy.sort_values("timestamp")
+        .drop_duplicates(subset=["timestamp"], keep="last")
+        .reset_index(drop=True)
+    )
+
     if data_copy.empty:
         raise ValueError(f"No valid live market data available for {symbol}.")
 
-    return data_copy.reset_index(drop=True)
+    return data_copy
 
 
 def load_live_market_data(
@@ -549,16 +576,9 @@ def validate_market_data_freshness(
         }
 
     canonical_tf = CanonicalTimeframe.from_str(timeframe)
-    grace_seconds = 300.0 if max_age_seconds is None else max_age_seconds
-    if isinstance(grace_seconds, bool) or not isinstance(grace_seconds, (int, float)) or not math.isfinite(float(grace_seconds)) or float(grace_seconds) < 0:
-        return {"fresh": False, "stale": True, "reason": "invalid_freshness_policy", "age_seconds": age_seconds, "timeframe": canonical_tf.value, "candle_timestamp": candle_iso}
     latest_row = data.iloc[-1]
     if not is_candle_closed(latest_row, canonical_tf, now_dt):
         return {"fresh": False, "stale": True, "reason": "unclosed_market_data", "age_seconds": age_seconds, "timeframe": canonical_tf.value, "candle_timestamp": candle_iso}
-
-    max_market_age = get_canonical_timeframe_duration(canonical_tf).total_seconds() + float(grace_seconds)
-    if age_seconds > max_market_age:
-        return {"fresh": False, "stale": True, "reason": "stale_market_data", "age_seconds": age_seconds, "max_market_age_seconds": max_market_age, "timeframe": canonical_tf.value, "candle_timestamp": candle_iso}
 
     return {
         "fresh": True,
@@ -1148,7 +1168,10 @@ class ContinuousLiveRuntime:
         self._tick_count = 0
         self._execution_history: list[dict[str, Any]] = []
         self._started_at_utc: str | None = None
-        self._last_evaluated_at_utc: str | None = None
+        self._last_tick_at_utc: str | None = None
+        self._last_successful_evaluation_at_utc: str | None = None
+        self._last_successful_publication_at_utc: str | None = None
+        self._last_failure_reason: str | None = None
 
     @property
     def is_running(self) -> bool:
@@ -1163,28 +1186,31 @@ class ContinuousLiveRuntime:
 
         Health states:
         - WORKER_NOT_STARTED: continuous loop hasn't started or executed ticks
-        - WORKER_HEALTHY: last evaluation timestamp within staleness threshold
-        - WORKER_STALE: last evaluation timestamp older than staleness threshold
+        - WORKER_HEALTHY: tick heartbeat within staleness threshold
+        - WORKER_STALE: tick heartbeat older than staleness threshold
         """
         ref_now = reference_now if reference_now is not None else self.clock()
         if ref_now.tzinfo is None:
             ref_now = ref_now.replace(tzinfo=datetime.timezone.utc)
 
-        if not self._started_at_utc or not self._last_evaluated_at_utc:
+        if not self._started_at_utc or not self._last_tick_at_utc:
             return {
                 "status": "WORKER_NOT_STARTED",
                 "healthy": False,
                 "started_at_utc": self._started_at_utc,
-                "last_evaluated_at_utc": self._last_evaluated_at_utc,
-                "seconds_since_last_evaluation": None,
+                "last_tick_at_utc": self._last_tick_at_utc,
+                "last_successful_evaluation_at_utc": self._last_successful_evaluation_at_utc,
+                "last_successful_publication_at_utc": self._last_successful_publication_at_utc,
+                "last_failure_reason": self._last_failure_reason,
+                "seconds_since_last_tick": None,
                 "tick_count": self._tick_count,
             }
 
-        last_eval_dt = datetime.datetime.fromisoformat(self._last_evaluated_at_utc)
-        if last_eval_dt.tzinfo is None:
-            last_eval_dt = last_eval_dt.replace(tzinfo=datetime.timezone.utc)
+        last_tick_dt = datetime.datetime.fromisoformat(self._last_tick_at_utc)
+        if last_tick_dt.tzinfo is None:
+            last_tick_dt = last_tick_dt.replace(tzinfo=datetime.timezone.utc)
 
-        age_seconds = (ref_now - last_eval_dt).total_seconds()
+        age_seconds = (ref_now - last_tick_dt).total_seconds()
         is_healthy = age_seconds >= 0 and age_seconds <= staleness_threshold_seconds
 
         status = "WORKER_HEALTHY" if is_healthy else "WORKER_STALE"
@@ -1193,8 +1219,11 @@ class ContinuousLiveRuntime:
             "status": status,
             "healthy": is_healthy,
             "started_at_utc": self._started_at_utc,
-            "last_evaluated_at_utc": self._last_evaluated_at_utc,
-            "seconds_since_last_evaluation": max(0.0, age_seconds),
+            "last_tick_at_utc": self._last_tick_at_utc,
+            "last_successful_evaluation_at_utc": self._last_successful_evaluation_at_utc,
+            "last_successful_publication_at_utc": self._last_successful_publication_at_utc,
+            "last_failure_reason": self._last_failure_reason,
+            "seconds_since_last_tick": max(0.0, age_seconds),
             "tick_count": self._tick_count,
         }
 
@@ -1363,9 +1392,16 @@ class ContinuousLiveRuntime:
                     # 7. Add to deduplication set ONLY AFTER successful evaluation execution
                     if result.get("blocked") is not True:
                         self._evaluated_candles.add(dedup_key)
+                        self._last_successful_evaluation_at_utc = ref_now.isoformat()
+                        pub_res = result.get("publish_result")
+                        if pub_res and pub_res.get("published") is True:
+                            self._last_successful_publication_at_utc = ref_now.isoformat()
+                    else:
+                        self._last_failure_reason = result.get("reason") or "EVALUATION_BLOCKED"
 
                 except Exception as exc:
                     logger.error("Recoverable failure evaluating %s %s: %s", self.symbol, canonical_tf, exc)
+                    self._last_failure_reason = f"EXCEPTIONAL_FAILURE: {exc}"
                     tick_evaluations[canonical_tf] = {
                         "status": "FAILED_RECOVERABLE",
                         "error": str(exc),
@@ -1375,7 +1411,7 @@ class ContinuousLiveRuntime:
 
             if not self._started_at_utc:
                 self._started_at_utc = ref_now.isoformat()
-            self._last_evaluated_at_utc = ref_now.isoformat()
+            self._last_tick_at_utc = ref_now.isoformat()
 
             tick_summary = {
                 "tick_number": self._tick_count,

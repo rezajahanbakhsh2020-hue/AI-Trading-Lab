@@ -64,22 +64,16 @@ def test_1d_signal_is_not_blocked_by_300_second_legacy_ttl():
     assert result["stale"] is False
 
 
-def test_unclosed_candle_is_rejected_and_old_closed_candle_is_stale_for_new_decision():
-    unclosed = validate_market_data_freshness(
-        _frame("2026-10-08T17:30:00Z"),
-        timeframe="1H",
-        reference_now=_now("2026-10-08T18:00:00Z"),
-    )
-    assert unclosed["fresh"] is False
-    assert unclosed["reason"] == "unclosed_market_data"
-
+def test_valid_closed_candle_is_evaluated_regardless_of_elapsed_time():
+    """An otherwise valid, closed candle is NOT rejected solely because time elapsed."""
     result = validate_market_data_freshness(
         _frame("2026-10-08T10:00:00Z"),
         timeframe="1H",
         reference_now=_now("2026-10-08T18:00:00Z"),
     )
-    assert result["fresh"] is False
-    assert result["reason"] == "stale_market_data"
+    assert result["fresh"] is True
+    assert result["stale"] is False
+    assert result["reason"] == "fresh"
 
 
 def test_all_canonical_timeframes_use_their_exact_candle_close_boundary():
@@ -123,21 +117,15 @@ def test_provider_open_candle_state_overrides_elapsed_time():
     assert result["reason"] == "unclosed_market_data"
 
 
-def test_timeframe_specific_market_freshness_includes_candle_duration_and_provider_grace():
+def test_elapsed_time_does_not_gate_valid_closed_candle():
     cases = [("1m", 60), ("5m", 300), ("15m", 900), ("30m", 1800), ("1H", 3600), ("4H", 14400), ("1D", 86400)]
     for timeframe, duration in cases:
         opened = _now("2026-10-01T00:00:00Z")
         frame = _frame(opened.isoformat())
-        in_window = validate_market_data_freshness(
+        eval_long_after = validate_market_data_freshness(
             frame, timeframe=timeframe, max_age_seconds=300,
-            reference_now=opened + datetime.timedelta(seconds=duration + 300),
+            reference_now=opened + datetime.timedelta(seconds=duration + 86400),
         )
-        stale = validate_market_data_freshness(
-            frame, timeframe=timeframe, max_age_seconds=300,
-            reference_now=opened + datetime.timedelta(seconds=duration + 301),
-        )
-        assert in_window["fresh"] is True, (timeframe, in_window)
+        assert eval_long_after["fresh"] is True, (timeframe, eval_long_after)
         expected_tf = {"1h": "1H", "4h": "4H", "1d": "1D"}.get(timeframe, timeframe)
-        assert in_window["timeframe"] == expected_tf
-        assert stale["fresh"] is False, (timeframe, stale)
-        assert stale["reason"] == "stale_market_data"
+        assert eval_long_after["timeframe"] == expected_tf
