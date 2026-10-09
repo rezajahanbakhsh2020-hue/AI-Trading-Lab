@@ -14,6 +14,7 @@ def _data() -> pd.DataFrame:
                 periods=80,
                 freq="5min",
             ),
+            "isOpen": False,
             "open": [4400.0 + i for i in range(80)],
             "high": [4401.0 + i for i in range(80)],
             "low": [4399.0 + i for i in range(80)],

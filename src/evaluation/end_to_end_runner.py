@@ -21,11 +21,9 @@ def run_end_to_end(
     store_path: Any | None = None,
 ) -> dict[str, Any]:
     """Run the complete live trading proof pipeline."""
-    if reference_now is None and isinstance(data, pd.DataFrame) and "timestamp" in data.columns and not data.empty:
-        last_ts = pd.to_datetime(data["timestamp"].iloc[-1], utc=True)
-        ref_now = last_ts.to_pydatetime() if pd.notna(last_ts) else None
-    else:
-        ref_now = reference_now
+    # Never substitute a candle open timestamp for the runtime clock.
+    # The canonical evaluator derives UTC now when no clock is injected.
+    ref_now = reference_now
 
     runtime = build_live_runtime(
         data,

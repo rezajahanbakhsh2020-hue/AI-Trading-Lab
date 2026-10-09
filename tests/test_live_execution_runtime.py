@@ -133,6 +133,7 @@ def make_dummy_df() -> pd.DataFrame:
         "low": [1995.0 + i for i in range(100)],
         "close": [2002.0 + i for i in range(100)],
         "timestamp": timestamps,
+        "isOpen": False,
     })
     return df
 
@@ -377,6 +378,7 @@ def make_buy_market_data(start_time="2025-01-01 10:00") -> pd.DataFrame:
         "low": [p - 2.0 for p in prices],
         "close": prices,
         "timestamp": timestamps,
+        "isOpen": False,
     })
     return df
 

@@ -756,7 +756,7 @@ def test_33_one_shot_mode_backward_compatible(tmp_path) -> None:
         production_config=config,
     )
     df = make_buy_market_data()
-    ref_now = pd.to_datetime(df["openTime"], utc=True).iloc[-1].to_pydatetime()
+    ref_now = pd.to_datetime(df["openTime"], utc=True).iloc[-1].to_pydatetime() + datetime.timedelta(minutes=5)
 
     res = runtime.run_once(publish=False, persist=True, market_data=df, reference_now=ref_now)
     assert res["blocked"] is False
