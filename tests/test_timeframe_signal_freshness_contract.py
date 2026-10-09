@@ -64,7 +64,7 @@ def test_1d_signal_is_not_blocked_by_300_second_legacy_ttl():
     assert result["stale"] is False
 
 
-def test_unclosed_candle_is_rejected_and_old_closed_candle_is_accepted():
+def test_unclosed_candle_is_rejected_and_old_closed_candle_is_stale_for_new_decision():
     unclosed = validate_market_data_freshness(
         _frame("2026-10-08T17:30:00Z"),
         timeframe="1H",
@@ -78,12 +78,13 @@ def test_unclosed_candle_is_rejected_and_old_closed_candle_is_accepted():
         timeframe="1H",
         reference_now=_now("2026-10-08T18:00:00Z"),
     )
-    assert result["fresh"] is True
-    assert result["reason"] == "fresh"
+    assert result["fresh"] is False
+    assert result["reason"] == "stale_market_data"
 
 
 def test_all_canonical_timeframes_use_their_exact_candle_close_boundary():
     cases = [
+        ("1m", 1 * 60),
         ("5m", 5 * 60),
         ("15m", 15 * 60),
         ("30m", 30 * 60),
@@ -120,3 +121,23 @@ def test_provider_open_candle_state_overrides_elapsed_time():
     )
     assert result["fresh"] is False
     assert result["reason"] == "unclosed_market_data"
+
+
+def test_timeframe_specific_market_freshness_includes_candle_duration_and_provider_grace():
+    cases = [("1m", 60), ("5m", 300), ("15m", 900), ("30m", 1800), ("1H", 3600), ("4H", 14400), ("1D", 86400)]
+    for timeframe, duration in cases:
+        opened = _now("2026-10-01T00:00:00Z")
+        frame = _frame(opened.isoformat())
+        in_window = validate_market_data_freshness(
+            frame, timeframe=timeframe, max_age_seconds=300,
+            reference_now=opened + datetime.timedelta(seconds=duration + 300),
+        )
+        stale = validate_market_data_freshness(
+            frame, timeframe=timeframe, max_age_seconds=300,
+            reference_now=opened + datetime.timedelta(seconds=duration + 301),
+        )
+        assert in_window["fresh"] is True, (timeframe, in_window)
+        expected_tf = {"1h": "1H", "4h": "4H", "1d": "1D"}.get(timeframe, timeframe)
+        assert in_window["timeframe"] == expected_tf
+        assert stale["fresh"] is False, (timeframe, stale)
+        assert stale["reason"] == "stale_market_data"

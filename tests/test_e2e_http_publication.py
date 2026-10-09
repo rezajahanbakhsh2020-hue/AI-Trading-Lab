@@ -166,7 +166,7 @@ def test_full_local_http_e2e_pipeline(tmp_path: Path) -> None:
 
         # 2. Setup Market Data
         now_dt = datetime.now(timezone.utc)
-        timestamps = [now_dt]
+        timestamps = [now_dt - pd.Timedelta(minutes=5)]
         for i in range(1, 20):
             timestamps.append(now_dt - pd.Timedelta(minutes=5 * i))
         timestamps.reverse()

@@ -521,8 +521,8 @@ def test_lifecycle_truthfulness_publisher_call_does_not_equal_published(tmp_path
     assert res_cld.current_state == LiveDecisionLifecycleState.PERSISTED
 
 
-# M. No alternate publication path: Monkeypatch publisher and verify fresh and stale execution paths reach same boundary
-def test_fresh_and_stale_paths_both_reach_same_canonical_publication_function(tmp_path):
+# M. Fresh market data reaches publication; stale market data stops before the publisher.
+def test_stale_path_is_rejected_before_publication_boundary(tmp_path):
     candidate_fresh, _ = create_test_candidate_and_receipt(tmp_path, candidate_id="cand_fresh")
     candidate_stale, _ = create_test_candidate_and_receipt(tmp_path, candidate_id="cand_stale")
 
@@ -581,10 +581,11 @@ def test_fresh_and_stale_paths_both_reach_same_canonical_publication_function(tm
         with patch("src.evaluation.live_runtime.publish_canonical_live_decision") as mock_runtime_pub:
             mock_runtime_pub.side_effect = publish_canonical_live_decision
 
-            ref_fresh = timestamps[-1].to_pydatetime()
+            ref_fresh = (timestamps[-1] + pd.Timedelta(minutes=5)).to_pydatetime()
             runtime_fresh.run_once(publish=True, reference_now=ref_fresh)
             assert mock_runtime_pub.call_count == 1
 
             ref_stale = timestamps[-1].to_pydatetime() + pd.Timedelta(seconds=1200)
             runtime_stale.run_once(publish=True, reference_now=ref_stale)
-            assert mock_runtime_pub.call_count == 2
+            assert mock_runtime_pub.call_count == 1
+            assert mock_publisher.publish.call_count == 1

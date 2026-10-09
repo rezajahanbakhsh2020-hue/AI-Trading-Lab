@@ -301,6 +301,7 @@ def test_live_provenance_preservation() -> None:
 @pytest.mark.parametrize(
     ("canonical", "provider"),
     [
+        ("1m", "1m"),
         ("5m", "5m"),
         ("15m", "15m"),
         ("30m", "30m"),
@@ -338,8 +339,8 @@ def test_biquote_provider_interval_mapping(canonical: str, provider: str, monkey
 
 def test_invalid_timeframe_never_falls_back_to_raw_string() -> None:
     """Anti-recurrence test ensuring invalid timeframe parsing fails closed rather than falling back to raw-string comparison."""
-    with pytest.raises(ValueError, match="Unknown or unsupported timeframe '1m'"):
-        CanonicalTimeframe.from_str("1m")
+    with pytest.raises(ValueError, match="Unknown or unsupported timeframe '2m'"):
+        CanonicalTimeframe.from_str("2m")
 
     with pytest.raises(ValueError, match="Unknown or unsupported timeframe 'not-a-timeframe'"):
         CanonicalTimeframe.from_str("not-a-timeframe")

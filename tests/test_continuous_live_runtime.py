@@ -791,15 +791,11 @@ def test_34_35_36_37_graceful_shutdown_and_max_ticks(tmp_path) -> None:
 # Canonical MTF regression tests (38-41)
 # -----------------------------------------------------------------------------
 
-def test_38_39_40_41_canonical_ladder_and_1m_rejection() -> None:
-    """38, 39, 40, 41. Canonical ladder is 5m, 15m, 30m, 1H, 4H, 1D; '1m' is strictly rejected."""
+def test_38_39_40_41_canonical_ladder_includes_provider_supported_1m() -> None:
+    """Canonical ladder matches the seven timeframe product contract."""
     ladder = CanonicalTimeframe.canonical_ladder()
     ladder_values = [tf.value for tf in ladder]
-    assert ladder_values == ["5m", "15m", "30m", "1H", "4H", "1D"]
-
-    # 1m rejected
-    with pytest.raises(ValueError, match="Unknown or unsupported timeframe '1m'"):
-        CanonicalTimeframe.from_str("1m")
-
-    with pytest.raises(ValueError, match="Unknown or unsupported timeframe '1m'"):
-        ContinuousLiveRuntime(symbol="XAUUSD", timeframes=["1m"])
+    assert ladder_values == ["1m", "5m", "15m", "30m", "1H", "4H", "1D"]
+    assert ContinuousLiveRuntime(symbol="XAUUSD", timeframes=["1m"]).timeframes == ("1m",)
+    with pytest.raises(ValueError, match="Unknown or unsupported timeframe '2m'"):
+        CanonicalTimeframe.from_str("2m")

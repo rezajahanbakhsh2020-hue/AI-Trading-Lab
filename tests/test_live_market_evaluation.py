@@ -64,7 +64,7 @@ def test_fresh_market_evaluation_creation(tmp_path):
         evaluation.freshness_status = False
 
 
-def test_closed_market_evaluation_remains_valid_after_300_seconds(tmp_path):
+def test_stale_closed_market_evaluation_is_not_fresh_for_new_decision(tmp_path):
     context, _ = build_test_context(tmp_path)
     df = make_buy_market_data()
     df_ts = pd.to_datetime(df["openTime"], utc=True).iloc[-1].to_pydatetime()
@@ -73,9 +73,9 @@ def test_closed_market_evaluation_remains_valid_after_300_seconds(tmp_path):
         df, context, reference_now=df_ts + datetime.timedelta(seconds=1000), max_age_seconds=300.0
     )
 
-    assert evaluation.fresh is True
-    assert evaluation.freshness_status is True
-    assert evaluation.freshness_reason == "fresh"
+    assert evaluation.fresh is False
+    assert evaluation.freshness_status is False
+    assert evaluation.freshness_reason == "stale_market_data"
     assert evaluation.age_seconds == 1000.0
     assert evaluation.authorized_runtime_context_fingerprint == context.context_fingerprint
 
