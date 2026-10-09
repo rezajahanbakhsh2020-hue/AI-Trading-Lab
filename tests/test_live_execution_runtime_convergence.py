@@ -21,13 +21,13 @@ from tests.test_live_execution_runtime import (
 
 
 def test_exact_convergence_fresh_and_stale(tmp_path):
-    """C & J. Closed candles evaluate consistently through downstream lifecycle functions regardless of elapsed time."""
+    """C & J. Fresh and stale market data converge through exact same downstream lifecycle functions."""
     config = production_config_for(tmp_path)
 
     df = make_buy_market_data()
     df_ts = pd.to_datetime(df["openTime"], utc=True).iloc[-1].to_pydatetime()
 
-    # 1. Execution at candle close
+    # 1. Fresh execution
     runtime_fresh = LiveExecutionRuntime(
         symbol="XAUUSD",
         interval="5m",
@@ -37,13 +37,11 @@ def test_exact_convergence_fresh_and_stale(tmp_path):
         production_config=config,
     )
     with patch("src.evaluation.live_execution_runtime.load_live_market_data", return_value=df):
-        res_buy = runtime_fresh.run_once(
-            publish=False, persist=True, reference_now=df_ts + datetime.timedelta(minutes=5)
-        )
+        res_buy = runtime_fresh.run_once(publish=False, persist=True, reference_now=df_ts)
     assert res_buy["decision"] == "BUY"
     assert res_buy["current_lifecycle_state"] == LiveDecisionLifecycleState.PERSISTED.value
 
-    # 2. Execution on the same closed candle long after close
+    # 2. Stale execution
     runtime_stale = LiveExecutionRuntime(
         symbol="XAUUSD",
         interval="5m",
@@ -56,8 +54,10 @@ def test_exact_convergence_fresh_and_stale(tmp_path):
         res_stale = runtime_stale.run_once(
             publish=False, persist=True, reference_now=df_ts + datetime.timedelta(seconds=1000)
         )
-    assert res_stale["decision"] == "BUY"
-    assert res_stale["blocked"] is False
+    assert res_stale["decision"] == "NO TRADE"
+    assert res_stale["current_lifecycle_state"] == LiveDecisionLifecycleState.PERSISTED.value
+    assert res_stale["record"]["signal_label"] == "NO TRADE"
+    assert res_stale["record"]["entry_price"] is None
 
 
 def test_single_candidate_resolution_and_authorization(tmp_path):
@@ -73,7 +73,7 @@ def test_single_candidate_resolution_and_authorization(tmp_path):
     )
 
     df = make_buy_market_data()
-    ref_now = pd.to_datetime(df["openTime"], utc=True).iloc[-1].to_pydatetime() + datetime.timedelta(minutes=5)
+    ref_now = pd.to_datetime(df["openTime"], utc=True).iloc[-1].to_pydatetime()
 
     # Pre-build candidate, authorization, and receipt OUTSIDE patch blocks
     from src.evaluation.live_production_decision import ProductionAuthorizationReceipt, authorize_production_runtime
@@ -113,8 +113,8 @@ def test_single_candidate_resolution_and_authorization(tmp_path):
         assert context_arg.authorization_receipt is exact_receipt
 
 
-def test_closed_old_candle_is_evaluated_without_ttl_rejection(tmp_path):
-    """A valid closed candle enters strategy evaluation regardless of elapsed time."""
+def test_stale_path_bypasses_signal_and_trend_generators(tmp_path):
+    """Part 9: Stale evaluation path must NOT invoke fresh signal or trend snapshot generators."""
     config = production_config_for(tmp_path)
     runtime = LiveExecutionRuntime(
         symbol="XAUUSD",
@@ -134,14 +134,16 @@ def test_closed_old_candle_is_evaluated_without_ttl_rejection(tmp_path):
 
     with (
         patch("src.evaluation.live_execution_runtime.load_live_market_data", return_value=df),
-        patch.object(live_signal, "generate_live_signal", wraps=live_signal.generate_live_signal) as mock_sig,
-        patch.object(live_trend, "build_live_trend_snapshot", wraps=live_trend.build_live_trend_snapshot) as mock_trend,
+        patch.object(live_signal, "generate_live_signal") as mock_sig,
+        patch.object(live_trend, "build_live_trend_snapshot") as mock_trend,
     ):
         res = runtime.run_once(publish=False, persist=True, reference_now=stale_ref_now)
 
-        assert res["decision"] == "BUY"
-        assert mock_sig.called
-        assert mock_trend.called
+        assert res["decision"] == "NO TRADE"
+        assert res["record"]["quote_stale"] is True
+        # Signal and trend generators MUST NOT BE CALLED for stale data
+        assert mock_sig.call_count == 0
+        assert mock_trend.call_count == 0
 
 
 def test_ast_static_checks_live_execution_runtime():

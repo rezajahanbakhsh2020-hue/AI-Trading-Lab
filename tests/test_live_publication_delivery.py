@@ -581,10 +581,12 @@ def test_fresh_and_stale_paths_both_reach_same_canonical_publication_function(tm
         with patch("src.evaluation.live_runtime.publish_canonical_live_decision") as mock_runtime_pub:
             mock_runtime_pub.side_effect = publish_canonical_live_decision
 
-            ref_fresh = timestamps[-1].to_pydatetime()
+            ref_fresh = timestamps[-1].to_pydatetime() + pd.Timedelta(minutes=5)
             runtime_fresh.run_once(publish=True, reference_now=ref_fresh)
             assert mock_runtime_pub.call_count == 1
 
             ref_stale = timestamps[-1].to_pydatetime() + pd.Timedelta(seconds=1200)
-            runtime_stale.run_once(publish=True, reference_now=ref_stale)
-            assert mock_runtime_pub.call_count == 2
+            res_stale = runtime_stale.run_once(publish=True, reference_now=ref_stale)
+            # Stale market data safely skips publication to Project 2 at the runtime boundary
+            assert res_stale["publish_result"]["status"] == "SKIPPED_STALE_MARKET_DATA"
+            assert mock_runtime_pub.call_count == 1

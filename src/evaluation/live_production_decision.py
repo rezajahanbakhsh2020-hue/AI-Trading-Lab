@@ -648,9 +648,19 @@ def validate_market_data_for_production(
         raise ValueError(f"Market data timestamp '{ts}' is in the future relative to '{now_dt}'.")
 
     from src.evaluation.mtf_intelligence import CanonicalTimeframe
-    from src.evaluation.live_execution_runtime import is_candle_closed
+    from src.evaluation.live_execution_runtime import get_canonical_timeframe_duration, is_candle_closed
 
     canonical_tf = CanonicalTimeframe.from_str(timeframe).value
+    if max_age_seconds is None or isinstance(max_age_seconds, bool) or not isinstance(max_age_seconds, (int, float)) or not math.isfinite(float(max_age_seconds)) or float(max_age_seconds) < 0:
+        raise ValueError("max_age_seconds must be a finite non-negative provider lateness allowance.")
+
+    max_permitted_age = get_canonical_timeframe_duration(canonical_tf).total_seconds() + float(max_age_seconds)
+    if age_seconds > max_permitted_age:
+        raise ValueError(
+            f"Market data candle for timeframe '{canonical_tf}' is stale: age {age_seconds:.3f}s "
+            f"exceeds candle duration plus provider lateness allowance ({max_permitted_age:.3f}s)."
+        )
+
     if not is_candle_closed(latest_bar, canonical_tf, now_dt.to_pydatetime()):
         raise ValueError(
             f"Market data candle for timeframe '{canonical_tf}' is not closed yet."
@@ -749,7 +759,7 @@ def evaluate_production_decision(
     candidate: PromotedCandidateArtifact,
     data: pd.DataFrame,
     reference_now: Optional[Any] = None,
-    max_age_seconds: float = float("inf"),
+    max_age_seconds: float = 300.0,
 ) -> ProductionDecision:
     """Evaluate promoted candidate strategy against live market data to produce an authoritative ProductionDecision."""
     if not isinstance(candidate, PromotedCandidateArtifact):
@@ -1593,7 +1603,7 @@ def build_live_production_decision(
         candidate=resolved_candidate,
         data=data,
         reference_now=ref_now,
-        max_age_seconds=float("inf"),
+        max_age_seconds=300.0,
     )
 
     from live_signal import generate_live_signal

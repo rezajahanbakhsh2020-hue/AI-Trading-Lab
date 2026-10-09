@@ -220,12 +220,22 @@ def validate_and_prepare_market_snapshot(
         if (data_copy[col] <= 0).any():
             raise ValueError(f"Market data for {symbol} contains non-positive price values in '{col}'.")
 
-    # Ensure chronological ascending sort and deduplicate identical open timestamps
-    data_copy = (
-        data_copy.sort_values("timestamp")
-        .drop_duplicates(subset=["timestamp"], keep="last")
-        .reset_index(drop=True)
-    )
+    # Full OHLC geometry check: high >= max(open, close) and low <= min(open, close)
+    if (data_copy["high"] < data_copy[["open", "close"]].max(axis=1)).any() or (data_copy["low"] > data_copy[["open", "close"]].min(axis=1)).any():
+        raise ValueError(f"Market data for {symbol} contains invalid OHLC geometry (high/low bounds violated).")
+
+    # Sort chronologically
+    data_copy = data_copy.sort_values("timestamp").reset_index(drop=True)
+
+    # Check for conflicting duplicate timestamps (different OHLC values at same timestamp)
+    dups = data_copy[data_copy.duplicated(subset=["timestamp"], keep=False)]
+    if not dups.empty:
+        # Group by timestamp and verify all numeric values match
+        numeric_cols = ["open", "high", "low", "close"]
+        for _, group in dups.groupby("timestamp"):
+            if not (group[numeric_cols].nunique() == 1).all().all():
+                raise ValueError(f"Market data for {symbol} contains conflicting duplicate timestamps with inconsistent OHLC values.")
+        data_copy = data_copy.drop_duplicates(subset=["timestamp"], keep="last").reset_index(drop=True)
 
     if data_copy.empty:
         raise ValueError(f"No valid live market data available for {symbol}.")
@@ -500,12 +510,11 @@ def validate_market_data_freshness(
     max_age_seconds: float | None = None,
     reference_now: datetime.datetime | None = None,
 ) -> dict[str, Any]:
-    """Validate that the latest provider candle is closed and recent enough for a new decision.
+    """Validate that the latest provider candle is closed and within provider-lateness allowance.
 
-    Provider timestamps identify candle opens. ``max_age_seconds`` is the
-    permitted provider/update lateness after the candle's own duration; it is
-    independent of P2's LIVE badge TTL. A closed but old candle cannot
-    authorize a new production evaluation.
+    Provider timestamps identify candle opens. An explicit, finite, non-negative ``max_age_seconds``
+    defines the maximum permitted provider/update lateness AFTER the candle's own duration.
+    If ``max_age_seconds`` is missing, non-numeric, or non-finite, freshness evaluation fails closed.
     """
     if reference_now is None:
         now_dt = datetime.datetime.now(datetime.timezone.utc)
@@ -513,6 +522,15 @@ def validate_market_data_freshness(
         now_dt = reference_now
     if now_dt.tzinfo is None:
         now_dt = now_dt.replace(tzinfo=datetime.timezone.utc)
+
+    if max_age_seconds is None or isinstance(max_age_seconds, bool) or not isinstance(max_age_seconds, (int, float)) or not math.isfinite(float(max_age_seconds)) or float(max_age_seconds) < 0:
+        return {
+            "fresh": False,
+            "stale": True,
+            "reason": "absent_or_invalid_freshness_policy",
+            "age_seconds": None,
+            "candle_timestamp": None,
+        }
 
     if data is None or not isinstance(data, pd.DataFrame) or data.empty:
         return {
@@ -559,7 +577,13 @@ def validate_market_data_freshness(
             }
 
     if latest_dt.tzinfo is None:
-        latest_dt = latest_dt.replace(tzinfo=datetime.timezone.utc)
+        return {
+            "fresh": False,
+            "stale": True,
+            "reason": "naive_candle_timestamp",
+            "age_seconds": None,
+            "candle_timestamp": str(latest_ts),
+        }
     else:
         latest_dt = latest_dt.astimezone(datetime.timezone.utc)
 
@@ -579,6 +603,18 @@ def validate_market_data_freshness(
     latest_row = data.iloc[-1]
     if not is_candle_closed(latest_row, canonical_tf, now_dt):
         return {"fresh": False, "stale": True, "reason": "unclosed_market_data", "age_seconds": age_seconds, "timeframe": canonical_tf.value, "candle_timestamp": candle_iso}
+
+    max_permitted_age = get_canonical_timeframe_duration(canonical_tf).total_seconds() + float(max_age_seconds)
+    if age_seconds > max_permitted_age:
+        return {
+            "fresh": False,
+            "stale": True,
+            "reason": "stale_market_data",
+            "age_seconds": age_seconds,
+            "max_market_age_seconds": max_permitted_age,
+            "timeframe": canonical_tf.value,
+            "candle_timestamp": candle_iso,
+        }
 
     return {
         "fresh": True,
