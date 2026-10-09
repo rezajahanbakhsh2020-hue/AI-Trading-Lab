@@ -307,10 +307,20 @@ def resolve_authoritative_promoted_candidate(
 
 def validate_market_data_freshness(
     data: pd.DataFrame,
-    max_age_seconds: float = 300.0,
+    timeframe: str | CanonicalTimeframe,
+    max_age_seconds: float | None = None,
     reference_now: datetime.datetime | None = None,
 ) -> dict[str, Any]:
-    """Validate event-time provenance and freshness of live market data."""
+    """Validate live market event-time using the requested timeframe.
+
+    IMPORTANT:
+    ``300`` seconds is NOT a production signal-validity TTL.
+    Provider timestamps identify candle opens. A provider-declared open bar
+    is rejected; absent an explicit state, a candle is evaluable only after
+    its exact canonical timeframe has elapsed. The legacy
+    ``max_age_seconds`` argument is retained for call-site compatibility and
+    does not expire closed candles.
+    """
     if reference_now is None:
         now_dt = datetime.datetime.now(datetime.timezone.utc)
     else:
@@ -379,12 +389,17 @@ def validate_market_data_freshness(
             "candle_timestamp": candle_iso,
         }
 
-    if age_seconds > max_age_seconds:
+    # Provider timestamps are candle open times (see validate_and_prepare_market_snapshot).
+    # Reject a candle until its full canonical interval has elapsed. Once closed,
+    # its age does not determine whether the already-authorized signal is valid.
+    latest_row = data.iloc[-1]
+    if not is_candle_closed(latest_row, timeframe, now_dt):
         return {
             "fresh": False,
             "stale": True,
-            "reason": "stale_market_data",
+            "reason": "unclosed_market_data",
             "age_seconds": age_seconds,
+            "timeframe": CanonicalTimeframe.from_str(timeframe).value,
             "candle_timestamp": candle_iso,
         }
 
@@ -393,6 +408,7 @@ def validate_market_data_freshness(
         "stale": False,
         "reason": "fresh",
         "age_seconds": age_seconds,
+        "timeframe": CanonicalTimeframe.from_str(timeframe).value,
         "candle_timestamp": candle_iso,
     }
 

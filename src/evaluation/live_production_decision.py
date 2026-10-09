@@ -646,9 +646,16 @@ def validate_market_data_for_production(
     age_seconds = (now_dt - ts).total_seconds()
     if age_seconds < 0:
         raise ValueError(f"Market data timestamp '{ts}' is in the future relative to '{now_dt}'.")
-    if age_seconds > max_age_seconds:
+    # OHLC provider timestamps identify candle open (BiQuote openTime). A
+    # strategy may only evaluate completed candles. The legacy max_age_seconds
+    # parameter is intentionally ignored: signal validity is not a UI TTL.
+    from src.evaluation.mtf_intelligence import CanonicalTimeframe
+    from src.evaluation.live_execution_runtime import is_candle_closed
+
+    canonical_tf = CanonicalTimeframe.from_str(timeframe).value
+    if not is_candle_closed(latest_bar, canonical_tf, now_dt.to_pydatetime()):
         raise ValueError(
-            f"Market data timestamp '{ts}' is stale ({age_seconds:.1f}s old, max allowed: {max_age_seconds}s)."
+            f"Market data candle for timeframe '{canonical_tf}' is not closed yet."
         )
 
     return latest_bar

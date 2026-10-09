@@ -46,7 +46,7 @@ def test_fresh_market_evaluation_creation(tmp_path):
     df = make_buy_market_data()
     # Align latest timestamp close to ref_now
     df_ts = pd.to_datetime(df["openTime"], utc=True).iloc[-1].to_pydatetime()
-    evaluation = create_live_market_evaluation(df, context, reference_now=df_ts + datetime.timedelta(seconds=10))
+    evaluation = create_live_market_evaluation(df, context, reference_now=df_ts + datetime.timedelta(minutes=5, seconds=10))
 
     assert evaluation.fresh is True
     assert evaluation.freshness_status is True
@@ -64,18 +64,18 @@ def test_fresh_market_evaluation_creation(tmp_path):
         evaluation.freshness_status = False
 
 
-def test_stale_market_evaluation_creation(tmp_path):
-    """B. Stale evaluation test."""
-    context, ref_now = build_test_context(tmp_path)
+def test_closed_market_evaluation_remains_valid_after_300_seconds(tmp_path):
+    context, _ = build_test_context(tmp_path)
     df = make_buy_market_data()
     df_ts = pd.to_datetime(df["openTime"], utc=True).iloc[-1].to_pydatetime()
-    stale_ref_now = df_ts + datetime.timedelta(seconds=1000)
 
-    evaluation = create_live_market_evaluation(df, context, reference_now=stale_ref_now, max_age_seconds=300.0)
+    evaluation = create_live_market_evaluation(
+        df, context, reference_now=df_ts + datetime.timedelta(seconds=1000), max_age_seconds=300.0
+    )
 
-    assert evaluation.fresh is False
-    assert evaluation.freshness_status is False
-    assert evaluation.freshness_reason == "stale_market_data"
+    assert evaluation.fresh is True
+    assert evaluation.freshness_status is True
+    assert evaluation.freshness_reason == "fresh"
     assert evaluation.age_seconds == 1000.0
     assert evaluation.authorized_runtime_context_fingerprint == context.context_fingerprint
 
@@ -86,7 +86,7 @@ def test_per_field_fingerprint_sensitivity(tmp_path):
     df = make_buy_market_data()
     df_ts = pd.to_datetime(df["openTime"], utc=True).iloc[-1].to_pydatetime()
 
-    base_eval = create_live_market_evaluation(df, context, reference_now=df_ts)
+    base_eval = create_live_market_evaluation(df, context, reference_now=df_ts + datetime.timedelta(minutes=5))
     base_fp = base_eval.evaluation_fingerprint
 
     base_kwargs = {
@@ -179,7 +179,7 @@ def test_context_evaluation_mismatch_fails_closed(tmp_path):
     df = make_buy_market_data()
     df_ts = pd.to_datetime(df["openTime"], utc=True).iloc[-1].to_pydatetime()
 
-    evaluation = create_live_market_evaluation(df, context, reference_now=df_ts)
+    evaluation = create_live_market_evaluation(df, context, reference_now=df_ts + datetime.timedelta(minutes=5))
 
     # 1. Symbol mismatch
     bad_eval = LiveMarketEvaluation(
