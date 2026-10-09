@@ -1528,6 +1528,7 @@ def _validate_strategy(stable_strategy: str) -> str:
 def build_live_production_decision(
     data: pd.DataFrame,
     *,
+    reference_now: Optional[Any] = None,
     stable_strategy: str,
     stability_score: float,
     min_stability_score: float = DEFAULT_MIN_STABILITY_SCORE,
@@ -1587,7 +1588,7 @@ def build_live_production_decision(
             f"Caller-supplied stability_score ({stability_score}) conflicts with candidate operational_stability_score ({resolved_candidate.operational_stability_score})."
         )
 
-    ref_now = None
+    ref_now = reference_now
 
     # Authorize runtime execution through canonical path
     authorization = authorize_production_runtime(

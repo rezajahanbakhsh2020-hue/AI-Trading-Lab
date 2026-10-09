@@ -43,7 +43,7 @@ def test_exact_convergence_fresh_and_stale(tmp_path):
     assert res_buy["decision"] == "BUY"
     assert res_buy["current_lifecycle_state"] == LiveDecisionLifecycleState.PERSISTED.value
 
-    # 2. The same closed candle remains valid past the former 300s threshold.
+    # 2. The same closed candle becomes ineligible after duration plus provider grace.
     runtime_stale = LiveExecutionRuntime(
         symbol="XAUUSD",
         interval="5m",
@@ -56,9 +56,11 @@ def test_exact_convergence_fresh_and_stale(tmp_path):
         res_stale = runtime_stale.run_once(
             publish=False, persist=True, reference_now=df_ts + datetime.timedelta(seconds=1000)
         )
-    assert res_stale["decision"] == "BUY"
-    assert res_stale["current_lifecycle_state"] == LiveDecisionLifecycleState.PERSISTED.value
-    assert res_stale["record"]["signal_label"] == "BUY"
+    assert res_stale["decision"] == "NO TRADE"
+    assert res_stale["blocked"] is False
+    assert res_stale["record"]["signal_label"] == "NO TRADE"
+    assert res_stale["record"]["quote_stale"] is True
+    assert res_stale["record"]["reason"] == "stale_market_data"
 
 
 def test_single_candidate_resolution_and_authorization(tmp_path):
@@ -114,8 +116,8 @@ def test_single_candidate_resolution_and_authorization(tmp_path):
         assert context_arg.authorization_receipt is exact_receipt
 
 
-def test_closed_old_candle_still_reaches_authoritative_signal_evaluation(tmp_path):
-    """A closed candle beyond 300s is evaluated; the former stale bypass no longer applies."""
+def test_closed_old_candle_is_rejected_before_strategy_evaluation(tmp_path):
+    """A candle beyond the timeframe freshness bound cannot enter strategy evaluation."""
     config = production_config_for(tmp_path)
     runtime = LiveExecutionRuntime(
         symbol="XAUUSD",
@@ -140,11 +142,12 @@ def test_closed_old_candle_still_reaches_authoritative_signal_evaluation(tmp_pat
     ):
         res = runtime.run_once(publish=False, persist=True, reference_now=stale_ref_now)
 
-        assert res["decision"] == "BUY"
-        assert res["record"]["quote_stale"] is False
+        assert res["decision"] == "NO TRADE"
+        assert res["record"]["quote_stale"] is True
+        assert res["record"]["reason"] == "stale_market_data"
         assert res["record"]["quote_age_seconds"] == 1000.0
-        assert mock_sig.called
-        assert mock_trend.called
+        assert not mock_sig.called
+        assert not mock_trend.called
 
 
 def test_ast_static_checks_live_execution_runtime():

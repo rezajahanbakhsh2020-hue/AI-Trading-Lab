@@ -963,7 +963,7 @@ class ContinuousLiveRuntime:
             tf_list = list(timeframes)
 
         # Enforce repository's existing canonical timeframe vocabulary.
-        # Fails closed on unsupported timeframes (e.g. '1m').
+        # Fails closed on unsupported timeframes.
         self.timeframes = tuple(CanonicalTimeframe.from_str(tf).value for tf in tf_list)
 
         self.poll_interval = max(0.0, poll_interval)
