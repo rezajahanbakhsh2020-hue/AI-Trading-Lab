@@ -231,6 +231,167 @@ def load_live_market_data(
     return validate_and_prepare_market_snapshot(data, symbol=canonical_symbol)
 
 
+def verify_timeframe_production_readiness(
+    symbol: str = "XAUUSD",
+    timeframe: str | CanonicalTimeframe = "5m",
+    candidate_id: str | None = None,
+    research_dir: Path | str = DEFAULT_RESEARCH_DIR,
+    publisher: Project2Publisher | None = None,
+    reference_now: datetime.datetime | None = None,
+    check_provider_data: bool = False,
+) -> dict[str, Any]:
+    """Perform deterministic production-readiness evaluation for a single canonical timeframe.
+
+    Evaluates provider interval support, candidate artifact and binding existence/integrity,
+    exact symbol/timeframe scope matching, production authorization receipt construction,
+    and publication configuration. Never borrows candidates across timeframes or fabricates data.
+    """
+    canonical_tf = CanonicalTimeframe.from_str(timeframe).value
+    r_dir = Path(research_dir)
+    ref_now = reference_now if reference_now is not None else datetime.datetime.now(datetime.timezone.utc)
+    if ref_now.tzinfo is None:
+        ref_now = ref_now.replace(tzinfo=datetime.timezone.utc)
+
+    # 1. Provider interval support check
+    provider_interval_map = {
+        "1m": "1m",
+        "5m": "5m",
+        "15m": "15m",
+        "30m": "30m",
+        "1H": "1h",
+        "4H": "4h",
+        "1D": "1d",
+    }
+    provider_interval = provider_interval_map.get(canonical_tf)
+    if not provider_interval:
+        return {
+            "timeframe": canonical_tf,
+            "status": "BLOCKED",
+            "reason_code": "UNSUPPORTED_PROVIDER_INTERVAL",
+            "detail": f"Timeframe '{canonical_tf}' has no mapped provider interval.",
+            "candidate_id": candidate_id,
+        }
+
+    if check_provider_data:
+        try:
+            prov = resolve_live_provider(symbol)
+            candles = prov.get_candles(symbol, timeframe=canonical_tf, limit=5)
+            if candles is None or candles.empty:
+                return {
+                    "timeframe": canonical_tf,
+                    "status": "BLOCKED",
+                    "reason_code": "NO_PROVIDER_CANDLES",
+                    "detail": f"Provider returned empty candle data for {symbol} {canonical_tf}.",
+                    "candidate_id": candidate_id,
+                }
+        except Exception as exc:
+            return {
+                "timeframe": canonical_tf,
+                "status": "BLOCKED",
+                "reason_code": "PROVIDER_FETCH_FAILED",
+                "detail": f"Failed to fetch market candles for {symbol} {canonical_tf}: {exc}",
+                "candidate_id": candidate_id,
+            }
+
+    # 2. Promoted candidate resolution & binding integrity
+    config = ProductionRuntimeConfig(
+        symbol=symbol,
+        timeframe=canonical_tf,
+        candidate_id=candidate_id,
+        research_dir=r_dir,
+    )
+    resolved = resolve_authoritative_promoted_candidate(config)
+    if isinstance(resolved, ProductionBlocked):
+        return {
+            "timeframe": canonical_tf,
+            "status": "BLOCKED",
+            "reason_code": resolved.reason,
+            "detail": resolved.detail,
+            "candidate_id": resolved.candidate_id or candidate_id,
+        }
+
+    # Explicit scope check
+    cand_tf = CanonicalTimeframe.from_str(resolved.timeframe).value
+    if cand_tf != canonical_tf:
+        return {
+            "timeframe": canonical_tf,
+            "status": "BLOCKED",
+            "reason_code": "TIMEFRAME_IDENTITY_MISMATCH",
+            "detail": f"Candidate '{resolved.candidate_id}' timeframe '{cand_tf}' does not match requested '{canonical_tf}'.",
+            "candidate_id": resolved.candidate_id,
+        }
+
+    # 3. Production authorization receipt verification
+    try:
+        authorization = authorize_production_runtime(
+            resolved,
+            symbol=symbol,
+            timeframe=canonical_tf,
+            now=ref_now,
+        )
+        receipt = ProductionAuthorizationReceipt.from_authorization(authorization)
+    except Exception as exc:
+        return {
+            "timeframe": canonical_tf,
+            "status": "BLOCKED",
+            "reason_code": "AUTHORIZATION_FAILED",
+            "detail": f"Failed to authorize production runtime for candidate '{resolved.candidate_id}': {exc}",
+            "candidate_id": resolved.candidate_id,
+        }
+
+    # 4. Publication configuration check
+    pub = publisher or Project2Publisher()
+    pub_url = pub.publish_url
+    pub_enabled = pub.enabled
+    if pub_enabled and not pub_url:
+        return {
+            "timeframe": canonical_tf,
+            "status": "BLOCKED",
+            "reason_code": "PUBLICATION_MISCONFIGURED",
+            "detail": "Project 2 publication is enabled but no publish URL is configured.",
+            "candidate_id": resolved.candidate_id,
+        }
+
+    return {
+        "timeframe": canonical_tf,
+        "status": "READY",
+        "reason_code": "READY",
+        "detail": f"Authoritative candidate '{resolved.candidate_id}' fully authorized for {symbol} {canonical_tf}.",
+        "candidate_id": resolved.candidate_id,
+        "strategy_name": resolved.strategy_name,
+        "strategy_version": resolved.strategy_version,
+        "operational_stability_score": resolved.operational_stability_score,
+        "authorization_fingerprint": receipt.authorization_fingerprint,
+    }
+
+
+def verify_all_canonical_timeframes_readiness(
+    symbol: str = "XAUUSD",
+    candidate_ids: dict[str, str] | None = None,
+    research_dir: Path | str = DEFAULT_RESEARCH_DIR,
+    publisher: Project2Publisher | None = None,
+    reference_now: datetime.datetime | None = None,
+    check_provider_data: bool = False,
+) -> dict[str, dict[str, Any]]:
+    """Evaluate production readiness independently across all seven canonical timeframes."""
+    cand_map = candidate_ids or {}
+    results = {}
+    for tf in CanonicalTimeframe.canonical_ladder():
+        tf_val = tf.value
+        cand_id = cand_map.get(tf_val)
+        res = verify_timeframe_production_readiness(
+            symbol=symbol,
+            timeframe=tf_val,
+            candidate_id=cand_id,
+            research_dir=research_dir,
+            publisher=publisher,
+            reference_now=reference_now,
+            check_provider_data=check_provider_data,
+        )
+        results[tf_val] = res
+    return results
+
+
 def resolve_authoritative_promoted_candidate(
     config: ProductionRuntimeConfig,
 ) -> PromotedCandidateArtifact | ProductionBlocked:
@@ -986,10 +1147,56 @@ class ContinuousLiveRuntime:
         self._evaluated_candles: set[tuple[str, str, str, str | None]] = set()
         self._tick_count = 0
         self._execution_history: list[dict[str, Any]] = []
+        self._started_at_utc: str | None = None
+        self._last_evaluated_at_utc: str | None = None
 
     @property
     def is_running(self) -> bool:
         return not self._stop_event.is_set()
+
+    def get_health_status(
+        self,
+        staleness_threshold_seconds: float = 300.0,
+        reference_now: datetime.datetime | None = None,
+    ) -> dict[str, Any]:
+        """Compute current worker health diagnostics.
+
+        Health states:
+        - WORKER_NOT_STARTED: continuous loop hasn't started or executed ticks
+        - WORKER_HEALTHY: last evaluation timestamp within staleness threshold
+        - WORKER_STALE: last evaluation timestamp older than staleness threshold
+        """
+        ref_now = reference_now if reference_now is not None else self.clock()
+        if ref_now.tzinfo is None:
+            ref_now = ref_now.replace(tzinfo=datetime.timezone.utc)
+
+        if not self._started_at_utc or not self._last_evaluated_at_utc:
+            return {
+                "status": "WORKER_NOT_STARTED",
+                "healthy": False,
+                "started_at_utc": self._started_at_utc,
+                "last_evaluated_at_utc": self._last_evaluated_at_utc,
+                "seconds_since_last_evaluation": None,
+                "tick_count": self._tick_count,
+            }
+
+        last_eval_dt = datetime.datetime.fromisoformat(self._last_evaluated_at_utc)
+        if last_eval_dt.tzinfo is None:
+            last_eval_dt = last_eval_dt.replace(tzinfo=datetime.timezone.utc)
+
+        age_seconds = (ref_now - last_eval_dt).total_seconds()
+        is_healthy = age_seconds >= 0 and age_seconds <= staleness_threshold_seconds
+
+        status = "WORKER_HEALTHY" if is_healthy else "WORKER_STALE"
+
+        return {
+            "status": status,
+            "healthy": is_healthy,
+            "started_at_utc": self._started_at_utc,
+            "last_evaluated_at_utc": self._last_evaluated_at_utc,
+            "seconds_since_last_evaluation": max(0.0, age_seconds),
+            "tick_count": self._tick_count,
+        }
 
     def stop(self) -> None:
         """Signal the continuous runtime loop to stop deterministically."""
@@ -1166,10 +1373,15 @@ class ContinuousLiveRuntime:
                         "timeframe": canonical_tf,
                     }
 
+            if not self._started_at_utc:
+                self._started_at_utc = ref_now.isoformat()
+            self._last_evaluated_at_utc = ref_now.isoformat()
+
             tick_summary = {
                 "tick_number": self._tick_count,
                 "timestamp": ref_now.isoformat(),
                 "evaluations": tick_evaluations,
+                "health": self.get_health_status(reference_now=ref_now),
             }
             self._execution_history.append(tick_summary)
             return tick_summary
@@ -1196,21 +1408,23 @@ class ContinuousLiveRuntime:
         readiness_results = {}
         for tf in self.timeframes:
             canonical_tf = CanonicalTimeframe.from_str(tf).value
-            config = ProductionRuntimeConfig(
+            cand_id = self.candidate_ids.get(canonical_tf)
+            readiness = verify_timeframe_production_readiness(
                 symbol=self.symbol,
                 timeframe=canonical_tf,
-                candidate_id=self.candidate_ids.get(canonical_tf),
+                candidate_id=cand_id,
                 research_dir=self.research_dir,
+                publisher=self.publisher,
+                reference_now=self.clock(),
             )
-            resolved = resolve_authoritative_promoted_candidate(config)
-            if isinstance(resolved, ProductionBlocked):
+            if readiness.get("status") != "READY":
                 msg = (
                     f"Startup readiness preflight failed for {self.symbol} {canonical_tf}: "
-                    f"[{resolved.reason}] {resolved.detail}"
+                    f"[{readiness.get('reason_code')}] {readiness.get('detail')}"
                 )
                 logger.error(msg)
                 raise PromotionUnavailable(msg)
-            readiness_results[canonical_tf] = resolved
+            readiness_results[canonical_tf] = readiness
         return readiness_results
 
     def run_continuous(self, max_ticks: int | None = None) -> None:
