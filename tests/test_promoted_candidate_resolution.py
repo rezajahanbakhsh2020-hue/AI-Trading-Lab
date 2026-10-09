@@ -170,7 +170,7 @@ def test_valid_persisted_promoted_candidate_allows_production(tmp_path: Path) ->
     assert resolved.evidence.experiment_fingerprint == evidence.experiment_fingerprint
     assert resolved.evidence.promotion_status == PromotionStatus.PROMOTABLE
     data = make_buy_market_data()
-    ref_now = data["timestamp"].iloc[-1].to_pydatetime()
+    ref_now = data["timestamp"].iloc[-1].to_pydatetime() + pd.Timedelta(minutes=5)
     decision = evaluate_production_decision(resolved, data, reference_now=ref_now)
     assert decision.direction == Direction.BUY
     assert decision.candidate_id == candidate_id
@@ -359,7 +359,7 @@ def test_production_lineage_preserved_through_decision_signal_risk_publication(
 ) -> None:
     candidate_id, evidence = persist_test_candidate(tmp_path, candidate_id="cand_lineage")
     mock_load_data.return_value = make_buy_market_data()
-    ref_now = mock_load_data.return_value["timestamp"].iloc[-1].to_pydatetime()
+    ref_now = mock_load_data.return_value["timestamp"].iloc[-1].to_pydatetime() + pd.Timedelta(minutes=5)
     runtime = LiveExecutionRuntime(
         symbol="XAUUSD",
         interval="5m",

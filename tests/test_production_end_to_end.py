@@ -59,6 +59,7 @@ def test_production_end_to_end_uses_candidate_lineage(
         results_dir=tmp_path,
         symbol="XAUUSD",
         interval="1d",
+        reference_now=data["timestamp"].iloc[-1] + pd.Timedelta(days=1),
         min_stability_score=0.40,
         store_path=tmp_path / "store.json",
     )
@@ -80,6 +81,7 @@ def test_production_end_to_end_rejects_low_min_stability(
         _rising_data(),
         symbol="XAUUSD",
         interval="1d",
+        reference_now=_rising_data()["timestamp"].iloc[-1] + pd.Timedelta(days=1),
         min_stability_score=0.90,
         results_dir=tmp_path,
         store_path=tmp_path / "store.json",

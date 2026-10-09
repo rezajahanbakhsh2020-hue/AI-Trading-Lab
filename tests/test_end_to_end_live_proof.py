@@ -30,6 +30,7 @@ def _realistic_rising_market(rows: int = 80) -> pd.DataFrame:
     return pd.DataFrame(
         {
             "timestamp": timestamps,
+            "isOpen": False,
             "open": close - 1.0,
             "high": close + 3.0,
             "low": close - 2.0,

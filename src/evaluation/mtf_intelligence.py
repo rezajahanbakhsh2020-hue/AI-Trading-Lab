@@ -37,6 +37,7 @@ logger = logging.getLogger(__name__)
 class CanonicalTimeframe(str, Enum):
     """Canonical strongly typed domain representation for supported timeframes in Project 1."""
 
+    ONE_MINUTE = "1m"
     FIVE_MINUTES = "5m"
     FIFTEEN_MINUTES = "15m"
     THIRTY_MINUTES = "30m"
@@ -46,14 +47,15 @@ class CanonicalTimeframe(str, Enum):
 
     @property
     def order_rank(self) -> int:
-        """Deterministic ordering index: 5m (0) < 15m (1) < 30m (2) < 1H (3) < 4H (4) < 1D (5)."""
+        """Deterministic ordering index across the seven supported timeframe identities."""
         ranks = {
-            CanonicalTimeframe.FIVE_MINUTES: 0,
-            CanonicalTimeframe.FIFTEEN_MINUTES: 1,
-            CanonicalTimeframe.THIRTY_MINUTES: 2,
-            CanonicalTimeframe.ONE_HOUR: 3,
-            CanonicalTimeframe.FOUR_HOURS: 4,
-            CanonicalTimeframe.ONE_DAY: 5,
+            CanonicalTimeframe.ONE_MINUTE: 0,
+            CanonicalTimeframe.FIVE_MINUTES: 1,
+            CanonicalTimeframe.FIFTEEN_MINUTES: 2,
+            CanonicalTimeframe.THIRTY_MINUTES: 3,
+            CanonicalTimeframe.ONE_HOUR: 4,
+            CanonicalTimeframe.FOUR_HOURS: 5,
+            CanonicalTimeframe.ONE_DAY: 6,
         }
         return ranks[self]
 
@@ -99,6 +101,7 @@ class CanonicalTimeframe(str, Enum):
 
         s = value.strip()
         m = {
+            "1m": cls.ONE_MINUTE,
             "5m": cls.FIVE_MINUTES,
             "15m": cls.FIFTEEN_MINUTES,
             "30m": cls.THIRTY_MINUTES,
@@ -112,13 +115,14 @@ class CanonicalTimeframe(str, Enum):
         if s in m:
             return m[s]
         raise ValueError(
-            f"Unknown or unsupported timeframe '{value}'. Canonical timeframes are: 5m, 15m, 30m, 1H, 4H, 1D."
+            f"Unknown or unsupported timeframe '{value}'. Canonical timeframes are: 1m, 5m, 15m, 30m, 1H, 4H, 1D."
         )
 
     @classmethod
     def canonical_ladder(cls) -> Tuple[CanonicalTimeframe, ...]:
-        """Return the complete canonical six-timeframe ladder in ascending order."""
+        """Return the complete canonical seven-timeframe ladder in ascending order."""
         return (
+            cls.ONE_MINUTE,
             cls.FIVE_MINUTES,
             cls.FIFTEEN_MINUTES,
             cls.THIRTY_MINUTES,

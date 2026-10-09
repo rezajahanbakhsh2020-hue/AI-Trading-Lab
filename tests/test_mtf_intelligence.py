@@ -511,9 +511,12 @@ def test_phase11_exactly_once_evaluation_and_identity_continuity():
         return orig_eval(*args, **kwargs)
 
     timeframes = ["5m", "15m", "30m", "1H", "4H", "1D"]
-    dates = pd.date_range("2026-03-30 10:00", periods=50, freq="5min", tz="UTC")
+    reference_now = pd.Timestamp("2026-03-31T12:00:00Z")
+    interval_durations = {"5m": "5min", "15m": "15min", "30m": "30min", "1H": "1h", "4H": "4h", "1D": "1 day"}
     data_by_tf = {}
     for tf in timeframes:
+        duration = pd.Timedelta(interval_durations[tf])
+        dates = pd.date_range(end=reference_now - duration, periods=50, freq=duration)
         data_by_tf[tf] = pd.DataFrame({
             "openTime": [d.isoformat() for d in dates],
             "open": [2000.0 + i for i in range(50)],
@@ -580,6 +583,7 @@ def test_phase11_exactly_once_evaluation_and_identity_continuity():
                         publisher=mock_pub,
                         publish=True,
                         persist=True,
+                        reference_now=reference_now.to_pydatetime(),
                     )
 
     # 1. Assert EXACTLY ONE evaluation call per timeframe (Anti-recurrence control)

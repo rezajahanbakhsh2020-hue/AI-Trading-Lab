@@ -29,10 +29,12 @@ def _rising_data(rows: int = 80) -> pd.DataFrame:
 
 
 def test_end_to_end_runner_produces_complete_buy_result(tmp_path):
+    data = _rising_data()
     result = run_end_to_end(
-        _rising_data(),
+        data,
         stable_strategy="momentum",
         stability_score=None,
+        reference_now=data["timestamp"].iloc[-1] + pd.Timedelta(days=1),
         store_path=tmp_path / "store.json",
     )
 
@@ -44,10 +46,12 @@ def test_end_to_end_runner_produces_complete_buy_result(tmp_path):
 
 
 def test_end_to_end_runner_contains_trade_levels(tmp_path):
+    data = _rising_data()
     result = run_end_to_end(
-        _rising_data(),
+        data,
         stable_strategy="momentum",
         stability_score=None,
+        reference_now=data["timestamp"].iloc[-1] + pd.Timedelta(days=1),
         store_path=tmp_path / "store.json",
     )
 
@@ -70,6 +74,7 @@ def test_end_to_end_runner_rejects_low_stability_for_release(tmp_path):
         _rising_data(),
         stable_strategy="momentum",
         stability_score=None,
+        reference_now=_rising_data()["timestamp"].iloc[-1] + pd.Timedelta(days=1),
         min_stability_score=0.90,
         store_path=tmp_path / "store.json",
     )
@@ -85,6 +90,7 @@ def test_end_to_end_runner_preserves_symbol_and_interval(tmp_path):
         stability_score=None,
         symbol="XAUUSD",
         interval="1d",
+        reference_now=_rising_data()["timestamp"].iloc[-1] + pd.Timedelta(days=1),
         store_path=tmp_path / "store.json",
     )
 
@@ -101,6 +107,7 @@ def test_end_to_end_runner_exposes_all_pipeline_layers(tmp_path):
         _rising_data(),
         stable_strategy="momentum",
         stability_score=None,
+        reference_now=_rising_data()["timestamp"].iloc[-1] + pd.Timedelta(days=1),
         store_path=tmp_path / "store.json",
     )
 

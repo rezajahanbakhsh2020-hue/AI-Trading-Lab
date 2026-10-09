@@ -285,6 +285,9 @@ def create_live_market_evaluation(
 
     freshness = validate_market_data_freshness(
         data=data,
+        timeframe=context.timeframe,
+        # ``max_age_seconds`` is retained for API compatibility only.
+        # Production signal freshness is authoritative per timeframe.
         max_age_seconds=max_age_seconds,
         reference_now=ref_now,
     )

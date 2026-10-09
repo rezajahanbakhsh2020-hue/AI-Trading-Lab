@@ -56,7 +56,8 @@ def test_build_live_decision_record_preserves_live_values():
 def test_build_live_decision_record_contains_all_record_fields():
     record = build_live_decision_record(_snapshot())
 
-    assert set(record) == set(DECISION_RECORD_FIELDS)
+    assert set(DECISION_RECORD_FIELDS).issubset(record)
+    assert "reason" in record
 
 
 def test_build_live_decision_record_does_not_recalculate_values():

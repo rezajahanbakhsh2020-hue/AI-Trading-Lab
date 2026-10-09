@@ -452,7 +452,7 @@ def _setup_persisted_candidate(
             author="tester",
         ),
         benchmark_reference="benchmark_v1",
-        parameters={"rsi_period": 14, "trend_sma_period": 50},
+        parameters={"momentum_window": 14} if strategy_name == "momentum" else {"rsi_period": 14, "trend_sma_period": 50},
     )
 
     part_is = EvidencePartition(
@@ -841,7 +841,7 @@ def test_live_end_to_end_proof_fails_closed_on_ambiguous_candidates(monkeypatch,
         execution_assumptions=ExecutionAssumptions(transaction_cost=0.0001, slippage=0.0001, latency_ms=10.0),
         code_provenance=CodeProvenance(commit_sha="b" * 40, repository_status="clean", author="tester"),
         benchmark_reference="benchmark_v1",
-        parameters={"rsi_period": 21, "trend_sma_period": 50},
+        parameters={"momentum_window": 21},
     )
     part_is2 = EvidencePartition(
         role=EvidencePartitionRole.IN_SAMPLE,

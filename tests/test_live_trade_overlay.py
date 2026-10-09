@@ -22,6 +22,7 @@ def _rising_data(rows: int = 80) -> pd.DataFrame:
     return pd.DataFrame(
         {
             "timestamp": timestamps,
+            "isOpen": False,
             "open": close - 0.5,
             "high": close + 1.0,
             "low": close - 1.0,
