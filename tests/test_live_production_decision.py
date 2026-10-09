@@ -31,6 +31,7 @@ def test_stable_momentum_and_uptrend_produce_buy_decision():
 
     result = build_live_production_decision(
         data,
+        reference_now=data["timestamp"].iloc[-1] + pd.Timedelta(minutes=5),
         stable_strategy="momentum",
         stability_score=0.7458282289664787,
     )
@@ -56,6 +57,7 @@ def test_stability_score_below_threshold_blocks_trade():
 
     result = build_live_production_decision(
         data,
+        reference_now=data["timestamp"].iloc[-1] + pd.Timedelta(minutes=5),
         stable_strategy="momentum",
         stability_score=0.7458282289664787,
         min_stability_score=0.80,
@@ -72,6 +74,7 @@ def test_unsupported_stable_strategy_blocks_trade():
 
     result = build_live_production_decision(
         data,
+        reference_now=data["timestamp"].iloc[-1] + pd.Timedelta(minutes=5),
         stable_strategy="moving_average",
         stability_score=0.7458282289664787,
     )
@@ -94,6 +97,7 @@ def test_downtrend_blocks_buy_decision():
 
     result = build_live_production_decision(
         data,
+        reference_now=data["timestamp"].iloc[-1] + pd.Timedelta(minutes=5),
         stable_strategy="momentum",
         stability_score=0.7458282289664787,
     )
@@ -114,6 +118,7 @@ def test_no_trade_signal_is_preserved_without_inventing_sell():
 
     result = build_live_production_decision(
         data,
+        reference_now=data["timestamp"].iloc[-1] + pd.Timedelta(minutes=5),
         stable_strategy="momentum",
         stability_score=0.7458282289664787,
     )

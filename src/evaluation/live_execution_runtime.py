@@ -5,6 +5,7 @@ import argparse
 import datetime
 import json
 import logging
+import math
 import signal
 import sys
 import threading
@@ -307,10 +308,17 @@ def resolve_authoritative_promoted_candidate(
 
 def validate_market_data_freshness(
     data: pd.DataFrame,
-    max_age_seconds: float = 300.0,
+    timeframe: str | CanonicalTimeframe,
+    max_age_seconds: float | None = None,
     reference_now: datetime.datetime | None = None,
 ) -> dict[str, Any]:
-    """Validate event-time provenance and freshness of live market data."""
+    """Validate that the latest provider candle is closed and recent enough for a new decision.
+
+    Provider timestamps identify candle opens. ``max_age_seconds`` is the
+    permitted provider/update lateness after the candle's own duration; it is
+    independent of P2's LIVE badge TTL. A closed but old candle cannot
+    authorize a new production evaluation.
+    """
     if reference_now is None:
         now_dt = datetime.datetime.now(datetime.timezone.utc)
     else:
@@ -379,20 +387,24 @@ def validate_market_data_freshness(
             "candle_timestamp": candle_iso,
         }
 
-    if age_seconds > max_age_seconds:
-        return {
-            "fresh": False,
-            "stale": True,
-            "reason": "stale_market_data",
-            "age_seconds": age_seconds,
-            "candle_timestamp": candle_iso,
-        }
+    canonical_tf = CanonicalTimeframe.from_str(timeframe)
+    grace_seconds = 300.0 if max_age_seconds is None else max_age_seconds
+    if isinstance(grace_seconds, bool) or not isinstance(grace_seconds, (int, float)) or not math.isfinite(float(grace_seconds)) or float(grace_seconds) < 0:
+        return {"fresh": False, "stale": True, "reason": "invalid_freshness_policy", "age_seconds": age_seconds, "timeframe": canonical_tf.value, "candle_timestamp": candle_iso}
+    latest_row = data.iloc[-1]
+    if not is_candle_closed(latest_row, canonical_tf, now_dt):
+        return {"fresh": False, "stale": True, "reason": "unclosed_market_data", "age_seconds": age_seconds, "timeframe": canonical_tf.value, "candle_timestamp": candle_iso}
+
+    max_market_age = get_canonical_timeframe_duration(canonical_tf).total_seconds() + float(grace_seconds)
+    if age_seconds > max_market_age:
+        return {"fresh": False, "stale": True, "reason": "stale_market_data", "age_seconds": age_seconds, "max_market_age_seconds": max_market_age, "timeframe": canonical_tf.value, "candle_timestamp": candle_iso}
 
     return {
         "fresh": True,
         "stale": False,
         "reason": "fresh",
         "age_seconds": age_seconds,
+        "timeframe": canonical_tf.value,
         "candle_timestamp": candle_iso,
     }
 
@@ -811,7 +823,9 @@ class LiveExecutionRuntime:
 def get_canonical_timeframe_duration(timeframe: str | CanonicalTimeframe) -> datetime.timedelta:
     """Return exact timedelta duration for a canonical timeframe. Fails closed on unsupported timeframes."""
     tf = CanonicalTimeframe.from_str(timeframe)
-    if tf == CanonicalTimeframe.FIVE_MINUTES:
+    if tf == CanonicalTimeframe.ONE_MINUTE:
+        return datetime.timedelta(minutes=1)
+    elif tf == CanonicalTimeframe.FIVE_MINUTES:
         return datetime.timedelta(minutes=5)
     elif tf == CanonicalTimeframe.FIFTEEN_MINUTES:
         return datetime.timedelta(minutes=15)
@@ -949,7 +963,7 @@ class ContinuousLiveRuntime:
             tf_list = list(timeframes)
 
         # Enforce repository's existing canonical timeframe vocabulary.
-        # Fails closed on unsupported timeframes (e.g. '1m').
+        # Fails closed on unsupported timeframes.
         self.timeframes = tuple(CanonicalTimeframe.from_str(tf).value for tf in tf_list)
 
         self.poll_interval = max(0.0, poll_interval)

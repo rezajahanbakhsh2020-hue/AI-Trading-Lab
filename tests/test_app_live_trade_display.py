@@ -28,6 +28,7 @@ def _rising_data(rows: int = 80) -> pd.DataFrame:
     return pd.DataFrame(
         {
             "timestamp": timestamps,
+            "isOpen": False,
             "open": close - 0.5,
             "high": close + 1.0,
             "low": close - 1.0,
@@ -96,7 +97,7 @@ def test_no_trade_chart_has_no_trade_lines():
     runtime_res = build_live_runtime(
         data,
         stable_strategy="momentum",
-        min_stability_score=None,
+        min_stability_score=1.01,
         persist=False,
     )
 

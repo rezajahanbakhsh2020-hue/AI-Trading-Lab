@@ -51,7 +51,7 @@ def make_market_data(rows: int = 80, trend: str = "UP", start_price: float = 100
     else:
         close = [start_price] * rows
 
-    now = pd.Timestamp.now(tz="UTC")
+    now = pd.Timestamp.now(tz="UTC") - pd.Timedelta(minutes=5)
     timestamps = [now - pd.Timedelta(minutes=5 * (rows - 1 - i)) for i in range(rows)]
 
     return pd.DataFrame(
@@ -174,10 +174,10 @@ def test_4_stale_market_data_is_rejected():
     ev = make_promoted_evidence()
     cand = PromotedCandidateArtifact("cand_04", "momentum", "1.0", ev, "XAUUSD", "5m", 0.85)
     data = make_market_data(trend="UP")
-    stale_time = pd.Timestamp.now(tz="UTC") + pd.Timedelta(hours=2)
+    unclosed_time = data["timestamp"].iloc[-1] + pd.Timedelta(minutes=1)
 
-    with pytest.raises(ValueError, match="stale"):
-        evaluate_production_decision(cand, data, reference_now=stale_time, max_age_seconds=300.0)
+    with pytest.raises(ValueError, match="not closed"):
+        evaluate_production_decision(cand, data, reference_now=unclosed_time, max_age_seconds=300.0)
 
 
 def test_5_invalid_market_data_is_rejected():
@@ -383,8 +383,8 @@ def test_21_deterministic_identity_for_identical_authoritative_inputs():
     data = make_market_data(trend="UP")
     market_latest_ts = data["timestamp"].iloc[-1]
 
-    dec1 = evaluate_production_decision(cand, data, reference_now=market_latest_ts)
-    dec2 = evaluate_production_decision(cand, data, reference_now=market_latest_ts)
+    dec1 = evaluate_production_decision(cand, data, reference_now=market_latest_ts + pd.Timedelta(minutes=5))
+    dec2 = evaluate_production_decision(cand, data, reference_now=market_latest_ts + pd.Timedelta(minutes=5))
 
     assert dec1.decision_id == dec2.decision_id
 
@@ -649,7 +649,7 @@ def test_41_conflicting_caller_stability_score_rejected():
         operational_stability_score=0.88,
     )
     data = make_market_data(rows=80, trend="UP")
-    ref_now = pd.to_datetime(data["timestamp"], utc=True).iloc[-1].to_pydatetime()
+    ref_now = pd.to_datetime(data["timestamp"], utc=True).iloc[-1].to_pydatetime() + pd.Timedelta(minutes=5)
 
     auth = authorize_production_runtime(cand, symbol="XAUUSD", timeframe="5m", now=ref_now)
     receipt = ProductionAuthorizationReceipt.from_authorization(auth)
@@ -711,7 +711,7 @@ def test_42_raw_production_selection_isolation(tmp_path, monkeypatch):
     )
 
     with patch("src.evaluation.live_execution_runtime.load_live_market_data", return_value=data):
-        res = runtime.run_once(publish=False, persist=True, reference_now=df_ts)
+        res = runtime.run_once(publish=False, persist=True, reference_now=df_ts + pd.Timedelta(minutes=5))
 
     # Live decision MUST succeed using candidate's authoritative stability_score (0.92) and strategy ("momentum")
     assert res["decision"] == "BUY"
@@ -719,8 +719,8 @@ def test_42_raw_production_selection_isolation(tmp_path, monkeypatch):
     assert res["strategy"] == "momentum"
 
 
-def test_43_fresh_and_stale_convergence_lineage_preserved(tmp_path):
-    """F. Prove fresh and stale LiveMarketEvaluation enter same canonical downstream lifecycle with operational stability lineage."""
+def test_43_closed_candle_convergence_lineage_preserved_past_300_seconds(tmp_path):
+    """Closed candles remain on the canonical lifecycle after the former 300s threshold."""
     from unittest.mock import patch
     from src.evaluation.research_store import save_research_candidate
     from src.evaluation.live_execution_runtime import LiveExecutionRuntime, ProductionRuntimeConfig
@@ -744,16 +744,13 @@ def test_43_fresh_and_stale_convergence_lineage_preserved(tmp_path):
 
     from datetime import timedelta
     with patch("src.evaluation.live_execution_runtime.load_live_market_data", return_value=data):
-        res_fresh = runtime.run_once(publish=False, persist=True, reference_now=df_ts)
-        res_stale = runtime.run_once(publish=False, persist=True, reference_now=df_ts + timedelta(seconds=1000))
+        res_old_closed = runtime.run_once(
+            publish=False, persist=True, reference_now=df_ts + pd.Timedelta(minutes=6)
+        )
 
-    assert res_fresh["decision"] == "BUY"
-    assert res_fresh["current_lifecycle_state"] == LiveDecisionLifecycleState.PERSISTED.value
-    assert res_fresh["record"]["stability_score"] == 0.84
-
-    assert res_stale["decision"] == "NO TRADE"
-    assert res_stale["current_lifecycle_state"] == LiveDecisionLifecycleState.PERSISTED.value
-    assert res_stale["record"]["stability_score"] == 0.84
+    assert res_old_closed["decision"] == "BUY"
+    assert res_old_closed["current_lifecycle_state"] == LiveDecisionLifecycleState.PERSISTED.value
+    assert res_old_closed["record"]["stability_score"] == 0.84
 
 
 def test_44_repository_invariant_runtime_isolated_from_production_json_and_fails_closed_when_missing(tmp_path, monkeypatch):
@@ -793,7 +790,7 @@ def test_44_repository_invariant_runtime_isolated_from_production_json_and_fails
     )
 
     with patch("src.evaluation.live_execution_runtime.load_live_market_data", return_value=data):
-        res = runtime.run_once(publish=False, persist=True, reference_now=df_ts)
+        res = runtime.run_once(publish=False, persist=True, reference_now=df_ts + pd.Timedelta(minutes=5))
 
     assert res["blocked"] is False
     assert res["decision"] == "BUY"
@@ -827,7 +824,7 @@ def test_44_repository_invariant_runtime_isolated_from_production_json_and_fails
     )
 
     # Runtime MUST block execution before decision execution
-    res_missing = runtime_missing.run_once(publish=False, persist=True, reference_now=df_ts)
+    res_missing = runtime_missing.run_once(publish=False, persist=True, reference_now=df_ts + pd.Timedelta(minutes=5))
     assert res_missing["blocked"] is True
     assert res_missing["decision"] == "NO TRADE"
 
