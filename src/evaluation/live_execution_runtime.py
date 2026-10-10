@@ -389,14 +389,16 @@ def verify_timeframe_production_readiness(
     pub = publisher or Project2Publisher()
     pub_url = pub.publish_url
     pub_enabled = pub.enabled
-    if pub_enabled and not pub_url:
-        return {
-            "timeframe": canonical_tf,
-            "status": "BLOCKED",
-            "reason_code": "PUBLICATION_MISCONFIGURED",
-            "detail": "Project 2 publication is enabled but no publish URL is configured.",
-            "candidate_id": resolved.candidate_id,
-        }
+    pub_key = getattr(pub, "api_key", None)
+    if pub_enabled:
+        if not pub_url or not pub_key or not str(pub_key).strip():
+            return {
+                "timeframe": canonical_tf,
+                "status": "BLOCKED",
+                "reason_code": "PUBLICATION_MISCONFIGURED",
+                "detail": "Project 2 publication is enabled but publish URL or API key is missing or blank.",
+                "candidate_id": resolved.candidate_id,
+            }
 
     return {
         "timeframe": canonical_tf,

@@ -8,6 +8,7 @@ from src.evaluation.live_execution_runtime import (
     ContinuousLiveRuntime,
     ProductionRuntimeConfig,
     parse_continuous_candidate_ids,
+    verify_timeframe_production_readiness,
 )
 from src.evaluation.mtf_intelligence import CanonicalTimeframe
 from src.evaluation.research_store import PromotionUnavailable
@@ -142,3 +143,46 @@ def test_existing_continuous_runtime_behavior_intact(tmp_path) -> None:
 
     cont.run_continuous(max_ticks=2)
     assert len(cont._execution_history) == 2
+
+
+def test_publication_readiness_api_key_and_url_validation(tmp_path: Path) -> None:
+    """Verify preflight readiness detects missing publish URL or API key when publication is enabled."""
+    cand_id = persist_momentum_candidate(tmp_path, candidate_id="cand_pub_test", timeframe="5m")
+
+    # 1. Missing URL
+    pub_no_url = MagicMock(enabled=True, publish_url="", api_key="valid_secret")
+    res1 = verify_timeframe_production_readiness(
+        symbol="XAUUSD", timeframe="5m", candidate_id=cand_id, research_dir=tmp_path, publisher=pub_no_url
+    )
+    assert res1["status"] == "BLOCKED"
+    assert res1["reason_code"] == "PUBLICATION_MISCONFIGURED"
+
+    # 2. Missing API key
+    pub_no_key = MagicMock(enabled=True, publish_url="https://example.com/ingest", api_key=None)
+    res2 = verify_timeframe_production_readiness(
+        symbol="XAUUSD", timeframe="5m", candidate_id=cand_id, research_dir=tmp_path, publisher=pub_no_key
+    )
+    assert res2["status"] == "BLOCKED"
+    assert res2["reason_code"] == "PUBLICATION_MISCONFIGURED"
+
+    # 3. Whitespace API key
+    pub_ws_key = MagicMock(enabled=True, publish_url="https://example.com/ingest", api_key="   ")
+    res3 = verify_timeframe_production_readiness(
+        symbol="XAUUSD", timeframe="5m", candidate_id=cand_id, research_dir=tmp_path, publisher=pub_ws_key
+    )
+    assert res3["status"] == "BLOCKED"
+    assert res3["reason_code"] == "PUBLICATION_MISCONFIGURED"
+
+    # 4. Both present
+    pub_valid = MagicMock(enabled=True, publish_url="https://example.com/ingest", api_key="valid_secret")
+    res4 = verify_timeframe_production_readiness(
+        symbol="XAUUSD", timeframe="5m", candidate_id=cand_id, research_dir=tmp_path, publisher=pub_valid
+    )
+    assert res4["status"] == "READY"
+
+    # 5. Publication disabled
+    pub_disabled = MagicMock(enabled=False, publish_url="", api_key="")
+    res5 = verify_timeframe_production_readiness(
+        symbol="XAUUSD", timeframe="5m", candidate_id=cand_id, research_dir=tmp_path, publisher=pub_disabled
+    )
+    assert res5["status"] == "READY"
