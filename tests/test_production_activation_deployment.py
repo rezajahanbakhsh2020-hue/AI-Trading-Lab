@@ -157,6 +157,15 @@ def test_publication_readiness_api_key_and_url_validation(tmp_path: Path) -> Non
     assert res1["status"] == "BLOCKED"
     assert res1["reason_code"] == "PUBLICATION_MISCONFIGURED"
 
+    # 1b. Whitespace-only URL
+    pub_ws_url = MagicMock(enabled=True, publish_url="   ", api_key="valid_secret")
+    res1b = verify_timeframe_production_readiness(
+        symbol="XAUUSD", timeframe="5m", candidate_id=cand_id, research_dir=tmp_path, publisher=pub_ws_url
+    )
+    assert res1b["status"] == "BLOCKED"
+    assert res1b["reason_code"] == "PUBLICATION_MISCONFIGURED"
+    assert "valid_secret" not in res1b["detail"]
+
     # 2. Missing API key
     pub_no_key = MagicMock(enabled=True, publish_url="https://example.com/ingest", api_key=None)
     res2 = verify_timeframe_production_readiness(

@@ -391,7 +391,7 @@ def verify_timeframe_production_readiness(
     pub_enabled = pub.enabled
     pub_key = getattr(pub, "api_key", None)
     if pub_enabled:
-        if not pub_url or not pub_key or not str(pub_key).strip():
+        if not pub_url or not str(pub_url).strip() or not pub_key or not str(pub_key).strip():
             return {
                 "timeframe": canonical_tf,
                 "status": "BLOCKED",
