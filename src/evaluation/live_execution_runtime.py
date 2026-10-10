@@ -301,6 +301,7 @@ def verify_timeframe_production_readiness(
 
     # 1. Provider interval support check
     provider_interval_map = {
+        "1m": "1m",
         "5m": "5m",
         "15m": "15m",
         "30m": "30m",
@@ -1067,7 +1068,9 @@ class LiveExecutionRuntime:
 def get_canonical_timeframe_duration(timeframe: str | CanonicalTimeframe) -> datetime.timedelta:
     """Return exact timedelta duration for a canonical timeframe. Fails closed on unsupported timeframes."""
     tf = CanonicalTimeframe.from_str(timeframe)
-    if tf == CanonicalTimeframe.FIVE_MINUTES:
+    if tf == CanonicalTimeframe.ONE_MINUTE:
+        return datetime.timedelta(minutes=1)
+    elif tf == CanonicalTimeframe.FIVE_MINUTES:
         return datetime.timedelta(minutes=5)
     elif tf == CanonicalTimeframe.FIFTEEN_MINUTES:
         return datetime.timedelta(minutes=15)

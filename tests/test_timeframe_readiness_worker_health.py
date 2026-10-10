@@ -21,20 +21,19 @@ from src.evaluation.research_store import (
 )
 
 
-def test_six_timeframe_canonical_ladder_and_1m_rejection():
-    """Verify exact six-timeframe ladder and explicit rejection of 1m."""
+def test_seven_timeframe_canonical_ladder_and_1m_support():
+    """Verify exact seven-timeframe ladder including 1m as supported."""
     ladder = CanonicalTimeframe.canonical_ladder()
     ladder_values = [tf.value for tf in ladder]
-    assert len(ladder) == 6
-    assert ladder_values == ["5m", "15m", "30m", "1H", "4H", "1D"]
-    assert "1m" not in ladder_values
+    assert len(ladder) == 7
+    assert ladder_values == ["1m", "5m", "15m", "30m", "1H", "4H", "1D"]
+    assert "1m" in ladder_values
 
-    # Test 1m rejection in readiness check
+    # Test 1m readiness check fails closed to BLOCKED when candidate artifact is missing
     res_1m = verify_timeframe_production_readiness(symbol="XAUUSD", timeframe="1m")
     assert res_1m["timeframe"] == "1m"
     assert res_1m["status"] == "BLOCKED"
-    assert res_1m["reason_code"] == "INVALID_TIMEFRAME"
-    assert "Unknown or unsupported timeframe '1m'" in res_1m["detail"]
+    assert res_1m["reason_code"] == "PromotionUnavailable"
 
 
 def test_canonical_timeframe_casing_normalization():
@@ -66,7 +65,7 @@ def test_canonical_timeframe_casing_normalization():
 
 
 def test_independent_per_timeframe_readiness_matrix():
-    """Verify independent per-timeframe evaluation across the six canonical timeframes."""
+    """Verify independent per-timeframe evaluation across the seven canonical timeframes."""
     matrix = verify_all_canonical_timeframes_readiness(
         symbol="XAUUSD",
         candidate_ids={
@@ -76,7 +75,7 @@ def test_independent_per_timeframe_readiness_matrix():
     )
 
     canonical_tfs = [tf.value for tf in CanonicalTimeframe.canonical_ladder()]
-    assert len(canonical_tfs) == 6
+    assert len(canonical_tfs) == 7
     assert set(matrix.keys()) == set(canonical_tfs)
 
     # 5m and 1D are READY
