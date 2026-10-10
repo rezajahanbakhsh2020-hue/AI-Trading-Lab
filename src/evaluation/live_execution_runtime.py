@@ -283,7 +283,17 @@ def verify_timeframe_production_readiness(
     exact symbol/timeframe scope matching, production authorization receipt construction,
     and publication configuration. Never borrows candidates across timeframes or fabricates data.
     """
-    canonical_tf = CanonicalTimeframe.from_str(timeframe).value
+    try:
+        canonical_tf = CanonicalTimeframe.from_str(timeframe).value
+    except (ValueError, TypeError) as exc:
+        return {
+            "timeframe": str(timeframe),
+            "status": "BLOCKED",
+            "reason_code": "INVALID_TIMEFRAME",
+            "detail": str(exc),
+            "candidate_id": candidate_id,
+        }
+
     r_dir = Path(research_dir)
     ref_now = reference_now if reference_now is not None else datetime.datetime.now(datetime.timezone.utc)
     if ref_now.tzinfo is None:
@@ -291,7 +301,6 @@ def verify_timeframe_production_readiness(
 
     # 1. Provider interval support check
     provider_interval_map = {
-        "1m": "1m",
         "5m": "5m",
         "15m": "15m",
         "30m": "30m",
@@ -410,7 +419,7 @@ def verify_all_canonical_timeframes_readiness(
     reference_now: datetime.datetime | None = None,
     check_provider_data: bool = False,
 ) -> dict[str, dict[str, Any]]:
-    """Evaluate production readiness independently across all seven canonical timeframes."""
+    """Evaluate production readiness independently across all six canonical timeframes."""
     cand_map = candidate_ids or {}
     results = {}
     for tf in CanonicalTimeframe.canonical_ladder():
