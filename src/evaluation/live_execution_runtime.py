@@ -387,16 +387,18 @@ def verify_timeframe_production_readiness(
 
     # 4. Publication configuration check
     pub = publisher or Project2Publisher()
-    pub_url = pub.publish_url
-    pub_enabled = pub.enabled
-    pub_key = getattr(pub, "api_key", None)
-    if pub_enabled:
-        if not pub_url or not str(pub_url).strip() or not pub_key or not str(pub_key).strip():
+    if pub.enabled:
+        from src.integration.project2_publisher import validate_publication_configuration
+        valid_pub_config, pub_config_reason = validate_publication_configuration(
+            pub.publish_url,
+            getattr(pub, "api_key", None),
+        )
+        if not valid_pub_config:
             return {
                 "timeframe": canonical_tf,
                 "status": "BLOCKED",
                 "reason_code": "PUBLICATION_MISCONFIGURED",
-                "detail": "Project 2 publication is enabled but publish URL or API key is missing or blank.",
+                "detail": f"Project 2 publication is enabled but misconfigured: {pub_config_reason}",
                 "candidate_id": resolved.candidate_id,
             }
 

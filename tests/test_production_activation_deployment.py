@@ -195,3 +195,75 @@ def test_publication_readiness_api_key_and_url_validation(tmp_path: Path) -> Non
         symbol="XAUUSD", timeframe="5m", candidate_id=cand_id, research_dir=tmp_path, publisher=pub_disabled
     )
     assert res5["status"] == "READY"
+
+
+INVALID_URLS = [
+    None,
+    "",
+    "   ",
+    "ftp://example.com/ingest",
+    "file:///tmp/signals",
+    "https:///ingest",
+    "https://",
+    "https://[::1",
+    "https://example.com:bad/",
+    "https://exa mple.com/",
+]
+
+VALID_URLS = [
+    "http://example.com/ingest",
+    "https://example.com/ingest",
+    "https://example.com:8443/ingest",
+    "https://127.0.0.1/ingest",
+    "https://[::1]/ingest",
+]
+
+
+@pytest.mark.parametrize("invalid_url", INVALID_URLS)
+def test_readiness_blocks_invalid_publication_urls(tmp_path: Path, invalid_url: object) -> None:
+    """Verify readiness blocks all invalid or malformed publication URLs."""
+    cand_id = persist_momentum_candidate(tmp_path, candidate_id="cand_url_test", timeframe="5m")
+    pub = MagicMock(enabled=True, publish_url=invalid_url, api_key="secret_key_123")
+    res = verify_timeframe_production_readiness(
+        symbol="XAUUSD", timeframe="5m", candidate_id=cand_id, research_dir=tmp_path, publisher=pub
+    )
+    assert res["status"] == "BLOCKED"
+    assert res["reason_code"] == "PUBLICATION_MISCONFIGURED"
+    assert "secret_key_123" not in res["detail"]
+
+
+@pytest.mark.parametrize("valid_url", VALID_URLS)
+def test_readiness_accepts_valid_http_urls(tmp_path: Path, valid_url: str) -> None:
+    """Verify readiness accepts valid HTTP/HTTPS URLs."""
+    cand_id = persist_momentum_candidate(tmp_path, candidate_id="cand_url_valid", timeframe="5m")
+    pub = MagicMock(enabled=True, publish_url=valid_url, api_key="secret_key_123")
+    res = verify_timeframe_production_readiness(
+        symbol="XAUUSD", timeframe="5m", candidate_id=cand_id, research_dir=tmp_path, publisher=pub
+    )
+    assert res["status"] == "READY"
+
+
+def test_api_key_in_url_query_rejected(tmp_path: Path) -> None:
+    """Verify passing API key in query params is rejected without exposing the key."""
+    cand_id = persist_momentum_candidate(tmp_path, candidate_id="cand_query_test", timeframe="5m")
+    pub = MagicMock(enabled=True, publish_url="https://example.com/ingest?key=my_secret_key", api_key="my_secret_key")
+    res = verify_timeframe_production_readiness(
+        symbol="XAUUSD", timeframe="5m", candidate_id=cand_id, research_dir=tmp_path, publisher=pub
+    )
+    assert res["status"] == "BLOCKED"
+    assert res["reason_code"] == "PUBLICATION_MISCONFIGURED"
+    assert "my_secret_key" not in res["detail"]
+
+
+def test_readiness_and_publisher_share_validation_contract() -> None:
+    """Verify validate_publication_configuration is the single shared contract helper."""
+    from src.integration.project2_publisher import validate_publication_configuration
+
+    # Both valid
+    ok, _ = validate_publication_configuration("https://example.com/ingest", "secret")
+    assert ok is True
+
+    # Invalid scheme
+    ok, err = validate_publication_configuration("ftp://example.com/ingest", "secret")
+    assert ok is False
+    assert "scheme" in err.lower()
