@@ -79,7 +79,6 @@ def test_stale_closed_candle_exceeding_provider_grace_is_rejected():
 
 def test_all_canonical_timeframes_use_their_exact_candle_close_boundary():
     cases = [
-        ("1m", 1 * 60),
         ("5m", 5 * 60),
         ("15m", 15 * 60),
         ("30m", 30 * 60),
@@ -122,7 +121,7 @@ def test_provider_open_candle_state_overrides_elapsed_time():
 
 
 def test_timeframe_specific_market_freshness_includes_candle_duration_and_provider_grace():
-    cases = [("1m", 60), ("5m", 300), ("15m", 900), ("30m", 1800), ("1H", 3600), ("4H", 14400), ("1D", 86400)]
+    cases = [("5m", 300), ("15m", 900), ("30m", 1800), ("1H", 3600), ("4H", 14400), ("1D", 86400)]
     for timeframe, duration in cases:
         opened = _now("2026-10-01T00:00:00Z")
         frame = _frame(opened.isoformat())

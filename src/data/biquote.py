@@ -12,7 +12,6 @@ BIQUOTE_BASE_URL = "https://biquote.io"
 XAUUSD_SYMBOL = "XAUUSD"
 
 SUPPORTED_INTERVALS = (
-    "1m",
     "5m",
     "15m",
     "30m",
@@ -89,7 +88,6 @@ def fetch_xauusd_ohlc(
 
     canonical_tf = CanonicalTimeframe.from_str(interval).value
     provider_interval_map = {
-        "1m": "1m",
         "5m": "5m",
         "15m": "15m",
         "30m": "30m",

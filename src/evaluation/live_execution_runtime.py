@@ -1054,9 +1054,7 @@ class LiveExecutionRuntime:
 def get_canonical_timeframe_duration(timeframe: str | CanonicalTimeframe) -> datetime.timedelta:
     """Return exact timedelta duration for a canonical timeframe. Fails closed on unsupported timeframes."""
     tf = CanonicalTimeframe.from_str(timeframe)
-    if tf == CanonicalTimeframe.ONE_MINUTE:
-        return datetime.timedelta(minutes=1)
-    elif tf == CanonicalTimeframe.FIVE_MINUTES:
+    if tf == CanonicalTimeframe.FIVE_MINUTES:
         return datetime.timedelta(minutes=5)
     elif tf == CanonicalTimeframe.FIFTEEN_MINUTES:
         return datetime.timedelta(minutes=15)

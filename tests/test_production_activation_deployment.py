@@ -119,10 +119,10 @@ def test_secrets_never_committed() -> None:
     assert "value:" not in render_text.split("PROJECT2_API_KEY")[1].split("\n")[0]
 
 
-def test_1m_identity_is_supported_but_not_activated_without_promoted_binding() -> None:
-    """1m data identity is supported; production still requires an independently governed binding."""
-    assert CanonicalTimeframe.from_str("1m") is CanonicalTimeframe.ONE_MINUTE
-    assert ContinuousLiveRuntime(symbol="XAUUSD", timeframes=["1m"]).timeframes == ("1m",)
+def test_1m_timeframe_is_rejected_as_non_canonical() -> None:
+    """1m timeframe is non-canonical and fails closed on timeframe parsing."""
+    with pytest.raises(ValueError, match="Unknown or unsupported timeframe '1m'"):
+        CanonicalTimeframe.from_str("1m")
 
 
 def test_existing_continuous_runtime_behavior_intact(tmp_path) -> None:
