@@ -37,7 +37,7 @@ def test_exact_convergence_fresh_and_stale(tmp_path):
         production_config=config,
     )
     with patch("src.evaluation.live_execution_runtime.load_live_market_data", return_value=df):
-        res_buy = runtime_fresh.run_once(publish=False, persist=True, reference_now=df_ts)
+        res_buy = runtime_fresh.run_once(publish=False, persist=True, reference_now=df_ts + pd.Timedelta(minutes=5))
     assert res_buy["decision"] == "BUY"
     assert res_buy["current_lifecycle_state"] == LiveDecisionLifecycleState.PERSISTED.value
 
@@ -73,7 +73,7 @@ def test_single_candidate_resolution_and_authorization(tmp_path):
     )
 
     df = make_buy_market_data()
-    ref_now = pd.to_datetime(df["openTime"], utc=True).iloc[-1].to_pydatetime()
+    ref_now = pd.to_datetime(df["openTime"], utc=True).iloc[-1].to_pydatetime() + pd.Timedelta(minutes=5)
 
     # Pre-build candidate, authorization, and receipt OUTSIDE patch blocks
     from src.evaluation.live_production_decision import ProductionAuthorizationReceipt, authorize_production_runtime

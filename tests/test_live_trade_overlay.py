@@ -12,6 +12,7 @@ def _rising_data(rows: int = 80) -> pd.DataFrame:
         "2026-01-01",
         periods=rows,
         freq="5min",
+        tz="UTC",
     )
 
     close = pd.Series(
@@ -36,7 +37,8 @@ from src.evaluation.live_runtime import build_live_runtime
 
 def test_buy_overlay_contains_all_trade_lines():
     data = _rising_data()
-    ref_now = pd.to_datetime(data["timestamp"], utc=True).iloc[-1].to_pydatetime()
+    data["timestamp"] = pd.to_datetime(data["timestamp"], utc=True)
+    ref_now = data["timestamp"].iloc[-1].to_pydatetime() + pd.Timedelta(minutes=5)
 
     runtime_res = build_live_runtime(
         data,
@@ -66,7 +68,8 @@ def test_buy_overlay_contains_all_trade_lines():
 
 def test_buy_overlay_has_five_visible_lines():
     data = _rising_data()
-    ref_now = pd.to_datetime(data["timestamp"], utc=True).iloc[-1].to_pydatetime()
+    data["timestamp"] = pd.to_datetime(data["timestamp"], utc=True)
+    ref_now = data["timestamp"].iloc[-1].to_pydatetime() + pd.Timedelta(minutes=5)
 
     runtime_res = build_live_runtime(
         data,
@@ -121,7 +124,8 @@ def test_no_trade_overlay_hides_all_trade_lines():
 
 def test_overlay_preserves_strategy_and_stability_metadata():
     data = _rising_data()
-    ref_now = pd.to_datetime(data["timestamp"], utc=True).iloc[-1].to_pydatetime()
+    data["timestamp"] = pd.to_datetime(data["timestamp"], utc=True)
+    ref_now = data["timestamp"].iloc[-1].to_pydatetime() + pd.Timedelta(minutes=5)
 
     runtime_res = build_live_runtime(
         data,
