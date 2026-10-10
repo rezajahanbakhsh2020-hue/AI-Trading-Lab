@@ -724,6 +724,20 @@ class LiveExecutionRuntime:
                 research_dir=self.research_dir,
             )
 
+        # 0. Attempt recovery for any prior pending FAILED_RETRYABLE publication receipts
+        if publish and self.publisher and getattr(self.publisher, "enabled", False):
+            from src.evaluation.live_publication_store import recover_pending_publication_deliveries
+            try:
+                recover_pending_publication_deliveries(
+                    publisher=self.publisher,
+                    publication_path=self.store_path.parent / "publication_history.json",
+                    delivery_path=self.store_path.parent / "delivery_history.json",
+                    decision_store_path=self.store_path,
+                    research_dir=self.research_dir,
+                )
+            except Exception as exc:
+                logger.warning("Pending publication delivery recovery error: %s", exc)
+
         # 1. Resolve candidate EXACTLY ONCE per cycle
         resolved = resolve_authoritative_promoted_candidate(config)
         if isinstance(resolved, ProductionBlocked):
@@ -1477,6 +1491,19 @@ class ContinuousLiveRuntime:
 
         Fails closed with PromotionUnavailable / RuntimeError if any configured timeframe candidate cannot be resolved.
         """
+        if self.publish and self.publisher and getattr(self.publisher, "enabled", False):
+            from src.evaluation.live_publication_store import recover_pending_publication_deliveries
+            try:
+                recover_pending_publication_deliveries(
+                    publisher=self.publisher,
+                    publication_path=self.store_path.parent / "publication_history.json",
+                    delivery_path=self.store_path.parent / "delivery_history.json",
+                    decision_store_path=self.store_path,
+                    research_dir=self.research_dir,
+                )
+            except Exception as exc:
+                logger.warning("Startup pending delivery recovery warning: %s", exc)
+
         readiness_results = {}
         for tf in self.timeframes:
             canonical_tf = CanonicalTimeframe.from_str(tf).value
