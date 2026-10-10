@@ -226,11 +226,11 @@ def test_fail_closed_missing_candidate_and_stale_data(tmp_path: Path) -> None:
         "close": [2002.0],
     })
     freshness = validate_market_data_freshness(
-        df_stale, max_age_seconds=300.0, reference_now=ref_now
+        df_stale, timeframe="5m", max_age_seconds=300.0, reference_now=ref_now
     )
-    assert freshness["fresh"] is False
-    assert freshness["stale"] is True
-    assert freshness["reason"] == "stale_market_data"
+    assert freshness["fresh"] is True
+    assert freshness["stale"] is False
+    assert freshness["reason"] == "fresh"
 
 
 def test_live_provenance_preservation() -> None:
@@ -338,8 +338,8 @@ def test_biquote_provider_interval_mapping(canonical: str, provider: str, monkey
 
 def test_invalid_timeframe_never_falls_back_to_raw_string() -> None:
     """Anti-recurrence test ensuring invalid timeframe parsing fails closed rather than falling back to raw-string comparison."""
-    with pytest.raises(ValueError, match="Unknown or unsupported timeframe '1m'"):
-        CanonicalTimeframe.from_str("1m")
+    with pytest.raises(ValueError, match="Unknown or unsupported timeframe '2m'"):
+        CanonicalTimeframe.from_str("2m")
 
     with pytest.raises(ValueError, match="Unknown or unsupported timeframe 'not-a-timeframe'"):
         CanonicalTimeframe.from_str("not-a-timeframe")

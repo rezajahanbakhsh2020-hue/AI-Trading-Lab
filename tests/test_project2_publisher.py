@@ -1,6 +1,6 @@
 """Tests for Project 2 Outbound Integration Publisher & Delivery Boundary."""
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 import json
 from pathlib import Path
 from unittest.mock import MagicMock, patch
@@ -143,17 +143,74 @@ def test_publisher_skip_no_trade() -> None:
     assert res["published"] is False
 
 
-def test_publisher_stale_detection() -> None:
+def test_publisher_rejects_future_publication_timestamp_with_valid_market_timestamp() -> None:
+    now = datetime.now(timezone.utc)
+    cand, _, _, _, _ = make_test_artifacts()
+    decision = ProductionDecision(
+        candidate_id=cand.candidate_id,
+        evidence_id=cand.evidence.evidence_id,
+        experiment_fingerprint=cand.evidence.experiment_fingerprint,
+        symbol=cand.symbol,
+        timeframe=cand.timeframe,
+        decision_timestamp=(now + timedelta(minutes=1)).isoformat(),
+        market_timestamp=(now - timedelta(minutes=10)).isoformat(),
+        direction=Direction.BUY,
+        reason="future_publication_timestamp_regression",
+        entry_price=2000.0,
+        invalidation_condition="Close below SL",
+        confidence=0.85,
+        parameters=cand.parameters,
+    )
+    signal = ProductionSignal.from_decision(decision)
+    risk = calculate_production_risk_levels(decision, cand)
+    publication = ProductionIntelligencePublication.from_artifacts(
+        decision, signal, risk, cand
+    )
+    publisher = Project2Publisher(
+        enabled=True, publish_url="https://api.example.com/signals", api_key="test-key"
+    )
+
+    result = publisher.publish(publication)
+
+    assert result["status"] == "INVALID_RESPONSE"
+    assert result["published"] is False
+    assert "publication timestamp" in result["reason"].lower()
+    assert "future" in result["reason"].lower()
+
+
+def test_publisher_accepts_valid_old_candle_timestamp() -> None:
+    publisher = Project2Publisher(enabled=False, max_age_seconds=60)
+    valid, status, reason = publisher.validate_timestamp("2020-01-01T00:00:00+00:00")
+    assert valid is True
+    assert status is None
+    assert reason is None
+    assert publisher.is_stale("2020-01-01T00:00:00+00:00") is False
+
+
+@patch("urllib.request.urlopen")
+def test_publisher_delivers_valid_publication_older_than_300_seconds(mock_urlopen) -> None:
+    old_market_ts = (datetime.now(timezone.utc) - timedelta(hours=4)).isoformat()
+    _, _, _, _, pub = make_test_artifacts(mkt_ts=old_market_ts)
+    mock_resp = MagicMock()
+    mock_resp.getcode.return_value = 200
+    mock_resp.read.return_value = json.dumps(
+        {"status": "INGESTED", "event_id": pub.publication_id}
+    ).encode("utf-8")
+    mock_resp.__enter__.return_value = mock_resp
+    mock_urlopen.return_value = mock_resp
+
     publisher = Project2Publisher(
         publish_url="https://api.example.com/signals",
         api_key="test-key",
         enabled=True,
-        max_age_seconds=60,
+        max_age_seconds=300,
     )
-    _, _, _, _, pub = make_test_artifacts(mkt_ts="2020-01-01T00:00:00+00:00")
-    res = publisher.publish(pub)
-    assert res["status"] == "SKIPPED_STALE"
-    assert res["published"] is False
+    result = publisher.publish(pub)
+
+    assert result["status"] == "PUBLISHED"
+    assert result["published"] is True
+    assert result["event_id"] == pub.publication_id
+    assert mock_urlopen.called
 
 
 @patch("urllib.request.urlopen")
@@ -377,7 +434,7 @@ def test_matrix_H_timestamp_freshness_boundaries() -> None:
     res_future = publisher.publish(pub_dict_future)
     assert res_future["status"] == "INVALID_RESPONSE"
 
-    # 4. Older than 300 seconds -> SKIPPED_STALE
+    # 4. Older candle timestamps are valid; the 300-second TTL belongs to UI only.
     stale_dec = ProductionDecision(
         candidate_id=cand.candidate_id,
         evidence_id=cand.evidence.evidence_id,
@@ -401,8 +458,10 @@ def test_matrix_H_timestamp_freshness_boundaries() -> None:
         stale_risk,
         cand,
     )
-    res_stale = publisher.publish(stale_payload)
-    assert res_stale["status"] == "SKIPPED_STALE"
+    valid, status, reason = publisher.validate_timestamp(stale_payload.market_data_timestamp)
+    assert valid is True
+    assert status is None
+    assert reason is None
 
 
 def test_adversarial_arbitrary_dict_and_fake_object_publish_rejected() -> None:

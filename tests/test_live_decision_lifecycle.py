@@ -43,7 +43,7 @@ from src.evaluation.research_store import resolve_promoted_candidate
 
 
 def _data(rows: int = 80) -> pd.DataFrame:
-    timestamps = pd.date_range("2026-01-01", periods=rows, freq="5min")
+    timestamps = pd.date_range("2026-01-01", periods=rows, freq="5min", tz="UTC")
     close = pd.Series([2000.0 + i for i in range(rows)], dtype=float)
     return pd.DataFrame({
         "timestamp": timestamps,
@@ -58,7 +58,7 @@ def _setup_canonical_components():
     candidate = resolve_promoted_candidate(candidate_id="cand_momentum_5m")
     assert candidate is not None
     data = _data()
-    ref_now = data["timestamp"].iloc[-1]
+    ref_now = data["timestamp"].iloc[-1] + pd.Timedelta(minutes=5)
     auth = authorize_production_runtime(candidate, symbol="XAUUSD", timeframe="5m", now=ref_now)
     receipt = ProductionAuthorizationReceipt.from_authorization(auth)
     decision = evaluate_production_decision(candidate, data, reference_now=ref_now)
@@ -329,7 +329,7 @@ def test_display_bypass_regression(monkeypatch):
 # --- Test L: Runtime and Display Identity Parity ---
 def test_runtime_and_display_identity_parity(tmp_path):
     data = _data()
-    ref_now = pd.to_datetime(data["timestamp"], utc=True).iloc[-1].to_pydatetime()
+    ref_now = pd.to_datetime(data["timestamp"], utc=True).iloc[-1].to_pydatetime() + pd.Timedelta(minutes=5)
     res = build_live_runtime(
         data,
         stable_strategy="momentum",

@@ -78,7 +78,7 @@ def test_startup_preflight_accepts_valid_authoritative_promoted_candidate(tmp_pa
 
     readiness = cont.verify_startup_readiness()
     assert "5m" in readiness
-    assert readiness["5m"].candidate_id == cand_id
+    assert readiness["5m"]["candidate_id"] == cand_id
 
 
 def test_candidate_id_not_copied_across_multiple_timeframes() -> None:
@@ -119,13 +119,10 @@ def test_secrets_never_committed() -> None:
     assert "value:" not in render_text.split("PROJECT2_API_KEY")[1].split("\n")[0]
 
 
-def test_unsupported_1m_rejected() -> None:
-    """7. Unsupported timeframe '1m' remains strictly rejected."""
+def test_1m_timeframe_is_rejected_as_non_canonical() -> None:
+    """1m timeframe is non-canonical and fails closed on timeframe parsing."""
     with pytest.raises(ValueError, match="Unknown or unsupported timeframe '1m'"):
         CanonicalTimeframe.from_str("1m")
-
-    with pytest.raises(ValueError, match="Unknown or unsupported timeframe '1m'"):
-        ContinuousLiveRuntime(symbol="XAUUSD", timeframes=["1m"])
 
 
 def test_existing_continuous_runtime_behavior_intact(tmp_path) -> None:

@@ -46,14 +46,14 @@ class CanonicalTimeframe(str, Enum):
 
     @property
     def order_rank(self) -> int:
-        """Deterministic ordering index: 5m (0) < 15m (1) < 30m (2) < 1H (3) < 4H (4) < 1D (5)."""
+        """Deterministic ordering index across the six supported timeframe identities."""
         ranks = {
-            CanonicalTimeframe.FIVE_MINUTES: 0,
-            CanonicalTimeframe.FIFTEEN_MINUTES: 1,
-            CanonicalTimeframe.THIRTY_MINUTES: 2,
-            CanonicalTimeframe.ONE_HOUR: 3,
-            CanonicalTimeframe.FOUR_HOURS: 4,
-            CanonicalTimeframe.ONE_DAY: 5,
+            CanonicalTimeframe.FIVE_MINUTES: 1,
+            CanonicalTimeframe.FIFTEEN_MINUTES: 2,
+            CanonicalTimeframe.THIRTY_MINUTES: 3,
+            CanonicalTimeframe.ONE_HOUR: 4,
+            CanonicalTimeframe.FOUR_HOURS: 5,
+            CanonicalTimeframe.ONE_DAY: 6,
         }
         return ranks[self]
 

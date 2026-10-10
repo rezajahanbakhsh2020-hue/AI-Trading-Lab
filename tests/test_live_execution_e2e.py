@@ -23,7 +23,8 @@ from src.integration.project2_publisher import Project2Publisher
 
 def make_market_data() -> pd.DataFrame:
     now_dt = datetime.datetime.now(datetime.timezone.utc)
-    timestamps = [(now_dt - datetime.timedelta(minutes=5 * (99 - i))).isoformat() for i in range(100)]
+    latest_closed_open = now_dt - datetime.timedelta(minutes=5)
+    timestamps = [(latest_closed_open - datetime.timedelta(minutes=5 * (99 - i))).isoformat() for i in range(100)]
     df = pd.DataFrame({
         "openTime": timestamps,
         "open": [2000.0 + i for i in range(100)],
@@ -148,7 +149,9 @@ def test_end_to_end_pipeline(mock_urlopen, mock_load_data, tmp_path: Path) -> No
         ),
     )
 
-    execution_result = runtime.run_once(publish=True, persist=True)
+    execution_result = runtime.run_once(
+        publish=True, persist=True, reference_now=datetime.datetime.now(datetime.timezone.utc)
+    )
 
     # 1. Verify runtime outputs
     assert execution_result["symbol"] == "XAUUSD"

@@ -36,6 +36,7 @@ from src.evaluation.live_publication_delivery import (
 )
 from src.evaluation.live_publication_store import (
     publish_canonical_live_decision,
+    recover_pending_publication_deliveries,
 )
 from src.evaluation.research_constitution import (
     CodeProvenance,
@@ -51,7 +52,9 @@ from src.evaluation.research_store import resolve_promoted_candidate, save_resea
 from src.integration.project2_publisher import Project2Publisher
 
 
-def create_test_candidate_and_receipt(tmp_path, candidate_id="cand_delivery_test", symbol="XAUUSD"):
+from datetime import datetime, timezone
+
+def create_test_candidate_and_receipt(tmp_path, candidate_id="cand_delivery_test", symbol="XAUUSD", now=None):
     ds = DatasetScope(
         dataset_id=f"ds_{symbol.lower()}_5m",
         symbol=symbol,
@@ -122,7 +125,8 @@ def create_test_candidate_and_receipt(tmp_path, candidate_id="cand_delivery_test
     )
     save_research_candidate(candidate_id=candidate_id, evidence=evidence, operational_stability_score=0.85, base_dir=tmp_path)
     candidate = resolve_promoted_candidate(candidate_id=candidate_id, base_dir=tmp_path)
-    auth = authorize_production_runtime(candidate, symbol=symbol, timeframe="5m")
+    ref_dt = now if now is not None else datetime(2025, 1, 1, 10, 0, tzinfo=timezone.utc)
+    auth = authorize_production_runtime(candidate, symbol=symbol, timeframe="5m", now=ref_dt)
     auth_receipt = ProductionAuthorizationReceipt.from_authorization(auth)
     return candidate, auth_receipt
 
@@ -130,8 +134,8 @@ def create_test_candidate_and_receipt(tmp_path, candidate_id="cand_delivery_test
 def create_persisted_cld(candidate, auth_receipt, direction=Direction.BUY, timestamp_utc="2025-01-01T10:00:00+00:00"):
     decision = ProductionDecision(
         candidate_id=auth_receipt.candidate_id,
-        evidence_id="ev_test",
-        experiment_fingerprint="exp_test",
+        evidence_id=candidate.evidence.evidence_id,
+        experiment_fingerprint=candidate.evidence.experiment_fingerprint,
         symbol=auth_receipt.symbol,
         timeframe=auth_receipt.timeframe,
         decision_timestamp=timestamp_utc,
@@ -139,9 +143,9 @@ def create_persisted_cld(candidate, auth_receipt, direction=Direction.BUY, times
         direction=direction,
         reason="test_decision",
         entry_price=2000.0 if direction == Direction.BUY else None,
-        invalidation_condition="test",
+        invalidation_condition="Close below stop_loss or trend turns DOWN",
         confidence=0.85,
-        parameters={"momentum_window": 10},
+        parameters=candidate.parameters,
     )
     signal = ProductionSignal.from_decision(decision)
     risk = calculate_production_risk_levels(decision, candidate)
@@ -581,10 +585,141 @@ def test_fresh_and_stale_paths_both_reach_same_canonical_publication_function(tm
         with patch("src.evaluation.live_runtime.publish_canonical_live_decision") as mock_runtime_pub:
             mock_runtime_pub.side_effect = publish_canonical_live_decision
 
-            ref_fresh = timestamps[-1].to_pydatetime()
+            ref_fresh = timestamps[-1].to_pydatetime() + pd.Timedelta(minutes=5)
             runtime_fresh.run_once(publish=True, reference_now=ref_fresh)
             assert mock_runtime_pub.call_count == 1
 
             ref_stale = timestamps[-1].to_pydatetime() + pd.Timedelta(seconds=1200)
-            runtime_stale.run_once(publish=True, reference_now=ref_stale)
-            assert mock_runtime_pub.call_count == 2
+            res_stale = runtime_stale.run_once(publish=True, reference_now=ref_stale)
+            # Stale market data safely skips publication to Project 2 at the runtime boundary
+            assert res_stale["publish_result"]["status"] == "SKIPPED_STALE_MARKET_DATA"
+            assert mock_runtime_pub.call_count == 1
+
+
+# N. Recovery trigger: Pending FAILED_RETRYABLE deliveries are recovered across runtime cycles / restarts
+def test_recover_pending_publication_deliveries_re_delivers_successfully(tmp_path):
+    ref_dt = datetime(2025, 1, 1, 10, 0, tzinfo=timezone.utc)
+    candidate, auth_receipt = create_test_candidate_and_receipt(tmp_path, now=ref_dt)
+    pub_path = tmp_path / "publication_history.json"
+    del_path = tmp_path / "delivery_history.json"
+    dec_path = tmp_path / "decision_history.json"
+
+    # Construct PRESENTABLE decision and persist to dec_path
+    from src.evaluation.live_decision_store import persist_canonical_live_decision
+    dec = ProductionDecision(
+        candidate_id=auth_receipt.candidate_id,
+        evidence_id=candidate.evidence.evidence_id,
+        experiment_fingerprint=candidate.evidence.experiment_fingerprint,
+        symbol=auth_receipt.symbol,
+        timeframe=auth_receipt.timeframe,
+        decision_timestamp="2025-01-01T10:00:00+00:00",
+        market_timestamp="2025-01-01T10:00:00+00:00",
+        direction=Direction.BUY,
+        reason="test_decision",
+        entry_price=2000.0,
+        invalidation_condition="Close below stop_loss or trend turns DOWN",
+        confidence=0.85,
+        parameters=candidate.parameters,
+    )
+    sig = ProductionSignal.from_decision(dec)
+    risk = calculate_production_risk_levels(dec, candidate)
+    raw_cld = create_canonical_live_decision(auth_receipt, dec, sig, risk, actor="test", timestamp_utc="2025-01-01T10:00:00+00:00")
+    raw_cld = transition_live_decision(raw_cld, LiveDecisionLifecycleState.EVALUATED, actor="test", timestamp_utc="2025-01-01T10:00:00+00:00")
+    raw_cld = transition_live_decision(raw_cld, LiveDecisionLifecycleState.RISK_VALIDATED, actor="test", timestamp_utc="2025-01-01T10:00:00+00:00")
+    raw_cld = transition_live_decision(raw_cld, LiveDecisionLifecycleState.PRESENTABLE, actor="test", timestamp_utc="2025-01-01T10:00:00+00:00")
+
+    cld = persist_canonical_live_decision(raw_cld, dec_path, timestamp_utc="2025-01-01T10:00:00+00:00")
+
+    # 1. First publish attempt fails retryably (e.g. TIMED_OUT)
+    mock_failing_pub = MagicMock()
+    mock_failing_pub.publish.return_value = {"status": "TIMED_OUT", "published": False, "error": "HTTP timeout"}
+
+    published_cld, _, pub_res = publish_canonical_live_decision(
+        canonical_decision=cld,
+        publisher=mock_failing_pub,
+        candidate=candidate,
+        path=pub_path,
+        delivery_path=del_path,
+    )
+    assert published_cld.current_state == LiveDecisionLifecycleState.PERSISTED
+    assert pub_res["delivery_status"] == "FAILED_RETRYABLE"
+
+    receipts = load_delivery_history(del_path)
+    assert len(receipts) == 1
+    assert receipts[0].delivery_status == DeliveryStatus.FAILED_RETRYABLE
+    assert receipts[0].attempt_count == 1
+
+    # 2. Process restart / Recovery trigger runs with working publisher
+    mock_recovered_pub = MagicMock()
+    mock_recovered_pub.publish.return_value = {
+        "status": "PUBLISHED",
+        "published": True,
+        "http_code": 200,
+        "event_id": cld.decision.decision_id,
+        "publication_id": cld.decision.decision_id,
+    }
+
+    recovery_results = recover_pending_publication_deliveries(
+        publisher=mock_recovered_pub,
+        publication_path=pub_path,
+        delivery_path=del_path,
+        decision_store_path=dec_path,
+        research_dir=tmp_path,
+        max_retries=3,
+    )
+
+    assert len(recovery_results) == 1
+    assert recovery_results[0]["status"] == "PUBLISHED"
+    assert recovery_results[0]["delivery_status"] == "DELIVERED"
+
+    updated_receipts = load_delivery_history(del_path)
+    assert len(updated_receipts) == 1
+    assert updated_receipts[0].delivery_status == DeliveryStatus.DELIVERED
+    assert updated_receipts[0].attempt_count == 2
+
+
+# O. Recovery trigger: Exhausted retries mark receipt as FAILED_PERMANENT
+def test_recover_pending_publication_deliveries_exhaustion_marks_permanent(tmp_path):
+    candidate, auth_receipt = create_test_candidate_and_receipt(tmp_path)
+    cld = create_persisted_cld(candidate, auth_receipt)
+
+    pub_path = tmp_path / "publication_history.json"
+    del_path = tmp_path / "delivery_history.json"
+    dec_path = tmp_path / "decision_history.json"
+
+    # Pre-populate delivery receipt with attempt_count = 3 (max_retries = 3)
+    exhausted_receipt = PublicationDeliveryReceipt(
+        publication_id="pub_exhaust_123",
+        decision_id=cld.decision.decision_id,
+        signal_id=cld.signal.signal_id,
+        canonical_live_decision_fingerprint=cld.canonical_live_decision_fingerprint,
+        runtime_authorization_fingerprint=auth_receipt.authorization_fingerprint,
+        candidate_id=candidate.candidate_id,
+        strategy_name="momentum",
+        strategy_version="1.0",
+        symbol="XAUUSD",
+        timeframe="5m",
+        delivery_status=DeliveryStatus.FAILED_RETRYABLE,
+        attempt_count=3,
+        first_attempt_at_utc="2025-01-01T10:00:00+00:00",
+        last_attempt_at_utc="2025-01-01T10:05:00+00:00",
+    )
+    append_delivery_receipt(exhausted_receipt, del_path)
+
+    mock_pub = MagicMock()
+    results = recover_pending_publication_deliveries(
+        publisher=mock_pub,
+        publication_path=pub_path,
+        delivery_path=del_path,
+        decision_store_path=dec_path,
+        research_dir=tmp_path,
+        max_retries=3,
+    )
+
+    assert len(results) == 1
+    assert results[0]["status"] == "FAILED_PERMANENT"
+    assert "exhausted" in results[0]["reason"].lower()
+
+    updated_receipts = load_delivery_history(del_path)
+    assert updated_receipts[0].delivery_status == DeliveryStatus.FAILED_PERMANENT
+    assert mock_pub.publish.call_count == 0

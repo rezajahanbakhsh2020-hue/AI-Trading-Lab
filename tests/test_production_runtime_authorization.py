@@ -320,7 +320,7 @@ def test_runtime_persistence_contains_complete_lineage(tmp_path):
     )
 
     now_dt = datetime(2026, 1, 1, 12, 0, 0, tzinfo=timezone.utc)
-    candle_ts = now_dt.isoformat()
+    candle_ts = (now_dt - pd.Timedelta(minutes=5)).isoformat()
     mock_df = pd.DataFrame([{
         "openTime": candle_ts,
         "timestamp": pd.to_datetime(candle_ts),

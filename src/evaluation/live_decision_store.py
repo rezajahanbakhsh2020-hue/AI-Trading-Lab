@@ -300,6 +300,8 @@ def persist_canonical_live_decision(
         "interval": receipt.timeframe,
         "signal": 1 if dec.direction == Direction.BUY else 0,
         "signal_label": dec.direction.value,
+        "reason": dec.reason,
+        "invalidation_condition": dec.invalidation_condition,
         "trend": "UP" if dec.direction == Direction.BUY else "NEUTRAL",
         "strategy": receipt.strategy_name,
         "entry_price": risk.entry_price,

@@ -314,7 +314,9 @@ def test_provider_capability_registry_custom_adapter(monkeypatch) -> None:
 
 @patch("src.evaluation.live_execution_runtime.load_live_market_data")
 def test_live_execution_runtime_run_once(mock_load_data, tmp_path) -> None:
-    mock_load_data.return_value = make_dummy_df()
+    dummy_df = make_dummy_df()
+    mock_load_data.return_value = dummy_df
+    ref_now = pd.to_datetime(dummy_df["openTime"], utc=True).iloc[-1].to_pydatetime() + pd.Timedelta(minutes=5)
 
     mock_publisher = MagicMock()
     mock_publisher.publish.return_value = {
@@ -332,7 +334,7 @@ def test_live_execution_runtime_run_once(mock_load_data, tmp_path) -> None:
         production_config=production_config_for(tmp_path),
     )
 
-    result = runtime.run_once(publish=True)
+    result = runtime.run_once(publish=True, reference_now=ref_now)
 
     assert result["symbol"] == "XAUUSD"
     assert result["interval"] == "5m"
@@ -409,7 +411,7 @@ def test_live_execution_runtime_buy_signal_field_propagation(
     )
 
     df = mock_load_data.return_value
-    ref_now = pd.to_datetime(df["openTime"], utc=True, errors="coerce").iloc[-1].to_pydatetime()
+    ref_now = pd.to_datetime(df["openTime"], utc=True, errors="coerce").iloc[-1].to_pydatetime() + pd.Timedelta(minutes=5)
 
     result = runtime.run_once(publish=True, persist=True, reference_now=ref_now)
 
@@ -578,13 +580,13 @@ def test_live_execution_runtime_freshness_boundary_conditions(
         production_config=production_config_for(tmp_path),
     )
 
-    # 1. age = 299s <= 300s -> FRESH -> BUY
-    res_fresh = runtime.run_once(publish=False, persist=False, reference_now=df_ts + pd.Timedelta(seconds=299))
+    # 1. age after close = 299s <= 300s max_age -> FRESH -> BUY
+    res_fresh = runtime.run_once(publish=False, persist=False, reference_now=df_ts + pd.Timedelta(minutes=5) + pd.Timedelta(seconds=299))
     assert res_fresh["decision"] == "BUY"
     assert res_fresh["record"]["quote_stale"] is False
 
-    # 2. age = 301s > 300s -> STALE -> NO TRADE
-    res_stale = runtime.run_once(publish=False, persist=False, reference_now=df_ts + pd.Timedelta(seconds=301))
+    # 2. age after close = 301s > 300s max_age -> STALE -> NO TRADE
+    res_stale = runtime.run_once(publish=False, persist=False, reference_now=df_ts + pd.Timedelta(minutes=5) + pd.Timedelta(seconds=301))
     assert res_stale["decision"] == "NO TRADE"
     assert res_stale["record"]["quote_stale"] is True
 
@@ -599,7 +601,7 @@ def test_live_execution_runtime_persistence_freshness_isolation(
     """Verify that latest_execution.json snapshot is cleanly overwritten on every execution cycle with current publish results."""
     df = make_dummy_df()
     mock_load_data.return_value = df
-    ref_now = pd.to_datetime(df["openTime"], utc=True, errors="coerce").iloc[-1].to_pydatetime()
+    ref_now = pd.to_datetime(df["openTime"], utc=True, errors="coerce").iloc[-1].to_pydatetime() + pd.Timedelta(minutes=5)
 
     # Setup mock HTTP response for successful publish
     mock_resp = MagicMock()
@@ -708,7 +710,7 @@ def test_runtime_injected_snapshot_without_market_provider(tmp_path) -> None:
     )
 
     injected_df = make_buy_market_data()
-    ref_now = pd.to_datetime(injected_df["openTime"], utc=True).iloc[-1].to_pydatetime()
+    ref_now = pd.to_datetime(injected_df["openTime"], utc=True).iloc[-1].to_pydatetime() + pd.Timedelta(minutes=5)
 
     with patch("src.evaluation.live_execution_runtime.load_live_market_data") as mock_load:
         mock_load.side_effect = AssertionError("load_live_market_data must NOT be called when market_data is supplied")
@@ -741,7 +743,7 @@ def test_normal_runtime_path_fetches_once(tmp_path) -> None:
     )
 
     df = make_buy_market_data()
-    ref_now = pd.to_datetime(df["openTime"], utc=True).iloc[-1].to_pydatetime()
+    ref_now = pd.to_datetime(df["openTime"], utc=True).iloc[-1].to_pydatetime() + pd.Timedelta(minutes=5)
 
     with patch("src.evaluation.live_execution_runtime.load_live_market_data", return_value=df) as mock_load:
         res = runtime.run_once(
@@ -820,7 +822,7 @@ def test_mutation_isolation_on_injected_snapshot(tmp_path) -> None:
     )
 
     df = make_buy_market_data()
-    ref_now = pd.to_datetime(df["openTime"], utc=True).iloc[-1].to_pydatetime()
+    ref_now = pd.to_datetime(df["openTime"], utc=True).iloc[-1].to_pydatetime() + pd.Timedelta(minutes=5)
     original_close = df["close"].iloc[-1]
 
     res = runtime.run_once(publish=False, persist=True, reference_now=ref_now, market_data=df)
@@ -872,7 +874,7 @@ def test_acquisition_boundary_loader_success_and_ordering(tmp_path) -> None:
     )
 
     df = make_buy_market_data()
-    ref_now = pd.to_datetime(df["openTime"], utc=True).iloc[-1].to_pydatetime()
+    ref_now = pd.to_datetime(df["openTime"], utc=True).iloc[-1].to_pydatetime() + pd.Timedelta(minutes=5)
 
     event_log: list[str] = []
 
@@ -1141,7 +1143,7 @@ def test_publication_construction_exception_preserves_persisted_decision(tmp_pat
     )
 
     df = make_buy_market_data()
-    ref_now = pd.to_datetime(df["openTime"], utc=True).iloc[-1].to_pydatetime()
+    ref_now = pd.to_datetime(df["openTime"], utc=True).iloc[-1].to_pydatetime() + pd.Timedelta(minutes=5)
 
     with patch("src.evaluation.live_production_decision.ProductionIntelligencePublication.from_artifacts") as mock_from_artifacts:
         mock_from_artifacts.side_effect = ValueError("Publication construction error")
@@ -1173,7 +1175,7 @@ def test_failure_before_persistence_yields_blocked_no_trade_no_history(tmp_path)
     )
 
     df = make_buy_market_data()
-    ref_now = pd.to_datetime(df["openTime"], utc=True).iloc[-1].to_pydatetime()
+    ref_now = pd.to_datetime(df["openTime"], utc=True).iloc[-1].to_pydatetime() + pd.Timedelta(minutes=5)
 
     # Trigger exception in strategy evaluation BEFORE persistence
     with patch("src.evaluation.live_runtime.evaluate_production_decision") as mock_eval_dec:
@@ -1204,7 +1206,7 @@ def test_failure_during_publication_after_persistence_preserves_persisted_decisi
     )
 
     df = make_buy_market_data()
-    ref_now = pd.to_datetime(df["openTime"], utc=True).iloc[-1].to_pydatetime()
+    ref_now = pd.to_datetime(df["openTime"], utc=True).iloc[-1].to_pydatetime() + pd.Timedelta(minutes=5)
 
     res = runtime.run_once(publish=True, persist=True, market_data=df, reference_now=ref_now)
 

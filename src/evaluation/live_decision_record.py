@@ -74,6 +74,7 @@ def build_live_decision_record(
         "interval": snapshot.get("interval"),
         "signal": signal,
         "signal_label": signal_label,
+        "reason": snapshot.get("reason"),
         "trend": snapshot.get("trend"),
         "strategy": snapshot.get("strategy"),
         "entry_price": snapshot.get("entry_price"),

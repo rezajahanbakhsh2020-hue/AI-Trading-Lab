@@ -81,9 +81,10 @@ class Project2Publisher:
         if age_seconds < 0:
             return False, "INVALID_RESPONSE", f"Future event timestamp '{ts_str}' relative to '{now_dt.isoformat()}'"
 
-        if age_seconds > self.max_age_seconds:
-            return False, "SKIPPED_STALE", f"Event timestamp '{ts_str}' age ({age_seconds:.1f}s) exceeds max_age_seconds={self.max_age_seconds}"
-
+        # IMPORTANT:
+        # Publication validity is NOT governed by the 300-second UI LIVE badge.
+        # A valid authoritative signal remains publishable/displayable after
+        # 300 seconds.  P2 owns the 300-second LIVE indicator semantics.
         return True, None, None
 
     def is_stale(self, timestamp_iso: str) -> bool:
@@ -187,6 +188,17 @@ class Project2Publisher:
                 "published": False,
                 "reason": ts_reason,
                 "error": ts_reason,
+            }
+
+        provenance = payload_dict.get("provenance")
+        produced_at = provenance.get("produced_at") if isinstance(provenance, dict) else None
+        publication_ts_valid, publication_ts_status, publication_ts_reason = self.validate_timestamp(produced_at)
+        if not publication_ts_valid:
+            return {
+                "status": publication_ts_status,
+                "published": False,
+                "reason": f"Invalid authoritative publication timestamp: {publication_ts_reason}",
+                "error": publication_ts_reason,
             }
 
         body_bytes = json.dumps(payload_dict, separators=(",", ":")).encode("utf-8")

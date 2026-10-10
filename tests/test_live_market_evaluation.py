@@ -46,7 +46,7 @@ def test_fresh_market_evaluation_creation(tmp_path):
     df = make_buy_market_data()
     # Align latest timestamp close to ref_now
     df_ts = pd.to_datetime(df["openTime"], utc=True).iloc[-1].to_pydatetime()
-    evaluation = create_live_market_evaluation(df, context, reference_now=df_ts + datetime.timedelta(seconds=10))
+    evaluation = create_live_market_evaluation(df, context, reference_now=df_ts + datetime.timedelta(minutes=5))
 
     assert evaluation.fresh is True
     assert evaluation.freshness_status is True
