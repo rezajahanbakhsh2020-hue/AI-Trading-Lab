@@ -73,6 +73,12 @@ class ProductionAuthorizationReceipt:
         if not self.timeframe or not str(self.timeframe).strip():
             raise ProductionRuntimeAuthorizationError("timeframe must be a non-empty string.")
 
+        try:
+            from src.evaluation.mtf_intelligence import CanonicalTimeframe
+            canonical_tf = CanonicalTimeframe.from_str(self.timeframe).value
+        except (ValueError, TypeError) as exc:
+            raise ProductionRuntimeAuthorizationError(f"Invalid timeframe '{self.timeframe}': {exc}")
+
         if not self.promoted_artifact_fingerprint or not str(self.promoted_artifact_fingerprint).strip():
             raise ProductionRuntimeAuthorizationError("promoted_artifact_fingerprint must be a non-empty string.")
         if not self.governance_decision_fingerprint or not str(self.governance_decision_fingerprint).strip():
@@ -96,7 +102,7 @@ class ProductionAuthorizationReceipt:
         object.__setattr__(self, "strategy_name", str(self.strategy_name).strip())
         object.__setattr__(self, "strategy_version", str(self.strategy_version).strip())
         object.__setattr__(self, "symbol", str(self.symbol).strip().upper())
-        object.__setattr__(self, "timeframe", str(self.timeframe).strip())
+        object.__setattr__(self, "timeframe", canonical_tf)
         object.__setattr__(self, "promoted_artifact_fingerprint", str(self.promoted_artifact_fingerprint).strip())
         object.__setattr__(self, "governance_decision_fingerprint", str(self.governance_decision_fingerprint).strip())
         object.__setattr__(self, "authorization_policy_version", str(self.authorization_policy_version).strip())
@@ -255,19 +261,26 @@ def authorize_production_runtime(
 
     # 2. Scope validation
     req_symbol = str(symbol).strip().upper() if symbol else ""
-    req_timeframe = str(timeframe).strip() if timeframe else ""
+    raw_timeframe = str(timeframe).strip() if timeframe else ""
     if not req_symbol:
         raise ProductionRuntimeAuthorizationError("symbol must be a non-empty string.")
-    if not req_timeframe:
+    if not raw_timeframe:
         raise ProductionRuntimeAuthorizationError("timeframe must be a non-empty string.")
+
+    try:
+        from src.evaluation.mtf_intelligence import CanonicalTimeframe
+        req_tf = CanonicalTimeframe.from_str(raw_timeframe).value
+        cand_tf = CanonicalTimeframe.from_str(promoted_candidate.timeframe).value
+    except (ValueError, TypeError) as exc:
+        raise ProductionRuntimeAuthorizationError(f"Invalid timeframe: {exc}")
 
     if promoted_candidate.symbol.upper() != req_symbol:
         raise ProductionRuntimeAuthorizationError(
             f"Candidate symbol '{promoted_candidate.symbol}' does not match requested symbol '{req_symbol}'."
         )
-    if promoted_candidate.timeframe != req_timeframe:
+    if cand_tf != req_tf:
         raise ProductionRuntimeAuthorizationError(
-            f"Candidate timeframe '{promoted_candidate.timeframe}' does not match requested timeframe '{req_timeframe}'."
+            f"Candidate timeframe '{promoted_candidate.timeframe}' does not match requested timeframe '{raw_timeframe}'."
         )
 
     # 3. Governance decision fingerprint mandatory check
@@ -298,7 +311,7 @@ def authorize_production_runtime(
         strategy_name=promoted_candidate.strategy_name,
         strategy_version=promoted_candidate.strategy_version,
         symbol=req_symbol,
-        timeframe=req_timeframe,
+        timeframe=req_tf,
         promoted_artifact_fingerprint=art_fp,
         governance_decision_fingerprint=str(gov_fp).strip(),
         campaign_selection_decision_fingerprint=promoted_candidate.campaign_selection_decision_fingerprint,
@@ -699,6 +712,12 @@ class ProductionDecision:
             raise ValueError("symbol must be a non-empty string.")
         if not self.timeframe or not self.timeframe.strip():
             raise ValueError("timeframe must be a non-empty string.")
+        try:
+            from src.evaluation.mtf_intelligence import CanonicalTimeframe
+            canonical_tf = CanonicalTimeframe.from_str(self.timeframe).value
+            object.__setattr__(self, "timeframe", canonical_tf)
+        except (ValueError, TypeError) as exc:
+            raise ValueError(f"Invalid timeframe '{self.timeframe}': {exc}")
         if not self.decision_timestamp or not self.decision_timestamp.strip():
             raise ValueError("decision_timestamp must be a non-empty string.")
         if self.market_timestamp is not None:

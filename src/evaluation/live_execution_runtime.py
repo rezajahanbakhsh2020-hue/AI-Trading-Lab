@@ -283,7 +283,17 @@ def verify_timeframe_production_readiness(
     exact symbol/timeframe scope matching, production authorization receipt construction,
     and publication configuration. Never borrows candidates across timeframes or fabricates data.
     """
-    canonical_tf = CanonicalTimeframe.from_str(timeframe).value
+    try:
+        canonical_tf = CanonicalTimeframe.from_str(timeframe).value
+    except (ValueError, TypeError) as exc:
+        return {
+            "timeframe": str(timeframe),
+            "status": "BLOCKED",
+            "reason_code": "INVALID_TIMEFRAME",
+            "detail": str(exc),
+            "candidate_id": candidate_id,
+        }
+
     r_dir = Path(research_dir)
     ref_now = reference_now if reference_now is not None else datetime.datetime.now(datetime.timezone.utc)
     if ref_now.tzinfo is None:
@@ -291,7 +301,6 @@ def verify_timeframe_production_readiness(
 
     # 1. Provider interval support check
     provider_interval_map = {
-        "1m": "1m",
         "5m": "5m",
         "15m": "15m",
         "30m": "30m",
@@ -378,16 +387,20 @@ def verify_timeframe_production_readiness(
 
     # 4. Publication configuration check
     pub = publisher or Project2Publisher()
-    pub_url = pub.publish_url
-    pub_enabled = pub.enabled
-    if pub_enabled and not pub_url:
-        return {
-            "timeframe": canonical_tf,
-            "status": "BLOCKED",
-            "reason_code": "PUBLICATION_MISCONFIGURED",
-            "detail": "Project 2 publication is enabled but no publish URL is configured.",
-            "candidate_id": resolved.candidate_id,
-        }
+    if pub.enabled:
+        from src.integration.project2_publisher import validate_publication_configuration
+        valid_pub_config, pub_config_reason = validate_publication_configuration(
+            pub.publish_url,
+            getattr(pub, "api_key", None),
+        )
+        if not valid_pub_config:
+            return {
+                "timeframe": canonical_tf,
+                "status": "BLOCKED",
+                "reason_code": "PUBLICATION_MISCONFIGURED",
+                "detail": f"Project 2 publication is enabled but misconfigured: {pub_config_reason}",
+                "candidate_id": resolved.candidate_id,
+            }
 
     return {
         "timeframe": canonical_tf,
@@ -410,7 +423,7 @@ def verify_all_canonical_timeframes_readiness(
     reference_now: datetime.datetime | None = None,
     check_provider_data: bool = False,
 ) -> dict[str, dict[str, Any]]:
-    """Evaluate production readiness independently across all seven canonical timeframes."""
+    """Evaluate production readiness independently across all six canonical timeframes."""
     cand_map = candidate_ids or {}
     results = {}
     for tf in CanonicalTimeframe.canonical_ladder():

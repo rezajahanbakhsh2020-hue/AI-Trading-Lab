@@ -21,37 +21,104 @@ from src.evaluation.research_store import (
 )
 
 
-def test_verify_timeframe_production_readiness_valid_5m(tmp_path: Path):
-    """Verify that a valid 5m candidate passes preflight readiness with status READY."""
-    res = verify_timeframe_production_readiness(
+def test_six_timeframe_canonical_ladder_and_1m_rejection():
+    """Verify exact six-timeframe ladder and explicit rejection of 1m."""
+    ladder = CanonicalTimeframe.canonical_ladder()
+    ladder_values = [tf.value for tf in ladder]
+    assert len(ladder) == 6
+    assert ladder_values == ["5m", "15m", "30m", "1H", "4H", "1D"]
+    assert "1m" not in ladder_values
+
+    # Test 1m rejection in readiness check
+    res_1m = verify_timeframe_production_readiness(symbol="XAUUSD", timeframe="1m")
+    assert res_1m["timeframe"] == "1m"
+    assert res_1m["status"] == "BLOCKED"
+    assert res_1m["reason_code"] == "INVALID_TIMEFRAME"
+    assert "Unknown or unsupported timeframe '1m'" in res_1m["detail"]
+
+
+def test_canonical_timeframe_casing_normalization():
+    """Verify casing/normalization rules (e.g. 1d vs 1D, 4h vs 4H)."""
+    # 1D uppercase request with 1d lowercase candidate artifact
+    res_1D = verify_timeframe_production_readiness(
         symbol="XAUUSD",
-        timeframe="5m",
-        candidate_id="cand_moving_average_5m",
-        research_dir=tmp_path,
+        timeframe="1D",
+        candidate_id="cand_moving_average_1d",
     )
-    assert res["timeframe"] == "5m"
-    assert res["status"] in ("READY", "BLOCKED")
+    assert res_1D["status"] == "READY"
+    assert res_1D["reason_code"] == "READY"
+    assert res_1D["candidate_id"] == "cand_moving_average_1d"
+
+    # 1d lowercase request with 1d lowercase candidate artifact
+    res_1d = verify_timeframe_production_readiness(
+        symbol="XAUUSD",
+        timeframe="1d",
+        candidate_id="cand_moving_average_1d",
+    )
+    assert res_1d["status"] == "READY"
+    assert res_1d["reason_code"] == "READY"
+
+    # Check CanonicalTimeframe.from_str normalization
+    assert CanonicalTimeframe.from_str("1d") == CanonicalTimeframe.ONE_DAY
+    assert CanonicalTimeframe.from_str("1D") == CanonicalTimeframe.ONE_DAY
+    assert CanonicalTimeframe.from_str("4h") == CanonicalTimeframe.FOUR_HOURS
+    assert CanonicalTimeframe.from_str("4H") == CanonicalTimeframe.FOUR_HOURS
 
 
-def test_verify_all_canonical_timeframes_readiness_matrix(tmp_path: Path):
-    """Verify all seven canonical timeframes are evaluated independently in preflight matrix."""
+def test_independent_per_timeframe_readiness_matrix():
+    """Verify independent per-timeframe evaluation across the six canonical timeframes."""
     matrix = verify_all_canonical_timeframes_readiness(
         symbol="XAUUSD",
         candidate_ids={
             "5m": "cand_moving_average_5m",
             "1D": "cand_moving_average_1d",
         },
-        research_dir=tmp_path,
     )
 
     canonical_tfs = [tf.value for tf in CanonicalTimeframe.canonical_ladder()]
+    assert len(canonical_tfs) == 6
     assert set(matrix.keys()) == set(canonical_tfs)
 
-    for tf in canonical_tfs:
-        row = matrix[tf]
-        assert row["timeframe"] == tf
-        assert row["status"] in ("READY", "BLOCKED")
-        assert "reason_code" in row
+    # 5m and 1D are READY
+    assert matrix["5m"]["status"] == "READY"
+    assert matrix["5m"]["candidate_id"] == "cand_moving_average_5m"
+
+    assert matrix["1D"]["status"] == "READY"
+    assert matrix["1D"]["candidate_id"] == "cand_moving_average_1d"
+
+    # Unpromoted timeframes (15m, 30m, 1H, 4H) must be BLOCKED with PromotionUnavailable
+    for unpromoted_tf in ("15m", "30m", "1H", "4H"):
+        row = matrix[unpromoted_tf]
+        assert row["status"] == "BLOCKED"
+        assert row["reason_code"] == "PromotionUnavailable"
+        assert row["candidate_id"] is None
+
+
+def test_mismatched_candidate_scope_rejection():
+    """Verify candidate from another timeframe is rejected without borrowing or automatic substitution."""
+    # Attempting to use a 5m candidate for 15m timeframe
+    res = verify_timeframe_production_readiness(
+        symbol="XAUUSD",
+        timeframe="15m",
+        candidate_id="cand_moving_average_5m",
+    )
+    assert res["status"] == "BLOCKED"
+    assert res["reason_code"] in ("TIMEFRAME_IDENTITY_MISMATCH", "PromotionEligibilityError")
+
+
+def test_render_worker_configuration_truthfulness():
+    """Verify render.yaml worker configuration matches verified READY timeframes without unverified mappings."""
+    render_yaml_path = Path("render.yaml")
+    assert render_yaml_path.exists()
+    content = render_yaml_path.read_text(encoding="utf-8")
+
+    # Worker configured ONLY for verified READY timeframes (5m, 1D)
+    assert "--timeframes 5m,1D" in content
+    assert "--candidate-id 5m=cand_moving_average_5m,1D=cand_moving_average_1d" in content
+
+    # Worker MUST NOT include unpromoted timeframes
+    for unpromoted in ("15m", "30m", "1H", "4H"):
+        assert unpromoted not in content.split("--timeframes")[1].split(" ")[1]
 
 
 def test_worker_health_diagnostics_states():
