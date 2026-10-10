@@ -30,8 +30,6 @@ def validate_publication_configuration(
 
     Returns (is_valid, safe_reason_or_message).
     """
-    from urllib.parse import urlparse
-
     if api_key is None or not str(api_key).strip():
         return False, "Missing PROJECT2_API_KEY configuration"
 
@@ -44,21 +42,23 @@ def validate_publication_configuration(
     try:
         parsed = urlparse(url_str)
         if not parsed.scheme or parsed.scheme.lower() not in ("http", "https"):
-            return False, f"Invalid PROJECT2_PUBLISH_URL scheme: '{parsed.scheme}'"
+            return False, "Invalid PROJECT2_PUBLISH_URL scheme (must be http or https)"
         if not parsed.netloc:
-            return False, f"Invalid PROJECT2_PUBLISH_URL missing host: '{url_str}'"
+            return False, "Invalid PROJECT2_PUBLISH_URL missing host"
+        if not parsed.hostname or not str(parsed.hostname).strip():
+            return False, "Invalid PROJECT2_PUBLISH_URL missing host"
         if any(c.isspace() for c in parsed.netloc):
             return False, "Invalid PROJECT2_PUBLISH_URL host contains invalid whitespace"
         try:
             _ = parsed.hostname
             _ = parsed.port
-        except ValueError as exc:
-            return False, f"Invalid PROJECT2_PUBLISH_URL host or port: {exc}"
+        except ValueError:
+            return False, "Invalid PROJECT2_PUBLISH_URL host or port"
 
         if key_str in parsed.query:
             return False, "PROJECT2_API_KEY must not be passed in query parameters"
-    except Exception as exc:
-        return False, f"Malformed PROJECT2_PUBLISH_URL '{url_str}': {exc}"
+    except Exception:
+        return False, "Malformed PROJECT2_PUBLISH_URL"
 
     return True, ""
 

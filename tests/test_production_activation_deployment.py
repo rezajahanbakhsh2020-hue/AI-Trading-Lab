@@ -208,6 +208,7 @@ INVALID_URLS = [
     "https://[::1",
     "https://example.com:bad/",
     "https://exa mple.com/",
+    "https://:443/ingest",
 ]
 
 VALID_URLS = [
