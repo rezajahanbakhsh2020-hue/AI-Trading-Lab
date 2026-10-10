@@ -37,11 +37,13 @@ def test_exact_convergence_fresh_and_stale(tmp_path):
         production_config=config,
     )
     with patch("src.evaluation.live_execution_runtime.load_live_market_data", return_value=df):
-        res_buy = runtime_fresh.run_once(publish=False, persist=True, reference_now=df_ts + pd.Timedelta(minutes=5))
+        res_buy = runtime_fresh.run_once(
+            publish=False, persist=True, reference_now=df_ts + datetime.timedelta(minutes=5)
+        )
     assert res_buy["decision"] == "BUY"
     assert res_buy["current_lifecycle_state"] == LiveDecisionLifecycleState.PERSISTED.value
 
-    # 2. Stale execution
+    # 2. The same closed candle becomes ineligible after duration plus provider grace.
     runtime_stale = LiveExecutionRuntime(
         symbol="XAUUSD",
         interval="5m",
@@ -55,9 +57,10 @@ def test_exact_convergence_fresh_and_stale(tmp_path):
             publish=False, persist=True, reference_now=df_ts + datetime.timedelta(seconds=1000)
         )
     assert res_stale["decision"] == "NO TRADE"
-    assert res_stale["current_lifecycle_state"] == LiveDecisionLifecycleState.PERSISTED.value
+    assert res_stale["blocked"] is False
     assert res_stale["record"]["signal_label"] == "NO TRADE"
-    assert res_stale["record"]["entry_price"] is None
+    assert res_stale["record"]["quote_stale"] is True
+    assert res_stale["record"]["reason"] == "stale_market_data"
 
 
 def test_single_candidate_resolution_and_authorization(tmp_path):
@@ -73,7 +76,7 @@ def test_single_candidate_resolution_and_authorization(tmp_path):
     )
 
     df = make_buy_market_data()
-    ref_now = pd.to_datetime(df["openTime"], utc=True).iloc[-1].to_pydatetime() + pd.Timedelta(minutes=5)
+    ref_now = pd.to_datetime(df["openTime"], utc=True).iloc[-1].to_pydatetime() + datetime.timedelta(minutes=5)
 
     # Pre-build candidate, authorization, and receipt OUTSIDE patch blocks
     from src.evaluation.live_production_decision import ProductionAuthorizationReceipt, authorize_production_runtime
@@ -113,8 +116,8 @@ def test_single_candidate_resolution_and_authorization(tmp_path):
         assert context_arg.authorization_receipt is exact_receipt
 
 
-def test_stale_path_bypasses_signal_and_trend_generators(tmp_path):
-    """Part 9: Stale evaluation path must NOT invoke fresh signal or trend snapshot generators."""
+def test_closed_old_candle_is_rejected_before_strategy_evaluation(tmp_path):
+    """A candle beyond the timeframe freshness bound cannot enter strategy evaluation."""
     config = production_config_for(tmp_path)
     runtime = LiveExecutionRuntime(
         symbol="XAUUSD",
@@ -134,16 +137,17 @@ def test_stale_path_bypasses_signal_and_trend_generators(tmp_path):
 
     with (
         patch("src.evaluation.live_execution_runtime.load_live_market_data", return_value=df),
-        patch.object(live_signal, "generate_live_signal") as mock_sig,
-        patch.object(live_trend, "build_live_trend_snapshot") as mock_trend,
+        patch.object(live_signal, "generate_live_signal", wraps=live_signal.generate_live_signal) as mock_sig,
+        patch.object(live_trend, "build_live_trend_snapshot", wraps=live_trend.build_live_trend_snapshot) as mock_trend,
     ):
         res = runtime.run_once(publish=False, persist=True, reference_now=stale_ref_now)
 
         assert res["decision"] == "NO TRADE"
         assert res["record"]["quote_stale"] is True
-        # Signal and trend generators MUST NOT BE CALLED for stale data
-        assert mock_sig.call_count == 0
-        assert mock_trend.call_count == 0
+        assert res["record"]["reason"] == "stale_market_data"
+        assert res["record"]["quote_age_seconds"] == 1000.0
+        assert not mock_sig.called
+        assert not mock_trend.called
 
 
 def test_ast_static_checks_live_execution_runtime():

@@ -3,7 +3,6 @@ from __future__ import annotations
 import pandas as pd
 
 from src.evaluation.end_to_end_runner import run_end_to_end
-from src.evaluation.mtf_intelligence import CanonicalTimeframe
 
 
 def _rising_data(rows: int = 80) -> pd.DataFrame:
@@ -11,7 +10,6 @@ def _rising_data(rows: int = 80) -> pd.DataFrame:
         "2026-01-01",
         periods=rows,
         freq="1D",
-        tz="UTC",
     )
 
     close = pd.Series(
@@ -97,11 +95,11 @@ def test_end_to_end_runner_preserves_symbol_and_interval(tmp_path):
     )
 
     assert result["decision"]["symbol"] == "XAUUSD"
-    assert CanonicalTimeframe.from_str(result["decision"]["interval"]) == CanonicalTimeframe.ONE_DAY
+    assert result["decision"]["interval"] == "1d"
     assert result["display"]["symbol"] == "XAUUSD"
-    assert CanonicalTimeframe.from_str(result["display"]["interval"]) == CanonicalTimeframe.ONE_DAY
+    assert result["display"]["interval"] == "1d"
     assert result["overlay"]["symbol"] == "XAUUSD"
-    assert CanonicalTimeframe.from_str(result["overlay"]["interval"]) == CanonicalTimeframe.ONE_DAY
+    assert result["overlay"]["interval"] == "1d"
 
 
 def test_end_to_end_runner_exposes_all_pipeline_layers(tmp_path):

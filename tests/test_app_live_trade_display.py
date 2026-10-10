@@ -18,7 +18,6 @@ def _rising_data(rows: int = 80) -> pd.DataFrame:
         "2026-01-01",
         periods=rows,
         freq="5min",
-        tz="UTC",
     )
 
     close = pd.Series(

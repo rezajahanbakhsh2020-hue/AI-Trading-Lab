@@ -229,14 +229,7 @@ class CanonicalLiveDecision:
             raise LiveDecisionLifecycleError(
                 f"Authorization symbol '{receipt.symbol}' does not match decision symbol '{dec.symbol}'."
             )
-        try:
-            from src.evaluation.mtf_intelligence import CanonicalTimeframe
-            rcpt_tf = CanonicalTimeframe.from_str(receipt.timeframe).value
-            dec_tf = CanonicalTimeframe.from_str(dec.timeframe).value
-        except (ValueError, TypeError) as exc:
-            raise LiveDecisionLifecycleError(f"Invalid timeframe: {exc}")
-
-        if rcpt_tf != dec_tf:
+        if receipt.timeframe != dec.timeframe:
             raise LiveDecisionLifecycleError(
                 f"Authorization timeframe '{receipt.timeframe}' does not match decision timeframe '{dec.timeframe}'."
             )
@@ -480,14 +473,7 @@ def validate_live_decision_lifecycle(
         raise LiveDecisionLifecycleError(
             f"Authorization symbol '{receipt.symbol}' mismatch with decision symbol '{canonical_decision.decision.symbol}'."
         )
-    try:
-        from src.evaluation.mtf_intelligence import CanonicalTimeframe
-        rcpt_tf = CanonicalTimeframe.from_str(receipt.timeframe).value
-        cld_tf = CanonicalTimeframe.from_str(canonical_decision.decision.timeframe).value
-    except (ValueError, TypeError) as exc:
-        raise LiveDecisionLifecycleError(f"Invalid timeframe: {exc}")
-
-    if rcpt_tf != cld_tf:
+    if receipt.timeframe != canonical_decision.decision.timeframe:
         raise LiveDecisionLifecycleError(
             f"Authorization timeframe '{receipt.timeframe}' mismatch with decision timeframe '{canonical_decision.decision.timeframe}'."
         )
