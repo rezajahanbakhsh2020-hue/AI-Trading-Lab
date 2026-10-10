@@ -183,64 +183,27 @@ def validate_and_prepare_market_snapshot(
     data: pd.DataFrame,
     symbol: str = "XAUUSD",
 ) -> pd.DataFrame:
-    """Centralized validation and defensive copy helper for live OHLC market snapshots.
-
-    Enforces strict chronological sorting, timestamp parseability, non-negative finite OHLC prices,
-    and deduplicates identical timestamps while preserving valid candle structure.
-    """
+    """Centralized validation and defensive copy helper for live OHLC market snapshots."""
     if data is None or not isinstance(data, pd.DataFrame) or data.empty:
         raise ValueError(f"Supplied market data for {symbol} must be a non-empty pandas DataFrame.")
 
-    if "timestamp" in data.columns:
-        raw_ts = data["timestamp"]
-    elif "openTime" in data.columns:
-        raw_ts = data["openTime"]
-    else:
-        raise ValueError(f"Missing required timestamp column ('timestamp' or 'openTime') for {symbol}.")
-
-    required_numeric = {"open", "high", "low", "close"}
-    missing_numeric = required_numeric.difference(data.columns)
-    if missing_numeric:
+    required = {"openTime", "open", "high", "low", "close"}
+    missing = required.difference(data.columns)
+    if missing:
         raise ValueError(
-            f"Missing required live columns for {symbol}: " + ", ".join(sorted(missing_numeric))
+            f"Missing required live columns for {symbol}: " + ", ".join(sorted(missing))
         )
 
     data_copy = data.copy()
-    data_copy["timestamp"] = pd.to_datetime(raw_ts, utc=True, errors="coerce")
-
-    # Reject unparseable timestamps
-    if data_copy["timestamp"].isna().any():
-        raise ValueError(f"Market data for {symbol} contains unparseable or naive invalid timestamps.")
-
+    data_copy["timestamp"] = pd.to_datetime(data_copy["openTime"], utc=True, errors="coerce")
     for col in ("open", "high", "low", "close"):
         data_copy[col] = pd.to_numeric(data_copy[col], errors="coerce")
-        # Validate finite numeric positive values
-        if data_copy[col].isna().any() or not data_copy[col].apply(math.isfinite).all():
-            raise ValueError(f"Market data for {symbol} contains non-finite/NaN values in '{col}'.")
-        if (data_copy[col] <= 0).any():
-            raise ValueError(f"Market data for {symbol} contains non-positive price values in '{col}'.")
 
-    # Full OHLC geometry check: high >= max(open, close) and low <= min(open, close)
-    if (data_copy["high"] < data_copy[["open", "close"]].max(axis=1)).any() or (data_copy["low"] > data_copy[["open", "close"]].min(axis=1)).any():
-        raise ValueError(f"Market data for {symbol} contains invalid OHLC geometry (high/low bounds violated).")
-
-    # Sort chronologically
-    data_copy = data_copy.sort_values("timestamp").reset_index(drop=True)
-
-    # Check for conflicting duplicate timestamps (different OHLC values at same timestamp)
-    dups = data_copy[data_copy.duplicated(subset=["timestamp"], keep=False)]
-    if not dups.empty:
-        # Group by timestamp and verify all numeric values match
-        numeric_cols = ["open", "high", "low", "close"]
-        for _, group in dups.groupby("timestamp"):
-            if not (group[numeric_cols].nunique() == 1).all().all():
-                raise ValueError(f"Market data for {symbol} contains conflicting duplicate timestamps with inconsistent OHLC values.")
-        data_copy = data_copy.drop_duplicates(subset=["timestamp"], keep="last").reset_index(drop=True)
-
+    data_copy = data_copy.dropna(subset=["timestamp", "open", "high", "low", "close"])
     if data_copy.empty:
         raise ValueError(f"No valid live market data available for {symbol}.")
 
-    return data_copy
+    return data_copy.reset_index(drop=True)
 
 
 def load_live_market_data(
@@ -266,181 +229,6 @@ def load_live_market_data(
     )
 
     return validate_and_prepare_market_snapshot(data, symbol=canonical_symbol)
-
-
-def verify_timeframe_production_readiness(
-    symbol: str = "XAUUSD",
-    timeframe: str | CanonicalTimeframe = "5m",
-    candidate_id: str | None = None,
-    research_dir: Path | str = DEFAULT_RESEARCH_DIR,
-    publisher: Project2Publisher | None = None,
-    reference_now: datetime.datetime | None = None,
-    check_provider_data: bool = False,
-) -> dict[str, Any]:
-    """Perform deterministic production-readiness evaluation for a single canonical timeframe.
-
-    Evaluates provider interval support, candidate artifact and binding existence/integrity,
-    exact symbol/timeframe scope matching, production authorization receipt construction,
-    and publication configuration. Never borrows candidates across timeframes or fabricates data.
-    """
-    try:
-        canonical_tf = CanonicalTimeframe.from_str(timeframe).value
-    except (ValueError, TypeError) as exc:
-        return {
-            "timeframe": str(timeframe),
-            "status": "BLOCKED",
-            "reason_code": "INVALID_TIMEFRAME",
-            "detail": str(exc),
-            "candidate_id": candidate_id,
-        }
-
-    r_dir = Path(research_dir)
-    ref_now = reference_now if reference_now is not None else datetime.datetime.now(datetime.timezone.utc)
-    if ref_now.tzinfo is None:
-        ref_now = ref_now.replace(tzinfo=datetime.timezone.utc)
-
-    # 1. Provider interval support check
-    provider_interval_map = {
-        "1m": "1m",
-        "5m": "5m",
-        "15m": "15m",
-        "30m": "30m",
-        "1H": "1h",
-        "4H": "4h",
-        "1D": "1d",
-    }
-    provider_interval = provider_interval_map.get(canonical_tf)
-    if not provider_interval:
-        return {
-            "timeframe": canonical_tf,
-            "status": "BLOCKED",
-            "reason_code": "UNSUPPORTED_PROVIDER_INTERVAL",
-            "detail": f"Timeframe '{canonical_tf}' has no mapped provider interval.",
-            "candidate_id": candidate_id,
-        }
-
-    if check_provider_data:
-        try:
-            prov = resolve_live_provider(symbol)
-            candles = prov.get_candles(symbol, timeframe=canonical_tf, limit=5)
-            if candles is None or candles.empty:
-                return {
-                    "timeframe": canonical_tf,
-                    "status": "BLOCKED",
-                    "reason_code": "NO_PROVIDER_CANDLES",
-                    "detail": f"Provider returned empty candle data for {symbol} {canonical_tf}.",
-                    "candidate_id": candidate_id,
-                }
-        except Exception as exc:
-            return {
-                "timeframe": canonical_tf,
-                "status": "BLOCKED",
-                "reason_code": "PROVIDER_FETCH_FAILED",
-                "detail": f"Failed to fetch market candles for {symbol} {canonical_tf}: {exc}",
-                "candidate_id": candidate_id,
-            }
-
-    # 2. Promoted candidate resolution & binding integrity
-    config = ProductionRuntimeConfig(
-        symbol=symbol,
-        timeframe=canonical_tf,
-        candidate_id=candidate_id,
-        research_dir=r_dir,
-    )
-    resolved = resolve_authoritative_promoted_candidate(config)
-    if isinstance(resolved, ProductionBlocked):
-        return {
-            "timeframe": canonical_tf,
-            "status": "BLOCKED",
-            "reason_code": resolved.reason,
-            "detail": resolved.detail,
-            "candidate_id": resolved.candidate_id or candidate_id,
-        }
-
-    # Explicit scope check
-    cand_tf = CanonicalTimeframe.from_str(resolved.timeframe).value
-    if cand_tf != canonical_tf:
-        return {
-            "timeframe": canonical_tf,
-            "status": "BLOCKED",
-            "reason_code": "TIMEFRAME_IDENTITY_MISMATCH",
-            "detail": f"Candidate '{resolved.candidate_id}' timeframe '{cand_tf}' does not match requested '{canonical_tf}'.",
-            "candidate_id": resolved.candidate_id,
-        }
-
-    # 3. Production authorization receipt verification
-    try:
-        authorization = authorize_production_runtime(
-            resolved,
-            symbol=symbol,
-            timeframe=canonical_tf,
-            now=ref_now,
-        )
-        receipt = ProductionAuthorizationReceipt.from_authorization(authorization)
-    except Exception as exc:
-        return {
-            "timeframe": canonical_tf,
-            "status": "BLOCKED",
-            "reason_code": "AUTHORIZATION_FAILED",
-            "detail": f"Failed to authorize production runtime for candidate '{resolved.candidate_id}': {exc}",
-            "candidate_id": resolved.candidate_id,
-        }
-
-    # 4. Publication configuration check
-    pub = publisher or Project2Publisher()
-    if pub.enabled:
-        from src.integration.project2_publisher import validate_publication_configuration
-        valid_pub_config, pub_config_reason = validate_publication_configuration(
-            pub.publish_url,
-            getattr(pub, "api_key", None),
-        )
-        if not valid_pub_config:
-            return {
-                "timeframe": canonical_tf,
-                "status": "BLOCKED",
-                "reason_code": "PUBLICATION_MISCONFIGURED",
-                "detail": f"Project 2 publication is enabled but misconfigured: {pub_config_reason}",
-                "candidate_id": resolved.candidate_id,
-            }
-
-    return {
-        "timeframe": canonical_tf,
-        "status": "READY",
-        "reason_code": "READY",
-        "detail": f"Authoritative candidate '{resolved.candidate_id}' fully authorized for {symbol} {canonical_tf}.",
-        "candidate_id": resolved.candidate_id,
-        "strategy_name": resolved.strategy_name,
-        "strategy_version": resolved.strategy_version,
-        "operational_stability_score": resolved.operational_stability_score,
-        "authorization_fingerprint": receipt.authorization_fingerprint,
-    }
-
-
-def verify_all_canonical_timeframes_readiness(
-    symbol: str = "XAUUSD",
-    candidate_ids: dict[str, str] | None = None,
-    research_dir: Path | str = DEFAULT_RESEARCH_DIR,
-    publisher: Project2Publisher | None = None,
-    reference_now: datetime.datetime | None = None,
-    check_provider_data: bool = False,
-) -> dict[str, dict[str, Any]]:
-    """Evaluate production readiness independently across all six canonical timeframes."""
-    cand_map = candidate_ids or {}
-    results = {}
-    for tf in CanonicalTimeframe.canonical_ladder():
-        tf_val = tf.value
-        cand_id = cand_map.get(tf_val)
-        res = verify_timeframe_production_readiness(
-            symbol=symbol,
-            timeframe=tf_val,
-            candidate_id=cand_id,
-            research_dir=research_dir,
-            publisher=publisher,
-            reference_now=reference_now,
-            check_provider_data=check_provider_data,
-        )
-        results[tf_val] = res
-    return results
 
 
 def resolve_authoritative_promoted_candidate(
@@ -524,11 +312,12 @@ def validate_market_data_freshness(
     max_age_seconds: float | None = None,
     reference_now: datetime.datetime | None = None,
 ) -> dict[str, Any]:
-    """Validate that the latest provider candle is closed and within provider-lateness allowance.
+    """Validate that the latest provider candle is closed and recent enough for a new decision.
 
-    Provider timestamps identify candle opens. An explicit, finite, non-negative ``max_age_seconds``
-    defines the maximum permitted provider/update lateness AFTER the candle's own duration.
-    If ``max_age_seconds`` is missing, non-numeric, or non-finite, freshness evaluation fails closed.
+    Provider timestamps identify candle opens. ``max_age_seconds`` is the
+    permitted provider/update lateness after the candle's own duration; it is
+    independent of P2's LIVE badge TTL. A closed but old candle cannot
+    authorize a new production evaluation.
     """
     if reference_now is None:
         now_dt = datetime.datetime.now(datetime.timezone.utc)
@@ -536,15 +325,6 @@ def validate_market_data_freshness(
         now_dt = reference_now
     if now_dt.tzinfo is None:
         now_dt = now_dt.replace(tzinfo=datetime.timezone.utc)
-
-    if max_age_seconds is None or isinstance(max_age_seconds, bool) or not isinstance(max_age_seconds, (int, float)) or not math.isfinite(float(max_age_seconds)) or float(max_age_seconds) < 0:
-        return {
-            "fresh": False,
-            "stale": True,
-            "reason": "absent_or_invalid_freshness_policy",
-            "age_seconds": None,
-            "candle_timestamp": None,
-        }
 
     if data is None or not isinstance(data, pd.DataFrame) or data.empty:
         return {
@@ -591,13 +371,7 @@ def validate_market_data_freshness(
             }
 
     if latest_dt.tzinfo is None:
-        return {
-            "fresh": False,
-            "stale": True,
-            "reason": "naive_candle_timestamp",
-            "age_seconds": None,
-            "candle_timestamp": str(latest_ts),
-        }
+        latest_dt = latest_dt.replace(tzinfo=datetime.timezone.utc)
     else:
         latest_dt = latest_dt.astimezone(datetime.timezone.utc)
 
@@ -614,21 +388,16 @@ def validate_market_data_freshness(
         }
 
     canonical_tf = CanonicalTimeframe.from_str(timeframe)
+    grace_seconds = 300.0 if max_age_seconds is None else max_age_seconds
+    if isinstance(grace_seconds, bool) or not isinstance(grace_seconds, (int, float)) or not math.isfinite(float(grace_seconds)) or float(grace_seconds) < 0:
+        return {"fresh": False, "stale": True, "reason": "invalid_freshness_policy", "age_seconds": age_seconds, "timeframe": canonical_tf.value, "candle_timestamp": candle_iso}
     latest_row = data.iloc[-1]
     if not is_candle_closed(latest_row, canonical_tf, now_dt):
         return {"fresh": False, "stale": True, "reason": "unclosed_market_data", "age_seconds": age_seconds, "timeframe": canonical_tf.value, "candle_timestamp": candle_iso}
 
-    max_permitted_age = get_canonical_timeframe_duration(canonical_tf).total_seconds() + float(max_age_seconds)
-    if age_seconds > max_permitted_age:
-        return {
-            "fresh": False,
-            "stale": True,
-            "reason": "stale_market_data",
-            "age_seconds": age_seconds,
-            "max_market_age_seconds": max_permitted_age,
-            "timeframe": canonical_tf.value,
-            "candle_timestamp": candle_iso,
-        }
+    max_market_age = get_canonical_timeframe_duration(canonical_tf).total_seconds() + float(grace_seconds)
+    if age_seconds > max_market_age:
+        return {"fresh": False, "stale": True, "reason": "stale_market_data", "age_seconds": age_seconds, "max_market_age_seconds": max_market_age, "timeframe": canonical_tf.value, "candle_timestamp": candle_iso}
 
     return {
         "fresh": True,
@@ -737,20 +506,6 @@ class LiveExecutionRuntime:
                 timeframe=self.interval,
                 research_dir=self.research_dir,
             )
-
-        # 0. Attempt recovery for any prior pending FAILED_RETRYABLE publication receipts
-        if publish and self.publisher and getattr(self.publisher, "enabled", False):
-            from src.evaluation.live_publication_store import recover_pending_publication_deliveries
-            try:
-                recover_pending_publication_deliveries(
-                    publisher=self.publisher,
-                    publication_path=self.store_path.parent / "publication_history.json",
-                    delivery_path=self.store_path.parent / "delivery_history.json",
-                    decision_store_path=self.store_path,
-                    research_dir=self.research_dir,
-                )
-            except Exception as exc:
-                logger.warning("Pending publication delivery recovery error: %s", exc)
 
         # 1. Resolve candidate EXACTLY ONCE per cycle
         resolved = resolve_authoritative_promoted_candidate(config)
@@ -1231,65 +986,10 @@ class ContinuousLiveRuntime:
         self._evaluated_candles: set[tuple[str, str, str, str | None]] = set()
         self._tick_count = 0
         self._execution_history: list[dict[str, Any]] = []
-        self._started_at_utc: str | None = None
-        self._last_tick_at_utc: str | None = None
-        self._last_successful_evaluation_at_utc: str | None = None
-        self._last_successful_publication_at_utc: str | None = None
-        self._last_failure_reason: str | None = None
 
     @property
     def is_running(self) -> bool:
         return not self._stop_event.is_set()
-
-    def get_health_status(
-        self,
-        staleness_threshold_seconds: float = 300.0,
-        reference_now: datetime.datetime | None = None,
-    ) -> dict[str, Any]:
-        """Compute current worker health diagnostics.
-
-        Health states:
-        - WORKER_NOT_STARTED: continuous loop hasn't started or executed ticks
-        - WORKER_HEALTHY: tick heartbeat within staleness threshold
-        - WORKER_STALE: tick heartbeat older than staleness threshold
-        """
-        ref_now = reference_now if reference_now is not None else self.clock()
-        if ref_now.tzinfo is None:
-            ref_now = ref_now.replace(tzinfo=datetime.timezone.utc)
-
-        if not self._started_at_utc or not self._last_tick_at_utc:
-            return {
-                "status": "WORKER_NOT_STARTED",
-                "healthy": False,
-                "started_at_utc": self._started_at_utc,
-                "last_tick_at_utc": self._last_tick_at_utc,
-                "last_successful_evaluation_at_utc": self._last_successful_evaluation_at_utc,
-                "last_successful_publication_at_utc": self._last_successful_publication_at_utc,
-                "last_failure_reason": self._last_failure_reason,
-                "seconds_since_last_tick": None,
-                "tick_count": self._tick_count,
-            }
-
-        last_tick_dt = datetime.datetime.fromisoformat(self._last_tick_at_utc)
-        if last_tick_dt.tzinfo is None:
-            last_tick_dt = last_tick_dt.replace(tzinfo=datetime.timezone.utc)
-
-        age_seconds = (ref_now - last_tick_dt).total_seconds()
-        is_healthy = age_seconds >= 0 and age_seconds <= staleness_threshold_seconds
-
-        status = "WORKER_HEALTHY" if is_healthy else "WORKER_STALE"
-
-        return {
-            "status": status,
-            "healthy": is_healthy,
-            "started_at_utc": self._started_at_utc,
-            "last_tick_at_utc": self._last_tick_at_utc,
-            "last_successful_evaluation_at_utc": self._last_successful_evaluation_at_utc,
-            "last_successful_publication_at_utc": self._last_successful_publication_at_utc,
-            "last_failure_reason": self._last_failure_reason,
-            "seconds_since_last_tick": max(0.0, age_seconds),
-            "tick_count": self._tick_count,
-        }
 
     def stop(self) -> None:
         """Signal the continuous runtime loop to stop deterministically."""
@@ -1456,16 +1156,9 @@ class ContinuousLiveRuntime:
                     # 7. Add to deduplication set ONLY AFTER successful evaluation execution
                     if result.get("blocked") is not True:
                         self._evaluated_candles.add(dedup_key)
-                        self._last_successful_evaluation_at_utc = ref_now.isoformat()
-                        pub_res = result.get("publish_result")
-                        if pub_res and pub_res.get("published") is True:
-                            self._last_successful_publication_at_utc = ref_now.isoformat()
-                    else:
-                        self._last_failure_reason = result.get("reason") or "EVALUATION_BLOCKED"
 
                 except Exception as exc:
                     logger.error("Recoverable failure evaluating %s %s: %s", self.symbol, canonical_tf, exc)
-                    self._last_failure_reason = f"EXCEPTIONAL_FAILURE: {exc}"
                     tick_evaluations[canonical_tf] = {
                         "status": "FAILED_RECOVERABLE",
                         "error": str(exc),
@@ -1473,15 +1166,10 @@ class ContinuousLiveRuntime:
                         "timeframe": canonical_tf,
                     }
 
-            if not self._started_at_utc:
-                self._started_at_utc = ref_now.isoformat()
-            self._last_tick_at_utc = ref_now.isoformat()
-
             tick_summary = {
                 "tick_number": self._tick_count,
                 "timestamp": ref_now.isoformat(),
                 "evaluations": tick_evaluations,
-                "health": self.get_health_status(reference_now=ref_now),
             }
             self._execution_history.append(tick_summary)
             return tick_summary
@@ -1505,39 +1193,24 @@ class ContinuousLiveRuntime:
 
         Fails closed with PromotionUnavailable / RuntimeError if any configured timeframe candidate cannot be resolved.
         """
-        if self.publish and self.publisher and getattr(self.publisher, "enabled", False):
-            from src.evaluation.live_publication_store import recover_pending_publication_deliveries
-            try:
-                recover_pending_publication_deliveries(
-                    publisher=self.publisher,
-                    publication_path=self.store_path.parent / "publication_history.json",
-                    delivery_path=self.store_path.parent / "delivery_history.json",
-                    decision_store_path=self.store_path,
-                    research_dir=self.research_dir,
-                )
-            except Exception as exc:
-                logger.warning("Startup pending delivery recovery warning: %s", exc)
-
         readiness_results = {}
         for tf in self.timeframes:
             canonical_tf = CanonicalTimeframe.from_str(tf).value
-            cand_id = self.candidate_ids.get(canonical_tf)
-            readiness = verify_timeframe_production_readiness(
+            config = ProductionRuntimeConfig(
                 symbol=self.symbol,
                 timeframe=canonical_tf,
-                candidate_id=cand_id,
+                candidate_id=self.candidate_ids.get(canonical_tf),
                 research_dir=self.research_dir,
-                publisher=self.publisher,
-                reference_now=self.clock(),
             )
-            if readiness.get("status") != "READY":
+            resolved = resolve_authoritative_promoted_candidate(config)
+            if isinstance(resolved, ProductionBlocked):
                 msg = (
                     f"Startup readiness preflight failed for {self.symbol} {canonical_tf}: "
-                    f"[{readiness.get('reason_code')}] {readiness.get('detail')}"
+                    f"[{resolved.reason}] {resolved.detail}"
                 )
                 logger.error(msg)
                 raise PromotionUnavailable(msg)
-            readiness_results[canonical_tf] = readiness
+            readiness_results[canonical_tf] = resolved
         return readiness_results
 
     def run_continuous(self, max_ticks: int | None = None) -> None:

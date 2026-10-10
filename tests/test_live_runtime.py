@@ -13,7 +13,6 @@ def _data() -> pd.DataFrame:
                 "2026-01-01",
                 periods=80,
                 freq="5min",
-                tz="UTC",
             ),
             "isOpen": False,
             "open": [4400.0 + i for i in range(80)],
@@ -47,7 +46,7 @@ def test_live_runtime_builds_decision_and_display(tmp_path):
 
 def test_live_runtime_display_contains_tp_levels(tmp_path):
     df = _data()
-    ref_now = pd.to_datetime(df["timestamp"], utc=True).iloc[-1].to_pydatetime() + pd.Timedelta(minutes=5)
+    ref_now = pd.to_datetime(df["timestamp"], utc=True).iloc[-1].to_pydatetime()
     result = build_live_runtime(
         data=df,
         stable_strategy="momentum",
@@ -97,7 +96,7 @@ from unittest.mock import MagicMock, patch
 
 def test_evaluate_authorized_live_runtime_publication_exception_handled(tmp_path):
     df = _data()
-    ref_now = pd.to_datetime(df["timestamp"], utc=True).iloc[-1].to_pydatetime() + pd.Timedelta(minutes=5)
+    ref_now = pd.to_datetime(df["timestamp"], utc=True).iloc[-1].to_pydatetime()
     mock_publisher = MagicMock()
     mock_publisher.publish.side_effect = RuntimeError("Publisher network fault")
 
@@ -123,7 +122,7 @@ def test_evaluate_authorized_live_runtime_publication_exception_handled(tmp_path
 
 def test_evaluate_authorized_live_runtime_display_exception_handled(tmp_path):
     df = _data()
-    ref_now = pd.to_datetime(df["timestamp"], utc=True).iloc[-1].to_pydatetime() + pd.Timedelta(minutes=5)
+    ref_now = pd.to_datetime(df["timestamp"], utc=True).iloc[-1].to_pydatetime()
 
     with patch("src.evaluation.live_runtime.build_live_trade_display") as mock_display:
         mock_display.side_effect = RuntimeError("Display formatting error")

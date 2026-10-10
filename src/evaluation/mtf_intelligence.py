@@ -47,15 +47,15 @@ class CanonicalTimeframe(str, Enum):
 
     @property
     def order_rank(self) -> int:
-        """Deterministic ordering index across the supported timeframe identities."""
+        """Deterministic ordering index across the seven supported timeframe identities."""
         ranks = {
-            CanonicalTimeframe.ONE_MINUTE: 1,
-            CanonicalTimeframe.FIVE_MINUTES: 2,
-            CanonicalTimeframe.FIFTEEN_MINUTES: 3,
-            CanonicalTimeframe.THIRTY_MINUTES: 4,
-            CanonicalTimeframe.ONE_HOUR: 5,
-            CanonicalTimeframe.FOUR_HOURS: 6,
-            CanonicalTimeframe.ONE_DAY: 7,
+            CanonicalTimeframe.ONE_MINUTE: 0,
+            CanonicalTimeframe.FIVE_MINUTES: 1,
+            CanonicalTimeframe.FIFTEEN_MINUTES: 2,
+            CanonicalTimeframe.THIRTY_MINUTES: 3,
+            CanonicalTimeframe.ONE_HOUR: 4,
+            CanonicalTimeframe.FOUR_HOURS: 5,
+            CanonicalTimeframe.ONE_DAY: 6,
         }
         return ranks[self]
 
@@ -120,7 +120,7 @@ class CanonicalTimeframe(str, Enum):
 
     @classmethod
     def canonical_ladder(cls) -> Tuple[CanonicalTimeframe, ...]:
-        """Return the complete canonical timeframe ladder in ascending order."""
+        """Return the complete canonical seven-timeframe ladder in ascending order."""
         return (
             cls.ONE_MINUTE,
             cls.FIVE_MINUTES,

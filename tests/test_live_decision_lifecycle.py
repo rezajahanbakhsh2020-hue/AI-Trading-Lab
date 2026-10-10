@@ -43,7 +43,7 @@ from src.evaluation.research_store import resolve_promoted_candidate
 
 
 def _data(rows: int = 80) -> pd.DataFrame:
-    timestamps = pd.date_range("2026-01-01", periods=rows, freq="5min", tz="UTC")
+    timestamps = pd.date_range("2026-01-01", periods=rows, freq="5min")
     close = pd.Series([2000.0 + i for i in range(rows)], dtype=float)
     return pd.DataFrame({
         "timestamp": timestamps,
