@@ -181,3 +181,89 @@ def test_worker_health_diagnostics_states():
     assert h2["status"] == "WORKER_STALE"
     assert h2["healthy"] is False
     assert h2["seconds_since_last_tick"] == 600.0
+
+
+def test_worker_health_diagnoses_degraded_execution():
+    """Verify worker health reports WORKER_DEGRADED when tick heartbeat is fresh but evaluations fail or are all blocked."""
+    now_dt = datetime.datetime(2026, 10, 9, 12, 0, 0, tzinfo=datetime.timezone.utc)
+    runtime = ContinuousLiveRuntime(
+        symbol="XAUUSD",
+        timeframes=["5m"],
+        clock=lambda: now_dt,
+    )
+
+    # 1. Fresh heartbeat but all-blocked evaluation
+    mock_df = pd.DataFrame(
+        {
+            "openTime": ["2026-10-09T11:50:00Z", "2026-10-09T11:55:00Z"],
+            "open": [2600.0, 2601.0],
+            "high": [2605.0, 2606.0],
+            "low": [2599.0, 2600.0],
+            "close": [2602.0, 2603.0],
+            "isOpen": [False, False],
+        }
+    )
+    runtime.market_data_loaders = {"5m": lambda: mock_df}
+
+    with patch("src.evaluation.live_execution_runtime.resolve_authoritative_promoted_candidate", return_value=None):
+        tick_summary = runtime.tick(reference_now=now_dt)
+
+    # Immediate health check on the tick summary reflects current tick without 1-tick delay
+    assert tick_summary["health"]["status"] == "WORKER_DEGRADED"
+    assert tick_summary["health"]["heartbeat_healthy"] is True
+    assert tick_summary["health"]["execution_healthy"] is False
+    assert tick_summary["health"]["healthy"] is False
+
+    h_blocked = runtime.get_health_status(reference_now=now_dt)
+    assert h_blocked["status"] == "WORKER_DEGRADED"
+    assert h_blocked["heartbeat_healthy"] is True
+    assert h_blocked["execution_healthy"] is False
+    assert h_blocked["healthy"] is False
+
+    # 2. Normal deduplication is NOT treated as hard failure
+    with patch("src.evaluation.live_execution_runtime.resolve_authoritative_promoted_candidate", return_value=MagicMock(candidate_id="cand_5m", timeframe="5m")):
+        with patch("src.evaluation.live_execution_runtime.LiveExecutionRuntime.run_once", return_value={"blocked": False, "publish_result": {"published": True}}):
+            runtime.tick(reference_now=now_dt)
+
+    # Subsequent tick with same candle -> SKIPPED_DEDUPLICATED
+    with patch("src.evaluation.live_execution_runtime.resolve_authoritative_promoted_candidate", return_value=MagicMock(candidate_id="cand_5m", timeframe="5m")):
+        runtime.tick(reference_now=now_dt)
+
+    h_dedup = runtime.get_health_status(reference_now=now_dt)
+    assert h_dedup["status"] == "WORKER_HEALTHY"
+    assert h_dedup["heartbeat_healthy"] is True
+    assert h_dedup["execution_healthy"] is True
+    assert h_dedup["healthy"] is True
+
+
+def test_worker_health_stale_heartbeat_overrides_execution_health():
+    """Verify WORKER_STALE takes precedence over execution health when heartbeat exceeds threshold."""
+    now_dt = datetime.datetime(2026, 10, 9, 12, 0, 0, tzinfo=datetime.timezone.utc)
+    runtime = ContinuousLiveRuntime(
+        symbol="XAUUSD",
+        timeframes=["5m"],
+        clock=lambda: now_dt,
+    )
+
+    mock_df = pd.DataFrame(
+        {
+            "openTime": ["2026-10-09T11:50:00Z", "2026-10-09T11:55:00Z"],
+            "open": [2600.0, 2601.0],
+            "high": [2605.0, 2606.0],
+            "low": [2599.0, 2600.0],
+            "close": [2602.0, 2603.0],
+            "isOpen": [False, False],
+        }
+    )
+    runtime.market_data_loaders = {"5m": lambda: mock_df}
+
+    with patch("src.evaluation.live_execution_runtime.resolve_authoritative_promoted_candidate", return_value=MagicMock(candidate_id="cand_5m", timeframe="5m")):
+        with patch("src.evaluation.live_execution_runtime.LiveExecutionRuntime.run_once", return_value={"blocked": False, "publish_result": {"published": True}}):
+            runtime.tick(reference_now=now_dt)
+
+    future_dt = now_dt + datetime.timedelta(minutes=10)
+    h_stale = runtime.get_health_status(reference_now=future_dt, staleness_threshold_seconds=300.0)
+    assert h_stale["status"] == "WORKER_STALE"
+    assert h_stale["heartbeat_healthy"] is False
+    assert h_stale["execution_healthy"] is True
+    assert h_stale["healthy"] is False

@@ -1246,13 +1246,15 @@ class ContinuousLiveRuntime:
         self,
         staleness_threshold_seconds: float = 300.0,
         reference_now: datetime.datetime | None = None,
+        current_evaluations: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         """Compute current worker health diagnostics.
 
         Health states:
         - WORKER_NOT_STARTED: continuous loop hasn't started or executed ticks
-        - WORKER_HEALTHY: tick heartbeat within staleness threshold
-        - WORKER_STALE: tick heartbeat older than staleness threshold
+        - WORKER_STALE: tick heartbeat older than staleness threshold or invalid timestamp
+        - WORKER_DEGRADED: tick heartbeat is fresh but timeframe evaluations fail or are all blocked
+        - WORKER_HEALTHY: tick heartbeat within staleness threshold and execution is healthy
         """
         ref_now = reference_now if reference_now is not None else self.clock()
         if ref_now.tzinfo is None:
@@ -1262,6 +1264,8 @@ class ContinuousLiveRuntime:
             return {
                 "status": "WORKER_NOT_STARTED",
                 "healthy": False,
+                "heartbeat_healthy": False,
+                "execution_healthy": False,
                 "started_at_utc": self._started_at_utc,
                 "last_tick_at_utc": self._last_tick_at_utc,
                 "last_successful_evaluation_at_utc": self._last_successful_evaluation_at_utc,
@@ -1271,18 +1275,49 @@ class ContinuousLiveRuntime:
                 "tick_count": self._tick_count,
             }
 
-        last_tick_dt = datetime.datetime.fromisoformat(self._last_tick_at_utc)
-        if last_tick_dt.tzinfo is None:
-            last_tick_dt = last_tick_dt.replace(tzinfo=datetime.timezone.utc)
+        try:
+            last_tick_dt = datetime.datetime.fromisoformat(self._last_tick_at_utc)
+            if last_tick_dt.tzinfo is None:
+                last_tick_dt = last_tick_dt.replace(tzinfo=datetime.timezone.utc)
+            age_seconds = (ref_now - last_tick_dt).total_seconds()
+        except Exception:
+            age_seconds = -1.0
 
-        age_seconds = (ref_now - last_tick_dt).total_seconds()
-        is_healthy = age_seconds >= 0 and age_seconds <= staleness_threshold_seconds
+        is_heartbeat_healthy = age_seconds >= 0 and age_seconds <= staleness_threshold_seconds
 
-        status = "WORKER_HEALTHY" if is_healthy else "WORKER_STALE"
+        # Evaluate execution health across timeframe evaluations in current tick or latest history
+        evals_to_check = current_evaluations
+        if evals_to_check is None and self._execution_history:
+            evals_to_check = self._execution_history[-1].get("evaluations")
+
+        execution_healthy = True
+        if evals_to_check:
+            has_healthy_tf = False
+            for tf, res in evals_to_check.items():
+                if isinstance(res, dict):
+                    st = res.get("status")
+                    is_blocked = res.get("blocked") is True or st == "BLOCKED"
+                    is_failed = st in ("FAILED_RECOVERABLE", "FAILED", "EXCEPTIONAL_FAILURE") or "error" in res
+                    if not is_blocked and not is_failed:
+                        has_healthy_tf = True
+                        break
+            if not has_healthy_tf:
+                execution_healthy = False
+
+        if not is_heartbeat_healthy:
+            status = "WORKER_STALE"
+        elif not execution_healthy:
+            status = "WORKER_DEGRADED"
+        else:
+            status = "WORKER_HEALTHY"
+
+        is_healthy = is_heartbeat_healthy and execution_healthy
 
         return {
             "status": status,
             "healthy": is_healthy,
+            "heartbeat_healthy": is_heartbeat_healthy,
+            "execution_healthy": execution_healthy,
             "started_at_utc": self._started_at_utc,
             "last_tick_at_utc": self._last_tick_at_utc,
             "last_successful_evaluation_at_utc": self._last_successful_evaluation_at_utc,
@@ -1500,7 +1535,10 @@ class ContinuousLiveRuntime:
                 "tick_number": self._tick_count,
                 "timestamp": ref_now.isoformat(),
                 "evaluations": tick_evaluations,
-                "health": self.get_health_status(reference_now=ref_now),
+                "health": self.get_health_status(
+                    reference_now=ref_now,
+                    current_evaluations=tick_evaluations,
+                ),
             }
             self._execution_history.append(tick_summary)
             return tick_summary
