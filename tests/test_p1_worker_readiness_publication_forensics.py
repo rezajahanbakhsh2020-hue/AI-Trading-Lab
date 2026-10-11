@@ -5,6 +5,7 @@ and gateway acknowledgement handling.
 
 import datetime
 import json
+import os
 import urllib.error
 from pathlib import Path
 from unittest.mock import MagicMock, patch
@@ -12,6 +13,7 @@ import pandas as pd
 import pytest
 
 from src.evaluation.live_execution_runtime import (
+    LiveExecutionRuntime,
     ContinuousLiveRuntime,
     parse_continuous_candidate_ids,
     verify_timeframe_production_readiness,
@@ -23,52 +25,95 @@ from src.evaluation.live_production_decision import (
     ProductionRuntimeAuthorization,
     ProductionAuthorizationReceipt,
     ProductionIntelligencePublication,
+    ProductionSignal,
+    evaluate_production_decision,
+    calculate_production_risk_levels,
+    authorize_production_runtime,
 )
+from src.evaluation.research_store import resolve_promoted_candidate
 from src.evaluation.mtf_intelligence import CanonicalTimeframe
 from src.integration.project2_publisher import Project2Publisher, validate_publication_configuration
 
 
-def _create_mock_pub_artifact(event_id: str, timestamp_iso: str) -> MagicMock:
-    """Helper to create a mock ProductionIntelligencePublication artifact with valid contract dict."""
-    pub_artifact = MagicMock(spec=ProductionIntelligencePublication)
-    pub_artifact.to_contract_v1_payload.return_value = {
-        "contract_version": "1.0",
-        "event_id": event_id,
-        "timestamp": timestamp_iso,
-        "signal": {"decision": "BUY"},
-        "provenance": {"produced_at": timestamp_iso},
-    }
-    return pub_artifact
+def _create_real_pub_artifact(timeframe: str = "5m", candidate_id: str = "cand_moving_average_5m") -> ProductionIntelligencePublication:
+    """Helper to create a genuine, fully-authorized ProductionIntelligencePublication instance."""
+    cand = resolve_promoted_candidate(candidate_id=candidate_id, symbol="XAUUSD", timeframe=timeframe)
+    auth = authorize_production_runtime(cand, symbol="XAUUSD", timeframe=timeframe)
+    now_utc = datetime.datetime.now(datetime.timezone.utc)
+    df = pd.DataFrame([
+        {
+            "timestamp": now_utc - datetime.timedelta(minutes=10),
+            "open": 2000.0,
+            "high": 2005.0,
+            "low": 1995.0,
+            "close": 2002.0,
+            "volume": 100.0,
+            "isClosed": True,
+        },
+        {
+            "timestamp": now_utc - datetime.timedelta(minutes=5),
+            "open": 2002.0,
+            "high": 2010.0,
+            "low": 2001.0,
+            "close": 2008.0,
+            "volume": 150.0,
+            "isClosed": True,
+        },
+    ])
+    dec = evaluate_production_decision(cand, df)
+    sig = ProductionSignal.from_decision(dec)
+    risk = calculate_production_risk_levels(dec, cand)
+    return ProductionIntelligencePublication.from_artifacts(
+        decision=dec,
+        signal=sig,
+        risk=risk,
+        candidate=cand,
+        authorization=auth,
+    )
 
 
 class TestP1WorkerReadinessAndPublicationForensics:
     """Regression test suite validating seven-timeframe candidate mapping, readiness, publication, and security contracts."""
 
+    def test_live_execution_runtime_default_construction_respects_env_disabled(self, monkeypatch):
+        """Verify LiveExecutionRuntime default publisher construction respects PROJECT2_PUBLISH_ENABLED=false."""
+        monkeypatch.delenv("PROJECT2_PUBLISH_ENABLED", raising=False)
+        runtime = LiveExecutionRuntime(symbol="XAUUSD", interval="5m")
+        assert runtime.publisher.enabled is False
+
+    def test_continuous_live_runtime_publish_flag_enables_publisher(self, monkeypatch):
+        """Verify ContinuousLiveRuntime(publish=True) enables publisher regardless of env default."""
+        monkeypatch.delenv("PROJECT2_PUBLISH_ENABLED", raising=False)
+        runtime = ContinuousLiveRuntime(symbol="XAUUSD", timeframes=["5m"], publish=True)
+        assert runtime.publish is True
+        assert runtime.publisher.enabled is True
+
+        runtime_off = ContinuousLiveRuntime(symbol="XAUUSD", timeframes=["5m"], publish=False)
+        assert runtime_off.publisher.enabled is False
+
     def test_publisher_disabled_is_explicit(self):
         """1. Verify publisher disabled status is explicit and controlled by configuration/enabled setting."""
         pub = Project2Publisher(enabled=False, publish_url="https://example.com/api", api_key="test_key")
         assert not pub.enabled
-        now_iso = datetime.datetime.now(datetime.timezone.utc).isoformat()
-        payload = _create_mock_pub_artifact("evt_dis_01", now_iso)
-        res = pub.publish(payload)
+        pub_artifact = _create_real_pub_artifact()
+        res = pub.publish(pub_artifact)
         assert res["status"] == "SKIPPED_DISABLED"
         assert res["published"] is False
 
     def test_missing_publisher_configuration_fails_closed(self):
         """2. Verify missing publisher URL or API key fails closed."""
-        now_iso = datetime.datetime.now(datetime.timezone.utc).isoformat()
-        payload = _create_mock_pub_artifact("evt_cfg_01", now_iso)
+        pub_artifact = _create_real_pub_artifact()
 
         # Missing API Key
         pub_no_key = Project2Publisher(enabled=True, publish_url="https://example.com/api", api_key="")
-        res = pub_no_key.publish(payload)
+        res = pub_no_key.publish(pub_artifact)
         assert res["status"] == "FAILED"
         assert res["published"] is False
         assert "Missing PROJECT2_API_KEY" in res["reason"]
 
         # Missing URL
         pub_no_url = Project2Publisher(enabled=True, publish_url="", api_key="key_123")
-        res2 = pub_no_url.publish(payload)
+        res2 = pub_no_url.publish(pub_artifact)
         assert res2["status"] == "FAILED"
         assert res2["published"] is False
         assert "Missing PROJECT2_PUBLISH_URL" in res2["reason"]
@@ -103,13 +148,13 @@ class TestP1WorkerReadinessAndPublicationForensics:
             enabled=True,
         )
 
-        now_iso = datetime.datetime.now(datetime.timezone.utc).isoformat()
-        pub_artifact = _create_mock_pub_artifact("evt_contract_test_100", now_iso)
+        pub_artifact = _create_real_pub_artifact()
+        event_id = pub_artifact.publication_id
 
         resp_body = json.dumps({
             "status": "ACCEPTED",
-            "event_id": "evt_contract_test_100",
-            "publication_id": "evt_contract_test_100",
+            "event_id": event_id,
+            "publication_id": event_id,
         }).encode("utf-8")
 
         mock_cm = MagicMock()
@@ -125,13 +170,12 @@ class TestP1WorkerReadinessAndPublicationForensics:
         assert res["status"] == "PUBLISHED"
         assert res["published"] is True
         assert res["http_code"] == 200
-        assert res["event_id"] == "evt_contract_test_100"
+        assert res["event_id"] == event_id
         assert mock_urlopen.called
         req = mock_urlopen.call_args[0][0]
-        # Compare headers statelessly
         headers_lower = {k.lower(): v for k, v in req.headers.items()}
         assert headers_lower.get("x-api-key") == "valid_api_key_123"
-        assert headers_lower.get("x-idempotency-key") == "evt_contract_test_100"
+        assert headers_lower.get("x-idempotency-key") == event_id
 
     def test_valid_p2_acknowledgement_is_accepted(self):
         """6. Verify valid identity-bearing P2 acknowledgement is accepted."""
@@ -141,12 +185,12 @@ class TestP1WorkerReadinessAndPublicationForensics:
             enabled=True,
         )
 
-        now_iso = datetime.datetime.now(datetime.timezone.utc).isoformat()
-        pub_artifact = _create_mock_pub_artifact("evt_ack_001", now_iso)
+        pub_artifact = _create_real_pub_artifact()
+        event_id = pub_artifact.publication_id
 
         resp_body = json.dumps({
             "status": "INGESTED",
-            "publication_id": "evt_ack_001",
+            "publication_id": event_id,
         }).encode("utf-8")
 
         mock_cm = MagicMock()
@@ -161,7 +205,7 @@ class TestP1WorkerReadinessAndPublicationForensics:
 
         assert res["status"] == "PUBLISHED"
         assert res["published"] is True
-        assert res["remote_event_id"] == "evt_ack_001"
+        assert res["remote_event_id"] == event_id
 
     def test_conflicting_acknowledgement_identity_is_rejected(self):
         """7. Verify conflicting identity fields in gateway acknowledgement receipt fail closed."""
@@ -171,13 +215,13 @@ class TestP1WorkerReadinessAndPublicationForensics:
             enabled=True,
         )
 
-        now_iso = datetime.datetime.now(datetime.timezone.utc).isoformat()
-        pub_artifact = _create_mock_pub_artifact("evt_conflict_001", now_iso)
+        pub_artifact = _create_real_pub_artifact()
+        event_id = pub_artifact.publication_id
 
         # Conflicting event_id vs publication_id in response
         resp_body = json.dumps({
             "status": "ACCEPTED",
-            "event_id": "evt_conflict_001",
+            "event_id": event_id,
             "publication_id": "evt_DIFFERENT_999",
         }).encode("utf-8")
 
@@ -203,8 +247,7 @@ class TestP1WorkerReadinessAndPublicationForensics:
             enabled=True,
         )
 
-        now_iso = datetime.datetime.now(datetime.timezone.utc).isoformat()
-        pub_artifact = _create_mock_pub_artifact("evt_400", now_iso)
+        pub_artifact = _create_real_pub_artifact()
 
         mock_http_err = urllib.error.HTTPError(
             url="https://example.com/api",
@@ -230,8 +273,7 @@ class TestP1WorkerReadinessAndPublicationForensics:
             enabled=True,
         )
 
-        now_iso = datetime.datetime.now(datetime.timezone.utc).isoformat()
-        pub_artifact = _create_mock_pub_artifact("evt_auth_err", now_iso)
+        pub_artifact = _create_real_pub_artifact()
 
         # 401
         err_401 = urllib.error.HTTPError(
@@ -273,8 +315,7 @@ class TestP1WorkerReadinessAndPublicationForensics:
             enabled=True,
         )
 
-        now_iso = datetime.datetime.now(datetime.timezone.utc).isoformat()
-        pub_artifact = _create_mock_pub_artifact("evt_empty_resp", now_iso)
+        pub_artifact = _create_real_pub_artifact()
 
         # Empty body HTTP 200
         mock_cm = MagicMock()
@@ -300,8 +341,7 @@ class TestP1WorkerReadinessAndPublicationForensics:
             enabled=True,
         )
 
-        now_iso = datetime.datetime.now(datetime.timezone.utc).isoformat()
-        pub_artifact = _create_mock_pub_artifact("evt_redact_test", now_iso)
+        pub_artifact = _create_real_pub_artifact()
 
         err = urllib.error.HTTPError(
             url="https://example.com/api",
