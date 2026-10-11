@@ -1243,7 +1243,7 @@ class ContinuousLiveRuntime:
         return not self._stop_event.is_set()
 
     def _is_healthy_evaluation(self, res: Any) -> bool:
-        """Classify a single timeframe evaluation result using explicit conservative rules (Phase 1)."""
+        """Classify a single timeframe evaluation result using explicit conservative rules."""
         if not isinstance(res, dict) or not res:
             return False
 
@@ -1256,31 +1256,115 @@ class ContinuousLiveRuntime:
             return False
 
         st = res.get("status")
-        if st in ("BLOCKED", "FAILED_RECOVERABLE", "FAILED", "EXCEPTIONAL_FAILURE", "INVALID_RESPONSE", "UNAUTHORIZED", "FORBIDDEN", "TIMED_OUT", "UNKNOWN", "UNKNOWN_CUSTOM_STATUS"):
+
+        # 1. Recognized benign worker operational skips (exact match of status + reason)
+        if st == "SKIPPED_DEDUPLICATED":
+            if res.get("reason") != "candle_already_evaluated":
+                return False
+            if "candle_timestamp" in res and not isinstance(res["candle_timestamp"], str):
+                return False
+            if "timeframe" in res and not isinstance(res["timeframe"], str):
+                return False
+            return True
+
+        if st == "SKIPPED_NO_CLOSED_CANDLE":
+            if res.get("reason") != "latest_candle_is_open_or_unavailable":
+                return False
+            if "symbol" in res and not isinstance(res["symbol"], str):
+                return False
+            if "timeframe" in res and not isinstance(res["timeframe"], str):
+                return False
+            return True
+
+        # Reject reason-only skips without recognized status or invalid status/reason combos
+        if res.get("reason") in ("candle_already_evaluated", "latest_candle_is_open_or_unavailable"):
             return False
 
-        # 1. Recognized benign worker operational skips
-        if st in ("SKIPPED_DEDUPLICATED", "SKIPPED_NO_CLOSED_CANDLE") or res.get("reason") in ("candle_already_evaluated", "latest_candle_is_open_or_unavailable"):
-            return True
+        UNHEALTHY_STATUSES = (
+            "BLOCKED",
+            "FAILED_RECOVERABLE",
+            "FAILED",
+            "EXCEPTIONAL_FAILURE",
+            "INVALID_RESPONSE",
+            "UNAUTHORIZED",
+            "AUTH_FAILED",
+            "FORBIDDEN",
+            "TIMED_OUT",
+            "UNAVAILABLE",
+            "REJECTED",
+            "UNKNOWN",
+            "UNKNOWN_CUSTOM_STATUS",
+            "SKIPPED_BLOCKED",
+        )
+        if st in UNHEALTHY_STATUSES:
+            return False
 
         # 2. Recognized successful run_once evaluation result
         if res.get("blocked") is False:
-            # Reject unknown / contradictory status strings if present
-            if st is not None and st not in ("PERSISTED", "PUBLISHED", "PRESENTABLE", "AUTHORIZED", "EVALUATED", "SUCCESS", "OK", "NO_TRADE_SKIPPED"):
+            VALID_EXECUTION_STATUSES = (
+                "PERSISTED",
+                "PUBLISHED",
+                "PRESENTABLE",
+                "AUTHORIZED",
+                "EVALUATED",
+                "SUCCESS",
+                "OK",
+                "NO_TRADE_SKIPPED",
+            )
+            if st is not None and st not in VALID_EXECUTION_STATUSES:
                 return False
 
-            # Require positive evaluation evidence (decision, record, publication payload, or lifecycle state)
-            has_positive_evidence = (
-                st in ("PERSISTED", "PUBLISHED", "PRESENTABLE", "AUTHORIZED", "EVALUATED", "SUCCESS", "OK")
-                or "decision" in res
-                or "record" in res
-                or "publication" in res
-                or "contract_payload" in res
-                or "current_lifecycle_state" in res
-                or "publish_result" in res
+            # Require positive evaluation evidence (value shape validation, not presence alone)
+            has_record = isinstance(res.get("record"), dict) and len(res["record"]) > 0
+            has_publication = isinstance(res.get("publication"), dict) and len(res["publication"]) > 0
+            has_contract = isinstance(res.get("contract_payload"), dict) and len(res["contract_payload"]) > 0
+            has_valid_decision = isinstance(res.get("decision"), str) and len(res["decision"].strip()) > 0
+            has_lifecycle = isinstance(res.get("current_lifecycle_state"), str) and res["current_lifecycle_state"] in (
+                "PERSISTED", "PUBLISHED", "PRESENTABLE", "AUTHORIZED", "EVALUATED"
             )
+
+            has_positive_evidence = (
+                has_record
+                or has_publication
+                or has_contract
+                or has_lifecycle
+                or (has_valid_decision and st in VALID_EXECUTION_STATUSES)
+            )
+
             if not has_positive_evidence:
                 return False
+
+            # Validate publication outcome if publish_result is present
+            pub_res = res.get("publish_result")
+            if pub_res is not None:
+                if not isinstance(pub_res, dict):
+                    return False
+
+                pub_status = pub_res.get("status")
+                is_published = pub_res.get("published")
+
+                PUB_FAILURE_STATUSES = (
+                    "FAILED",
+                    "REJECTED",
+                    "AUTH_FAILED",
+                    "FORBIDDEN",
+                    "UNAVAILABLE",
+                    "TIMED_OUT",
+                    "INVALID_RESPONSE",
+                    "SKIPPED_BLOCKED",
+                    "MISCONFIGURED",
+                )
+                if pub_status in PUB_FAILURE_STATUSES:
+                    return False
+
+                if is_published is True:
+                    if not pub_status or pub_status not in ("PUBLISHED", "DELIVERED", "ACCEPTED", "OK", "ACKNOWLEDGED", "INGESTED"):
+                        return False
+                elif is_published is False:
+                    if pub_status not in ("SKIPPED_DISABLED", "SKIPPED_NO_TRADE"):
+                        return False
+                else:
+                    return False
 
             return True
 
