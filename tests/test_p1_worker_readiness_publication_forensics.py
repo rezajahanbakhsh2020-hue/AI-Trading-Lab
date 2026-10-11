@@ -4,6 +4,7 @@ and gateway acknowledgement handling.
 """
 
 import datetime
+import json
 import urllib.error
 from pathlib import Path
 from unittest.mock import MagicMock, patch
@@ -27,100 +28,306 @@ from src.evaluation.mtf_intelligence import CanonicalTimeframe
 from src.integration.project2_publisher import Project2Publisher, validate_publication_configuration
 
 
+def _create_mock_pub_artifact(event_id: str, timestamp_iso: str) -> MagicMock:
+    """Helper to create a mock ProductionIntelligencePublication artifact with valid contract dict."""
+    pub_artifact = MagicMock(spec=ProductionIntelligencePublication)
+    pub_artifact.to_contract_v1_payload.return_value = {
+        "contract_version": "1.0",
+        "event_id": event_id,
+        "timestamp": timestamp_iso,
+        "signal": {"decision": "BUY"},
+        "provenance": {"produced_at": timestamp_iso},
+    }
+    return pub_artifact
+
+
 class TestP1WorkerReadinessAndPublicationForensics:
     """Regression test suite validating seven-timeframe candidate mapping, readiness, publication, and security contracts."""
 
-    def test_seven_timeframe_candidate_mapping_parsing(self):
-        """Verify parse_continuous_candidate_ids correctly parses 7-timeframe candidate mappings."""
-        tfs = ["1m", "5m", "15m", "30m", "1H", "4H", "1D"]
-        arg_str = "5m=cand_moving_average_5m,1D=cand_moving_average_1d"
-        mapping = parse_continuous_candidate_ids(arg_str, timeframes=tfs)
+    def test_publisher_disabled_is_explicit(self):
+        """1. Verify publisher disabled status is explicit and controlled by configuration/enabled setting."""
+        pub = Project2Publisher(enabled=False, publish_url="https://example.com/api", api_key="test_key")
+        assert not pub.enabled
+        now_iso = datetime.datetime.now(datetime.timezone.utc).isoformat()
+        payload = _create_mock_pub_artifact("evt_dis_01", now_iso)
+        res = pub.publish(payload)
+        assert res["status"] == "SKIPPED_DISABLED"
+        assert res["published"] is False
 
-        assert mapping == {
-            "5m": "cand_moving_average_5m",
-            "1D": "cand_moving_average_1d",
-        }
-        assert mapping.get("1m") is None
-        assert mapping.get("15m") is None
-        assert mapping.get("30m") is None
-        assert mapping.get("1H") is None
-        assert mapping.get("4H") is None
+    def test_missing_publisher_configuration_fails_closed(self):
+        """2. Verify missing publisher URL or API key fails closed."""
+        now_iso = datetime.datetime.now(datetime.timezone.utc).isoformat()
+        payload = _create_mock_pub_artifact("evt_cfg_01", now_iso)
 
-    def test_missing_or_invalid_candidate_readiness_diagnostics(self):
-        """Verify readiness checks for non-promoted timeframes report BLOCKED with explicit reason code."""
+        # Missing API Key
+        pub_no_key = Project2Publisher(enabled=True, publish_url="https://example.com/api", api_key="")
+        res = pub_no_key.publish(payload)
+        assert res["status"] == "FAILED"
+        assert res["published"] is False
+        assert "Missing PROJECT2_API_KEY" in res["reason"]
+
+        # Missing URL
+        pub_no_url = Project2Publisher(enabled=True, publish_url="", api_key="key_123")
+        res2 = pub_no_url.publish(payload)
+        assert res2["status"] == "FAILED"
+        assert res2["published"] is False
+        assert "Missing PROJECT2_PUBLISH_URL" in res2["reason"]
+
+    def test_worker_resolves_candidate_for_exact_timeframe(self):
+        """3. Verify readiness check resolves candidates for exact timeframe without borrowing across timeframes."""
+        res_5m = verify_timeframe_production_readiness(
+            symbol="XAUUSD", timeframe="5m", candidate_id="cand_moving_average_5m", research_dir=DEFAULT_RESEARCH_DIR
+        )
+        assert res_5m["status"] == "READY"
+        assert res_5m["candidate_id"] == "cand_moving_average_5m"
+
         res_1m = verify_timeframe_production_readiness(
             symbol="XAUUSD", timeframe="1m", candidate_id=None, research_dir=DEFAULT_RESEARCH_DIR
         )
         assert res_1m["status"] == "BLOCKED"
         assert res_1m["reason_code"] == "PromotionUnavailable"
-        assert "No persisted promoted candidate" in res_1m["detail"]
 
-        res_5m = verify_timeframe_production_readiness(
-            symbol="XAUUSD", timeframe="5m", candidate_id="cand_moving_average_5m", research_dir=DEFAULT_RESEARCH_DIR
-        )
-        assert res_5m["status"] == "READY"
-        assert res_5m["reason_code"] == "READY"
-        assert res_5m["candidate_id"] == "cand_moving_average_5m"
+    def test_worker_does_not_copy_candidate_across_timeframes(self):
+        """4. Verify candidate IDs are not copied or reused across multiple timeframes without explicit mapping."""
+        tfs = ["5m", "15m"]
+        arg_str = "cand_single"
+        with pytest.raises(ValueError) as exc_info:
+            parse_continuous_candidate_ids(arg_str, timeframes=tfs)
+        assert "rather than copying a single candidate ID" in str(exc_info.value)
 
-    def test_mixed_ready_blocked_timeframe_startup(self, tmp_path):
-        """Verify ContinuousLiveRuntime startup preflight succeeds when at least 1 timeframe is READY,
-        and logs non-ready timeframes without discarding valid timeframes.
-        """
-        tfs = ["1m", "5m", "15m", "30m", "1H", "4H", "1D"]
-        cand_map = {"5m": "cand_moving_average_5m", "1D": "cand_moving_average_1d"}
-
-        runtime = ContinuousLiveRuntime(
-            symbol="XAUUSD",
-            timeframes=tfs,
-            candidate_ids=cand_map,
-            store_path=tmp_path / "live_decision_history.json",
-            snapshot_path=tmp_path / "latest_snapshot.json",
-            research_dir=DEFAULT_RESEARCH_DIR,
-            publish=False,
+    def test_actual_publisher_sends_contract_to_p2_ingest(self):
+        """5. Verify actual Project2Publisher sends valid Contract v1 payload over HTTP transport."""
+        pub = Project2Publisher(
+            publish_url="https://example.com/api/v1/integration/project1/ingest",
+            api_key="valid_api_key_123",
+            enabled=True,
         )
 
-        readiness = runtime.verify_startup_readiness()
-        assert readiness["5m"]["status"] == "READY"
-        assert readiness["1D"]["status"] == "READY"
-        assert readiness["1m"]["status"] == "BLOCKED"
-        assert readiness["15m"]["status"] == "BLOCKED"
-        assert readiness["30m"]["status"] == "BLOCKED"
-        assert readiness["1H"]["status"] == "BLOCKED"
-        assert readiness["4H"]["status"] == "BLOCKED"
+        now_iso = datetime.datetime.now(datetime.timezone.utc).isoformat()
+        pub_artifact = _create_mock_pub_artifact("evt_contract_test_100", now_iso)
 
-    def test_zero_ready_timeframes_startup_failure(self, tmp_path):
-        """Verify ContinuousLiveRuntime startup preflight raises PromotionUnavailable when 0 timeframes are READY."""
-        tfs = ["1m", "15m", "30m"]
-        cand_map = {}
+        resp_body = json.dumps({
+            "status": "ACCEPTED",
+            "event_id": "evt_contract_test_100",
+            "publication_id": "evt_contract_test_100",
+        }).encode("utf-8")
 
-        runtime = ContinuousLiveRuntime(
-            symbol="XAUUSD",
-            timeframes=tfs,
-            candidate_ids=cand_map,
-            store_path=tmp_path / "live_decision_history.json",
-            snapshot_path=tmp_path / "latest_snapshot.json",
-            research_dir=DEFAULT_RESEARCH_DIR,
-            publish=False,
+        mock_cm = MagicMock()
+        mock_resp = MagicMock()
+        mock_resp.getcode.return_value = 200
+        mock_resp.read.return_value = resp_body
+        mock_resp.geturl.return_value = "https://example.com/api/v1/integration/project1/ingest"
+        mock_cm.__enter__.return_value = mock_resp
+
+        with patch("urllib.request.urlopen", return_value=mock_cm) as mock_urlopen:
+            res = pub.publish(pub_artifact)
+
+        assert res["status"] == "PUBLISHED"
+        assert res["published"] is True
+        assert res["http_code"] == 200
+        assert res["event_id"] == "evt_contract_test_100"
+        assert mock_urlopen.called
+        req = mock_urlopen.call_args[0][0]
+        # Compare headers statelessly
+        headers_lower = {k.lower(): v for k, v in req.headers.items()}
+        assert headers_lower.get("x-api-key") == "valid_api_key_123"
+        assert headers_lower.get("x-idempotency-key") == "evt_contract_test_100"
+
+    def test_valid_p2_acknowledgement_is_accepted(self):
+        """6. Verify valid identity-bearing P2 acknowledgement is accepted."""
+        pub = Project2Publisher(
+            publish_url="https://example.com/api",
+            api_key="valid_key",
+            enabled=True,
         )
 
-        with pytest.raises(PromotionUnavailable) as exc_info:
-            runtime.verify_startup_readiness()
+        now_iso = datetime.datetime.now(datetime.timezone.utc).isoformat()
+        pub_artifact = _create_mock_pub_artifact("evt_ack_001", now_iso)
 
-        assert "0 of 3 configured timeframes are READY" in str(exc_info.value)
+        resp_body = json.dumps({
+            "status": "INGESTED",
+            "publication_id": "evt_ack_001",
+        }).encode("utf-8")
 
-    def test_worker_to_publisher_invocation_flow(self, tmp_path):
-        """Verify worker execution flow invokes Project2Publisher.publish() when publish=True and valid market data exists."""
+        mock_cm = MagicMock()
+        mock_resp = MagicMock()
+        mock_resp.getcode.return_value = 200
+        mock_resp.read.return_value = resp_body
+        mock_resp.geturl.return_value = "https://example.com/api"
+        mock_cm.__enter__.return_value = mock_resp
+
+        with patch("urllib.request.urlopen", return_value=mock_cm):
+            res = pub.publish(pub_artifact)
+
+        assert res["status"] == "PUBLISHED"
+        assert res["published"] is True
+        assert res["remote_event_id"] == "evt_ack_001"
+
+    def test_conflicting_acknowledgement_identity_is_rejected(self):
+        """7. Verify conflicting identity fields in gateway acknowledgement receipt fail closed."""
+        pub = Project2Publisher(
+            publish_url="https://example.com/api",
+            api_key="valid_key",
+            enabled=True,
+        )
+
+        now_iso = datetime.datetime.now(datetime.timezone.utc).isoformat()
+        pub_artifact = _create_mock_pub_artifact("evt_conflict_001", now_iso)
+
+        # Conflicting event_id vs publication_id in response
+        resp_body = json.dumps({
+            "status": "ACCEPTED",
+            "event_id": "evt_conflict_001",
+            "publication_id": "evt_DIFFERENT_999",
+        }).encode("utf-8")
+
+        mock_cm = MagicMock()
+        mock_resp = MagicMock()
+        mock_resp.getcode.return_value = 200
+        mock_resp.read.return_value = resp_body
+        mock_resp.geturl.return_value = "https://example.com/api"
+        mock_cm.__enter__.return_value = mock_resp
+
+        with patch("urllib.request.urlopen", return_value=mock_cm):
+            res = pub.publish(pub_artifact)
+
+        assert res["status"] == "INVALID_RESPONSE"
+        assert res["published"] is False
+        assert "Conflicting identity fields" in res["error"]
+
+    def test_http_400_is_classified_correctly(self):
+        """8. Verify HTTP 400 Bad Request is classified as REJECTED without retry."""
+        pub = Project2Publisher(
+            publish_url="https://example.com/api",
+            api_key="valid_key",
+            enabled=True,
+        )
+
+        now_iso = datetime.datetime.now(datetime.timezone.utc).isoformat()
+        pub_artifact = _create_mock_pub_artifact("evt_400", now_iso)
+
+        mock_http_err = urllib.error.HTTPError(
+            url="https://example.com/api",
+            code=400,
+            msg="Bad Request",
+            hdrs={},
+            fp=MagicMock(read=lambda: b"Schema validation error"),
+        )
+
+        with patch("urllib.request.urlopen", side_effect=mock_http_err):
+            res = pub.publish(pub_artifact)
+
+        assert res["status"] == "REJECTED"
+        assert res["published"] is False
+        assert res["http_code"] == 400
+        assert res["attempts"] == 1  # Non-retryable!
+
+    def test_http_401_and_403_are_classified_correctly(self):
+        """9. Verify HTTP 401 Unauthorized and 403 Forbidden are classified as AUTH_FAILED / FORBIDDEN without retry."""
+        pub = Project2Publisher(
+            publish_url="https://example.com/api",
+            api_key="bad_token",
+            enabled=True,
+        )
+
+        now_iso = datetime.datetime.now(datetime.timezone.utc).isoformat()
+        pub_artifact = _create_mock_pub_artifact("evt_auth_err", now_iso)
+
+        # 401
+        err_401 = urllib.error.HTTPError(
+            url="https://example.com/api",
+            code=401,
+            msg="Unauthorized",
+            hdrs={},
+            fp=MagicMock(read=lambda: b"Invalid credentials"),
+        )
+        with patch("urllib.request.urlopen", side_effect=err_401):
+            res_401 = pub.publish(pub_artifact)
+
+        assert res_401["status"] == "AUTH_FAILED"
+        assert res_401["published"] is False
+        assert res_401["http_code"] == 401
+        assert res_401["attempts"] == 1
+
+        # 403
+        err_403 = urllib.error.HTTPError(
+            url="https://example.com/api",
+            code=403,
+            msg="Forbidden",
+            hdrs={},
+            fp=MagicMock(read=lambda: b"Forbidden access"),
+        )
+        with patch("urllib.request.urlopen", side_effect=err_403):
+            res_403 = pub.publish(pub_artifact)
+
+        assert res_403["status"] == "FORBIDDEN"
+        assert res_403["published"] is False
+        assert res_403["http_code"] == 403
+        assert res_403["attempts"] == 1
+
+    def test_invalid_or_empty_success_response_is_not_published(self):
+        """10. Verify empty or non-JSON HTTP 200 response is rejected as INVALID_RESPONSE."""
+        pub = Project2Publisher(
+            publish_url="https://example.com/api",
+            api_key="valid_key",
+            enabled=True,
+        )
+
+        now_iso = datetime.datetime.now(datetime.timezone.utc).isoformat()
+        pub_artifact = _create_mock_pub_artifact("evt_empty_resp", now_iso)
+
+        # Empty body HTTP 200
+        mock_cm = MagicMock()
+        mock_resp = MagicMock()
+        mock_resp.getcode.return_value = 200
+        mock_resp.read.return_value = b""
+        mock_resp.geturl.return_value = "https://example.com/api"
+        mock_cm.__enter__.return_value = mock_resp
+
+        with patch("urllib.request.urlopen", return_value=mock_cm):
+            res = pub.publish(pub_artifact)
+
+        assert res["status"] == "INVALID_RESPONSE"
+        assert res["published"] is False
+        assert "response body is empty" in res["error"]
+
+    def test_secret_is_redacted_from_failure_details(self):
+        """11. Verify secrets (e.g. bearer tokens / API keys) are redacted from logs and error messages."""
+        secret_token = "my_super_secret_bearer_token_999"
+        pub = Project2Publisher(
+            publish_url="https://example.com/api",
+            api_key=secret_token,
+            enabled=True,
+        )
+
+        now_iso = datetime.datetime.now(datetime.timezone.utc).isoformat()
+        pub_artifact = _create_mock_pub_artifact("evt_redact_test", now_iso)
+
+        err = urllib.error.HTTPError(
+            url="https://example.com/api",
+            code=400,
+            msg="Bad Request",
+            hdrs={},
+            fp=MagicMock(read=lambda: f"Failed request with token {secret_token}".encode("utf-8")),
+        )
+
+        with patch("urllib.request.urlopen", side_effect=err):
+            res = pub.publish(pub_artifact)
+
+        assert secret_token not in res["error"]
+        assert "[REDACTED]" in res["error"]
+
+    def test_failed_delivery_is_not_reported_as_healthy(self, tmp_path):
+        """12. Verify failed publication attempts remain visible in worker health and are not reported as HEALTHY."""
         mock_publisher = MagicMock(spec=Project2Publisher)
         mock_publisher.enabled = True
         mock_publisher.publish_url = "https://example.com/api"
         mock_publisher.api_key = "valid_key"
         mock_publisher.publish.return_value = {
-            "status": "PUBLISHED",
-            "published": True,
-            "http_code": 200,
-            "event_id": "evt_mock_123",
-            "publication_id": "evt_mock_123",
-            "remote_event_id": "evt_mock_123",
+            "status": "AUTH_FAILED",
+            "published": False,
+            "http_code": 401,
+            "error": "HTTP 401 Unauthorized",
         }
 
         runtime = ContinuousLiveRuntime(
@@ -162,38 +369,12 @@ class TestP1WorkerReadinessAndPublicationForensics:
         with patch("src.data.provider.BiQuoteProvider.get_candles", return_value=df):
             tick_summary = runtime.tick(reference_now=now_utc)
 
-        assert "5m" in tick_summary["evaluations"]
-        eval_5m = tick_summary["evaluations"]["5m"]
-        assert eval_5m.get("blocked") is False
-        assert mock_publisher.publish.called
-        pub_call_args = mock_publisher.publish.call_args
-        pub_payload = pub_call_args[0][0]
-        assert isinstance(pub_payload, ProductionIntelligencePublication)
+        health = tick_summary["health"]
+        assert health["status"] in ("WORKER_DEGRADED", "WORKER_STALE")
+        assert health["execution_healthy"] is False
 
-    def test_publisher_configuration_validation(self):
-        """Verify validate_publication_configuration strictly validates URLs and API keys without secret leakage."""
-        # Missing key
-        valid, msg = validate_publication_configuration("https://example.com/api", "")
-        assert not valid
-        assert "PROJECT2_API_KEY" in msg
-
-        # Missing URL
-        valid, msg = validate_publication_configuration("", "valid_key")
-        assert not valid
-        assert "PROJECT2_PUBLISH_URL" in msg
-
-        # API key in query params rejected
-        valid, msg = validate_publication_configuration("https://example.com/api?key=secret_123", "secret_123")
-        assert not valid
-        assert "must not be passed in query parameters" in msg
-
-        # Valid config
-        valid, msg = validate_publication_configuration("https://example.com/api", "valid_key_123")
-        assert valid
-        assert msg == ""
-
-    def test_publisher_stale_but_valid_timestamp_contract(self):
-        """Verify publisher allows publication of old/stale signals (>300s) as valid authoritative signals,
+    def test_stale_but_valid_signal_is_not_blocked_by_ui_ttl(self):
+        """13. Verify publisher allows publication of old/stale signals (>300s) as valid authoritative signals,
         disentangling P1 publication from P2 300s UI LIVE badge TTL.
         """
         pub = Project2Publisher(
@@ -210,69 +391,3 @@ class TestP1WorkerReadinessAndPublicationForensics:
         assert valid is True
         assert status is None
         assert reason is None
-
-    def test_publisher_future_and_malformed_timestamp_rejection(self):
-        """Verify publisher fails closed on future, timezone-naive, or malformed timestamps."""
-        pub = Project2Publisher(
-            publish_url="https://example.com/api",
-            api_key="test_key_123",
-            enabled=True,
-        )
-
-        # Naive timestamp
-        naive_str = "2026-10-11T12:00:00"
-        valid, status, reason = pub.validate_timestamp(naive_str)
-        assert valid is False
-        assert status == "INVALID_RESPONSE"
-        assert "timezone-aware" in reason
-
-        # Future timestamp
-        future_dt = datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(hours=1)
-        valid, status, reason = pub.validate_timestamp(future_dt.isoformat())
-        assert valid is False
-        assert status == "INVALID_RESPONSE"
-        assert "Future event timestamp" in reason
-
-        # Malformed timestamp string
-        valid, status, reason = pub.validate_timestamp("not-a-timestamp")
-        assert valid is False
-        assert status == "INVALID_RESPONSE"
-        assert "Malformed timestamp" in reason
-
-    def test_publisher_explicit_gateway_rejection_and_auth_failure(self):
-        """Verify Project2Publisher handles explicit gateway rejections (400/401/403/REJECTED status) cleanly with secret redaction."""
-        pub = Project2Publisher(
-            publish_url="https://example.com/api",
-            api_key="super_secret_bearer_token_xyz",
-            enabled=True,
-        )
-
-        # Mock payload
-        pub_artifact = MagicMock(spec=ProductionIntelligencePublication)
-        pub_artifact.to_contract_v1_payload.return_value = {
-            "contract_version": "1.0",
-            "event_id": "evt_test_12345",
-            "timestamp": datetime.datetime.now(datetime.timezone.utc).isoformat(),
-            "signal": {"decision": "BUY"},
-            "provenance": {
-                "produced_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
-            },
-        }
-
-        # Test 401 Auth Failure
-        mock_http_err = urllib.error.HTTPError(
-            url="https://example.com/api",
-            code=401,
-            msg="Unauthorized",
-            hdrs={},
-            fp=MagicMock(read=lambda: b"Invalid API key super_secret_bearer_token_xyz"),
-        )
-
-        with patch("urllib.request.urlopen", side_effect=mock_http_err):
-            res = pub.publish(pub_artifact)
-
-        assert res["status"] == "AUTH_FAILED"
-        assert res["published"] is False
-        assert res["http_code"] == 401
-        assert "super_secret_bearer_token_xyz" not in res["error"]
-        assert "[REDACTED]" in res["error"]

@@ -658,7 +658,13 @@ class LiveExecutionRuntime:
         self.symbol = symbol.upper()
         self.interval = interval
         self.limit = limit
-        self.publisher = publisher or Project2Publisher(max_age_seconds=int(max_age_seconds))
+        if publisher is not None:
+            self.publisher = publisher
+        else:
+            self.publisher = Project2Publisher(
+                enabled=True,
+                max_age_seconds=int(max_age_seconds),
+            )
         self.store_path = Path(store_path)
         self.snapshot_path = Path(snapshot_path)
         self.max_age_seconds = max_age_seconds
@@ -1294,7 +1300,13 @@ class ContinuousLiveRuntime:
         self.research_dir = Path(research_dir)
         self.store_path = Path(store_path)
         self.snapshot_path = Path(snapshot_path)
-        self.publisher = publisher or Project2Publisher(max_age_seconds=int(max_age_seconds))
+        if publisher is not None:
+            self.publisher = publisher
+        else:
+            self.publisher = Project2Publisher(
+                enabled=publish,
+                max_age_seconds=int(max_age_seconds),
+            )
         self.market_data_loaders = market_data_loaders
         self.candidate_ids = candidate_ids or {}
         self.clock = clock or (lambda: datetime.datetime.now(datetime.timezone.utc))
