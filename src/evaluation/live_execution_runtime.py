@@ -711,6 +711,61 @@ class LiveExecutionRuntime:
             }
         return execution_result
 
+    def _build_recovery_execution_result(
+        self,
+        rec_item: dict[str, Any],
+        *,
+        persist: bool = True,
+    ) -> dict[str, Any]:
+        """Construct a standardized execution result from a recovery attempt without generating a replacement decision."""
+        pub_res = rec_item.get("publish_result") or {
+            "status": rec_item.get("status") or "FAILED",
+            "published": rec_item.get("status") == "PUBLISHED" or rec_item.get("delivery_status") == "DELIVERED",
+            "reason": rec_item.get("reason"),
+            "error": rec_item.get("error"),
+        }
+        record = rec_item.get("record") or {}
+
+        execution_result = {
+            "blocked": False,
+            "symbol": self.symbol,
+            "interval": self.interval,
+            "decision": record.get("decision", "NO TRADE"),
+            "strategy": record.get("strategy_name") or record.get("strategy"),
+            "stability_score": record.get("stability_score"),
+            "candidate_id": rec_item.get("candidate_id") or record.get("candidate_id"),
+            "evidence_id": record.get("evidence_id"),
+            "research_fingerprint": record.get("research_fingerprint"),
+            "strategy_version": record.get("strategy_version"),
+            "runtime_authorization": record.get("runtime_authorization"),
+            "runtime_authorization_fingerprint": record.get("runtime_authorization_fingerprint"),
+            "authorization_policy_version": record.get("authorization_policy_version"),
+            "authorized_at_utc": record.get("authorized_at_utc"),
+            "promoted_artifact_fingerprint": record.get("promoted_artifact_fingerprint"),
+            "governance_decision_fingerprint": record.get("governance_decision_fingerprint"),
+            "campaign_selection_decision_fingerprint": record.get("campaign_selection_decision_fingerprint"),
+            "context_fingerprint": record.get("context_fingerprint"),
+            "evaluation_fingerprint": record.get("evaluation_fingerprint"),
+            "current_lifecycle_state": pub_res.get("current_lifecycle_state") or record.get("current_lifecycle_state"),
+            "delivery_status": pub_res.get("delivery_status") or rec_item.get("delivery_status"),
+            "delivery_receipt_fingerprint": pub_res.get("delivery_receipt_fingerprint"),
+            "record": record if record else None,
+            "publication": rec_item.get("publication"),
+            "contract_payload": rec_item.get("contract_payload"),
+            "publish_result": pub_res,
+            "market_data": None,
+        }
+
+        if persist:
+            self.snapshot_path.parent.mkdir(parents=True, exist_ok=True)
+            snap_dict = {k: v for k, v in execution_result.items() if k != "market_data"}
+            self.snapshot_path.write_text(
+                json.dumps(snap_dict, ensure_ascii=False, indent=2),
+                encoding="utf-8",
+            )
+
+        return execution_result
+
     def run_once(
         self,
         publish: bool = True,
@@ -742,15 +797,34 @@ class LiveExecutionRuntime:
         if publish and self.publisher and getattr(self.publisher, "enabled", False):
             from src.evaluation.live_publication_store import recover_pending_publication_deliveries
             try:
-                recover_pending_publication_deliveries(
+                rec_results = recover_pending_publication_deliveries(
                     publisher=self.publisher,
                     publication_path=self.store_path.parent / "publication_history.json",
                     delivery_path=self.store_path.parent / "delivery_history.json",
                     decision_store_path=self.store_path,
                     research_dir=self.research_dir,
                 )
+                for rec_item in rec_results:
+                    if (
+                        rec_item.get("symbol") == self.symbol
+                        and rec_item.get("timeframe") == self.interval
+                    ):
+                        return self._build_recovery_execution_result(rec_item, persist=persist)
             except Exception as exc:
                 logger.warning("Pending publication delivery recovery error: %s", exc)
+                blocked = ProductionBlocked(
+                    reason="PUBLICATION_RECOVERY_FAILED",
+                    detail=f"Recovery exception: {exc}",
+                    symbol=self.symbol,
+                    timeframe=self.interval,
+                )
+                return self._blocked_result(
+                    blocked,
+                    persist=persist,
+                    publish=publish,
+                    skip_if_no_trade=skip_if_no_trade,
+                    reference_now=ref_now,
+                )
 
         # 1. Resolve candidate EXACTLY ONCE per cycle
         resolved = resolve_authoritative_promoted_candidate(config)
@@ -1242,17 +1316,147 @@ class ContinuousLiveRuntime:
     def is_running(self) -> bool:
         return not self._stop_event.is_set()
 
+    def _is_healthy_evaluation(self, res: Any) -> bool:
+        """Classify a single timeframe evaluation result using explicit conservative rules."""
+        if not isinstance(res, dict) or not res:
+            return False
+
+        # Fail closed on explicit blocked or failure flags
+        if res.get("blocked") is True:
+            return False
+
+        # Check for explicit error/exception fields
+        if "error" in res or "exception" in res:
+            return False
+
+        st = res.get("status")
+
+        # 1. Recognized benign worker operational skips (exact match of status + reason)
+        if st == "SKIPPED_DEDUPLICATED":
+            if res.get("reason") != "candle_already_evaluated":
+                return False
+            if "candle_timestamp" in res and not isinstance(res["candle_timestamp"], str):
+                return False
+            if "timeframe" in res and not isinstance(res["timeframe"], str):
+                return False
+            return True
+
+        if st == "SKIPPED_NO_CLOSED_CANDLE":
+            if res.get("reason") != "latest_candle_is_open_or_unavailable":
+                return False
+            if "symbol" in res and not isinstance(res["symbol"], str):
+                return False
+            if "timeframe" in res and not isinstance(res["timeframe"], str):
+                return False
+            return True
+
+        # Reject reason-only skips without recognized status or invalid status/reason combos
+        if res.get("reason") in ("candle_already_evaluated", "latest_candle_is_open_or_unavailable"):
+            return False
+
+        UNHEALTHY_STATUSES = (
+            "BLOCKED",
+            "FAILED_RECOVERABLE",
+            "FAILED",
+            "EXCEPTIONAL_FAILURE",
+            "INVALID_RESPONSE",
+            "UNAUTHORIZED",
+            "AUTH_FAILED",
+            "FORBIDDEN",
+            "TIMED_OUT",
+            "UNAVAILABLE",
+            "REJECTED",
+            "UNKNOWN",
+            "UNKNOWN_CUSTOM_STATUS",
+            "SKIPPED_BLOCKED",
+        )
+        if st in UNHEALTHY_STATUSES:
+            return False
+
+        # 2. Recognized successful run_once evaluation result
+        if res.get("blocked") is False:
+            VALID_EXECUTION_STATUSES = (
+                "PERSISTED",
+                "PUBLISHED",
+                "PRESENTABLE",
+                "AUTHORIZED",
+                "EVALUATED",
+                "SUCCESS",
+                "OK",
+                "NO_TRADE_SKIPPED",
+            )
+            if st is not None and st not in VALID_EXECUTION_STATUSES:
+                return False
+
+            # Require positive evaluation evidence (value shape validation, not presence alone)
+            has_record = isinstance(res.get("record"), dict) and len(res["record"]) > 0
+            has_publication = isinstance(res.get("publication"), dict) and len(res["publication"]) > 0
+            has_contract = isinstance(res.get("contract_payload"), dict) and len(res["contract_payload"]) > 0
+            has_valid_decision = isinstance(res.get("decision"), str) and len(res["decision"].strip()) > 0
+            has_lifecycle = isinstance(res.get("current_lifecycle_state"), str) and res["current_lifecycle_state"] in (
+                "PERSISTED", "PUBLISHED", "PRESENTABLE", "AUTHORIZED", "EVALUATED"
+            )
+
+            has_positive_evidence = (
+                has_record
+                or has_publication
+                or has_contract
+                or has_lifecycle
+                or (has_valid_decision and st in VALID_EXECUTION_STATUSES)
+            )
+
+            if not has_positive_evidence:
+                return False
+
+            # Validate publication outcome if publish_result is present
+            pub_res = res.get("publish_result")
+            if pub_res is not None:
+                if not isinstance(pub_res, dict):
+                    return False
+
+                pub_status = pub_res.get("status")
+                is_published = pub_res.get("published")
+
+                PUB_FAILURE_STATUSES = (
+                    "FAILED",
+                    "REJECTED",
+                    "AUTH_FAILED",
+                    "FORBIDDEN",
+                    "UNAVAILABLE",
+                    "TIMED_OUT",
+                    "INVALID_RESPONSE",
+                    "SKIPPED_BLOCKED",
+                    "MISCONFIGURED",
+                )
+                if pub_status in PUB_FAILURE_STATUSES:
+                    return False
+
+                if is_published is True:
+                    if not pub_status or pub_status not in ("PUBLISHED", "DELIVERED", "ACCEPTED", "OK", "ACKNOWLEDGED", "INGESTED"):
+                        return False
+                elif is_published is False:
+                    if pub_status not in ("SKIPPED_DISABLED", "SKIPPED_NO_TRADE"):
+                        return False
+                else:
+                    return False
+
+            return True
+
+        return False
+
     def get_health_status(
         self,
         staleness_threshold_seconds: float = 300.0,
         reference_now: datetime.datetime | None = None,
+        current_evaluations: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         """Compute current worker health diagnostics.
 
         Health states:
         - WORKER_NOT_STARTED: continuous loop hasn't started or executed ticks
-        - WORKER_HEALTHY: tick heartbeat within staleness threshold
-        - WORKER_STALE: tick heartbeat older than staleness threshold
+        - WORKER_STALE: tick heartbeat older than staleness threshold or invalid timestamp
+        - WORKER_DEGRADED: tick heartbeat is fresh but timeframe evaluations fail or are all blocked
+        - WORKER_HEALTHY: tick heartbeat within staleness threshold and execution is healthy
         """
         ref_now = reference_now if reference_now is not None else self.clock()
         if ref_now.tzinfo is None:
@@ -1262,6 +1466,8 @@ class ContinuousLiveRuntime:
             return {
                 "status": "WORKER_NOT_STARTED",
                 "healthy": False,
+                "heartbeat_healthy": False,
+                "execution_healthy": False,
                 "started_at_utc": self._started_at_utc,
                 "last_tick_at_utc": self._last_tick_at_utc,
                 "last_successful_evaluation_at_utc": self._last_successful_evaluation_at_utc,
@@ -1271,18 +1477,45 @@ class ContinuousLiveRuntime:
                 "tick_count": self._tick_count,
             }
 
-        last_tick_dt = datetime.datetime.fromisoformat(self._last_tick_at_utc)
-        if last_tick_dt.tzinfo is None:
-            last_tick_dt = last_tick_dt.replace(tzinfo=datetime.timezone.utc)
+        try:
+            last_tick_dt = datetime.datetime.fromisoformat(self._last_tick_at_utc)
+            if last_tick_dt.tzinfo is None:
+                last_tick_dt = last_tick_dt.replace(tzinfo=datetime.timezone.utc)
+            age_seconds = (ref_now - last_tick_dt).total_seconds()
+        except Exception:
+            age_seconds = -1.0
 
-        age_seconds = (ref_now - last_tick_dt).total_seconds()
-        is_healthy = age_seconds >= 0 and age_seconds <= staleness_threshold_seconds
+        is_heartbeat_healthy = age_seconds >= 0 and age_seconds <= staleness_threshold_seconds
 
-        status = "WORKER_HEALTHY" if is_healthy else "WORKER_STALE"
+        # Evaluate execution health across timeframe evaluations in current tick or latest history
+        evals_to_check = current_evaluations
+        if evals_to_check is None and self._execution_history:
+            evals_to_check = self._execution_history[-1].get("evaluations")
+
+        execution_healthy = False
+        if isinstance(evals_to_check, dict) and evals_to_check:
+            has_healthy_tf = False
+            for tf, res in evals_to_check.items():
+                if self._is_healthy_evaluation(res):
+                    has_healthy_tf = True
+                    break
+            if has_healthy_tf:
+                execution_healthy = True
+
+        if not is_heartbeat_healthy:
+            status = "WORKER_STALE"
+        elif not execution_healthy:
+            status = "WORKER_DEGRADED"
+        else:
+            status = "WORKER_HEALTHY"
+
+        is_healthy = is_heartbeat_healthy and execution_healthy
 
         return {
             "status": status,
             "healthy": is_healthy,
+            "heartbeat_healthy": is_heartbeat_healthy,
+            "execution_healthy": execution_healthy,
             "started_at_utc": self._started_at_utc,
             "last_tick_at_utc": self._last_tick_at_utc,
             "last_successful_evaluation_at_utc": self._last_successful_evaluation_at_utc,
@@ -1472,15 +1705,15 @@ class ContinuousLiveRuntime:
 
                     tick_evaluations[canonical_tf] = result
 
-                    # 7. Add to deduplication set ONLY AFTER successful evaluation execution
-                    if result.get("blocked") is not True:
+                    # 7. Add to deduplication set ONLY AFTER healthy evaluation execution
+                    if self._is_healthy_evaluation(result):
                         self._evaluated_candles.add(dedup_key)
                         self._last_successful_evaluation_at_utc = ref_now.isoformat()
                         pub_res = result.get("publish_result")
                         if pub_res and pub_res.get("published") is True:
                             self._last_successful_publication_at_utc = ref_now.isoformat()
                     else:
-                        self._last_failure_reason = result.get("reason") or "EVALUATION_BLOCKED"
+                        self._last_failure_reason = result.get("reason") or result.get("error") or "EVALUATION_UNHEALTHY"
 
                 except Exception as exc:
                     logger.error("Recoverable failure evaluating %s %s: %s", self.symbol, canonical_tf, exc)
@@ -1500,7 +1733,10 @@ class ContinuousLiveRuntime:
                 "tick_number": self._tick_count,
                 "timestamp": ref_now.isoformat(),
                 "evaluations": tick_evaluations,
-                "health": self.get_health_status(reference_now=ref_now),
+                "health": self.get_health_status(
+                    reference_now=ref_now,
+                    current_evaluations=tick_evaluations,
+                ),
             }
             self._execution_history.append(tick_summary)
             return tick_summary
