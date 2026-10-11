@@ -867,6 +867,52 @@ def test_independent_startup_readiness_partial_blocked_runs_healthy_timeframe(tm
         assert eval_15m["candidate_id"] == "missing_15m_cand"
 
 
+def test_stale_timeframe_readiness_cache_invalidation_on_failed_preflight(tmp_path: Path) -> None:
+    """Verify that a failed preflight invalidates any previous cached _timeframe_readiness matrix."""
+    from unittest.mock import patch
+    from src.evaluation.research_store import PromotionUnavailable, save_research_candidate
+    from tests.test_timeframe_identity_invariants import _make_test_evidence
+
+    # 1. Create candidate artifact for 5m
+    save_research_candidate(
+        candidate_id="cand_5m_cache",
+        evidence=_make_test_evidence("5m"),
+        operational_stability_score=0.88,
+        base_dir=tmp_path,
+    )
+
+    cont_runtime = ContinuousLiveRuntime(
+        symbol="XAUUSD",
+        timeframes=["5m", "15m"],
+        research_dir=tmp_path,
+        candidate_ids={
+            "5m": "cand_5m_cache",
+            "15m": "missing_15m",
+        },
+        publish=False,
+    )
+
+    # First preflight: 5m is READY -> cached
+    first_res = cont_runtime.verify_startup_readiness()
+    assert first_res["5m"]["status"] == "READY"
+    assert cont_runtime._timeframe_readiness["5m"]["status"] == "READY"
+
+    # Second preflight: mock verify_timeframe_production_readiness to return BLOCKED for all
+    blocked_mock = {
+        "timeframe": "5m",
+        "status": "BLOCKED",
+        "reason_code": "PromotionUnavailable",
+        "detail": "Mocked failure for stale cache test",
+        "candidate_id": "cand_5m_cache",
+    }
+    with patch("src.evaluation.live_execution_runtime.verify_timeframe_production_readiness", return_value=blocked_mock):
+        with pytest.raises(PromotionUnavailable, match="0 of 2 configured timeframes are READY"):
+            cont_runtime.verify_startup_readiness()
+
+    # Assert that stale readiness cache from first preflight was cleared and is empty
+    assert cont_runtime._timeframe_readiness == {}
+
+
 def test_independent_startup_readiness_all_blocked_fails_closed(tmp_path: Path) -> None:
     """Test C: All timeframes BLOCKED must fail closed with PromotionUnavailable on startup preflight."""
     from src.evaluation.research_store import PromotionUnavailable

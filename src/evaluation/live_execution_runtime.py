@@ -1525,6 +1525,7 @@ class ContinuousLiveRuntime:
         Fails closed with PromotionUnavailable if 0 configured timeframes are READY.
         Allows continuous polling loop to proceed if at least 1 configured timeframe is READY.
         """
+        self._timeframe_readiness = {}
         if self.publish and self.publisher and getattr(self.publisher, "enabled", False):
             from src.evaluation.live_publication_store import recover_pending_publication_deliveries
             try:
