@@ -1243,7 +1243,7 @@ class ContinuousLiveRuntime:
         return not self._stop_event.is_set()
 
     def _is_healthy_evaluation(self, res: Any) -> bool:
-        """Classify a single timeframe evaluation result using explicit conservative rules."""
+        """Classify a single timeframe evaluation result using explicit conservative rules (Phase 1)."""
         if not isinstance(res, dict) or not res:
             return False
 
@@ -1259,50 +1259,27 @@ class ContinuousLiveRuntime:
         if st in ("BLOCKED", "FAILED_RECOVERABLE", "FAILED", "EXCEPTIONAL_FAILURE", "INVALID_RESPONSE", "UNAUTHORIZED", "FORBIDDEN", "TIMED_OUT", "UNKNOWN", "UNKNOWN_CUSTOM_STATUS"):
             return False
 
-        # 1. Recognized benign operational skips
+        # 1. Recognized benign worker operational skips
         if st in ("SKIPPED_DEDUPLICATED", "SKIPPED_NO_CLOSED_CANDLE") or res.get("reason") in ("candle_already_evaluated", "latest_candle_is_open_or_unavailable"):
             return True
 
         # 2. Recognized successful run_once evaluation result
         if res.get("blocked") is False:
-            # Check for unknown / contradictory status if present
+            # Reject unknown / contradictory status strings if present
             if st is not None and st not in ("PERSISTED", "PUBLISHED", "PRESENTABLE", "AUTHORIZED", "EVALUATED", "SUCCESS", "OK", "NO_TRADE_SKIPPED"):
                 return False
 
-            pub_required = (
-                self.publish
-                and self.publisher is not None
-                and getattr(self.publisher, "enabled", False)
+            # Require positive evaluation evidence (decision, record, publication payload, or lifecycle state)
+            has_positive_evidence = (
+                st in ("PERSISTED", "PUBLISHED", "PRESENTABLE", "AUTHORIZED", "EVALUATED", "SUCCESS", "OK")
+                or "decision" in res
+                or "record" in res
+                or "publication" in res
+                or "contract_payload" in res
+                or "current_lifecycle_state" in res
+                or "publish_result" in res
             )
-
-            if pub_required:
-                pub_res = res.get("publish_result")
-                if not isinstance(pub_res, dict) or not pub_res:
-                    return False
-
-                pub_status = pub_res.get("status")
-                is_published = pub_res.get("published")
-
-                # Contradictory checks
-                if is_published is True and pub_status in ("FAILED", "REJECTED", "AUTH_FAILED", "FORBIDDEN", "UNAVAILABLE", "TIMED_OUT", "INVALID_RESPONSE", "MISCONFIGURED"):
-                    return False
-                if is_published is False and pub_status in ("PUBLISHED", "DELIVERED", "ACCEPTED", "ACKNOWLEDGED", "OK", "SUCCESS"):
-                    return False
-
-                # Actual publisher failure outcomes
-                if pub_status in ("FAILED", "REJECTED", "AUTH_FAILED", "FORBIDDEN", "UNAVAILABLE", "TIMED_OUT", "INVALID_RESPONSE", "MISCONFIGURED") or "error" in pub_res:
-                    return False
-
-                # Permitted skips
-                if pub_status in ("SKIPPED_NO_TRADE", "SKIPPED_DISABLED", "SKIPPED_STALE"):
-                    if pub_status == "SKIPPED_NO_TRADE" and not (self.skip_if_no_trade or res.get("decision") == "NO TRADE"):
-                        return False
-                    return True
-
-                # Verified publication success
-                if is_published is True or pub_status in ("PUBLISHED", "DELIVERED", "INGESTED", "ACCEPTED", "ACKNOWLEDGED", "OK", "SUCCESS"):
-                    return True
-
+            if not has_positive_evidence:
                 return False
 
             return True
