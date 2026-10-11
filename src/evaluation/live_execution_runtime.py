@@ -1429,6 +1429,10 @@ class ContinuousLiveRuntime:
                     }
                     continue
 
+                # Derive timeframe-scoped persistence paths to guarantee path isolation across timeframes
+                tf_store_path = self.store_path.parent / canonical_tf / self.store_path.name
+                tf_snapshot_path = self.snapshot_path.parent / canonical_tf / self.snapshot_path.name
+
                 # 6. Delegate strictly to existing authoritative run_once() primitive
                 try:
                     runtime = LiveExecutionRuntime(
@@ -1436,8 +1440,8 @@ class ContinuousLiveRuntime:
                         interval=canonical_tf,
                         limit=self.limit,
                         publisher=self.publisher,
-                        store_path=self.store_path,
-                        snapshot_path=self.snapshot_path,
+                        store_path=tf_store_path,
+                        snapshot_path=tf_snapshot_path,
                         max_age_seconds=self.max_age_seconds,
                         research_dir=self.research_dir,
                         production_config=config,

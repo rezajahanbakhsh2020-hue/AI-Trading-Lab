@@ -799,3 +799,89 @@ def test_38_39_40_41_canonical_ladder_includes_seven_canonical_timeframes() -> N
     assert ContinuousLiveRuntime(symbol="XAUUSD", timeframes=["5m"]).timeframes == ("5m",)
     with pytest.raises(ValueError, match="Unknown or unsupported timeframe '2m'"):
         CanonicalTimeframe.from_str("2m")
+
+
+def test_timeframe_scoped_persistence_path_isolation(tmp_path: Path) -> None:
+    """Verify that ContinuousLiveRuntime writes snapshots and store history to distinct timeframe-scoped paths."""
+    from unittest.mock import patch
+    from src.evaluation.research_store import save_research_candidate
+    from tests.test_timeframe_identity_invariants import _make_test_evidence
+
+    # Create candidate artifacts for 1m and 5m
+    save_research_candidate(
+        candidate_id="cand_1m",
+        evidence=_make_test_evidence("1m"),
+        operational_stability_score=0.80,
+        base_dir=tmp_path,
+    )
+    save_research_candidate(
+        candidate_id="cand_5m",
+        evidence=_make_test_evidence("5m"),
+        operational_stability_score=0.85,
+        base_dir=tmp_path,
+    )
+
+    base_store = tmp_path / "live" / "decision_history.json"
+    base_snapshot = tmp_path / "live" / "latest_execution.json"
+
+    cont_runtime = ContinuousLiveRuntime(
+        symbol="XAUUSD",
+        timeframes=["1m", "5m"],
+        research_dir=tmp_path,
+        store_path=base_store,
+        snapshot_path=base_snapshot,
+        candidate_ids={
+            "1m": "cand_1m",
+            "5m": "cand_5m",
+        },
+        publish=False,
+    )
+
+    now_dt = datetime.datetime.now(datetime.timezone.utc)
+    dates = [now_dt - datetime.timedelta(minutes=i) for i in range(10)]
+    dates.reverse()
+    df_1m = pd.DataFrame({
+        "openTime": [d.isoformat() for d in dates],
+        "open": [2000.0] * 10,
+        "high": [2005.0] * 10,
+        "low": [1995.0] * 10,
+        "close": [2002.0] * 10,
+    })
+
+    with patch.object(cont_runtime, "_acquire_market_data", return_value=df_1m):
+        tick_res = cont_runtime.tick(reference_now=now_dt)
+
+        # Confirm 1m and 5m were evaluated independently
+        eval_1m = tick_res["evaluations"]["1m"]
+        eval_5m = tick_res["evaluations"]["5m"]
+
+        assert eval_1m["blocked"] is False
+        assert eval_1m["candidate_id"] == "cand_1m"
+        assert eval_1m["interval"] == "1m"
+
+        assert eval_5m["blocked"] is False
+        assert eval_5m["candidate_id"] == "cand_5m"
+        assert eval_5m["interval"] == "5m"
+
+        # Verify distinct timeframe-scoped snapshot files exist
+        snap_1m_file = tmp_path / "live" / "1m" / "latest_execution.json"
+        snap_5m_file = tmp_path / "live" / "5m" / "latest_execution.json"
+
+        assert snap_1m_file.exists()
+        assert snap_5m_file.exists()
+
+        snap_1m = json.loads(snap_1m_file.read_text(encoding="utf-8"))
+        snap_5m = json.loads(snap_5m_file.read_text(encoding="utf-8"))
+
+        assert snap_1m["candidate_id"] == "cand_1m"
+        assert snap_1m["interval"] == "1m"
+
+        assert snap_5m["candidate_id"] == "cand_5m"
+        assert snap_5m["interval"] == "5m"
+
+        # Verify distinct timeframe-scoped decision history store files exist
+        store_1m_file = tmp_path / "live" / "1m" / "decision_history.json"
+        store_5m_file = tmp_path / "live" / "5m" / "decision_history.json"
+
+        assert store_1m_file.exists()
+        assert store_5m_file.exists()
