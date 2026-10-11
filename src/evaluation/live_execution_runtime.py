@@ -1242,6 +1242,43 @@ class ContinuousLiveRuntime:
     def is_running(self) -> bool:
         return not self._stop_event.is_set()
 
+    def _is_healthy_evaluation(self, res: Any) -> bool:
+        """Classify a single timeframe evaluation result using explicit conservative rules."""
+        if not isinstance(res, dict):
+            return False
+        if res.get("blocked") is True:
+            return False
+        st = res.get("status")
+        if st in ("BLOCKED", "FAILED_RECOVERABLE", "FAILED", "EXCEPTIONAL_FAILURE"):
+            return False
+        if "error" in res or "exception" in res:
+            return False
+
+        # Recognized benign operational skips
+        if st in ("SKIPPED_DEDUPLICATED", "SKIPPED_NO_CLOSED_CANDLE"):
+            return True
+
+        # Recognized successful run_once evaluation result
+        if res.get("blocked") is False:
+            pub_required = (
+                self.publish
+                and self.publisher is not None
+                and getattr(self.publisher, "enabled", False)
+            )
+            if pub_required:
+                pub_res = res.get("publish_result")
+                if isinstance(pub_res, dict):
+                    if pub_res.get("published") is False and pub_res.get("status") in (
+                        "FAILED",
+                        "REJECTED",
+                        "MISCONFIGURED",
+                        "TIMED_OUT",
+                    ):
+                        return False
+            return True
+
+        return False
+
     def get_health_status(
         self,
         staleness_threshold_seconds: float = 300.0,
@@ -1290,19 +1327,15 @@ class ContinuousLiveRuntime:
         if evals_to_check is None and self._execution_history:
             evals_to_check = self._execution_history[-1].get("evaluations")
 
-        execution_healthy = True
-        if evals_to_check:
+        execution_healthy = False
+        if isinstance(evals_to_check, dict) and evals_to_check:
             has_healthy_tf = False
             for tf, res in evals_to_check.items():
-                if isinstance(res, dict):
-                    st = res.get("status")
-                    is_blocked = res.get("blocked") is True or st == "BLOCKED"
-                    is_failed = st in ("FAILED_RECOVERABLE", "FAILED", "EXCEPTIONAL_FAILURE") or "error" in res
-                    if not is_blocked and not is_failed:
-                        has_healthy_tf = True
-                        break
-            if not has_healthy_tf:
-                execution_healthy = False
+                if self._is_healthy_evaluation(res):
+                    has_healthy_tf = True
+                    break
+            if has_healthy_tf:
+                execution_healthy = True
 
         if not is_heartbeat_healthy:
             status = "WORKER_STALE"
