@@ -537,6 +537,10 @@ def recover_pending_publication_deliveries(
             append_delivery_receipt(exhausted_receipt, d_path)
             results.append({
                 "publication_id": receipt.publication_id,
+                "decision_id": receipt.decision_id,
+                "symbol": receipt.symbol,
+                "timeframe": receipt.timeframe,
+                "candidate_id": receipt.candidate_id,
                 "status": "FAILED_PERMANENT",
                 "reason": "Retry attempts exhausted",
                 "attempt_count": receipt.attempt_count,
@@ -575,6 +579,10 @@ def recover_pending_publication_deliveries(
             append_delivery_receipt(failed_receipt, d_path)
             results.append({
                 "publication_id": receipt.publication_id,
+                "decision_id": receipt.decision_id,
+                "symbol": receipt.symbol,
+                "timeframe": receipt.timeframe,
+                "candidate_id": receipt.candidate_id,
                 "status": "FAILED_PERMANENT",
                 "reason": f"Unresolvable candidate '{receipt.candidate_id}'",
                 "attempt_count": receipt.attempt_count + 1,
@@ -614,6 +622,10 @@ def recover_pending_publication_deliveries(
             append_delivery_receipt(failed_receipt, d_path)
             results.append({
                 "publication_id": receipt.publication_id,
+                "decision_id": receipt.decision_id,
+                "symbol": receipt.symbol,
+                "timeframe": receipt.timeframe,
+                "candidate_id": receipt.candidate_id,
                 "status": "FAILED_PERMANENT",
                 "reason": "Missing decision record",
                 "attempt_count": receipt.attempt_count + 1,
@@ -633,13 +645,25 @@ def recover_pending_publication_deliveries(
             )
             results.append({
                 "publication_id": receipt.publication_id,
+                "decision_id": receipt.decision_id,
+                "symbol": receipt.symbol,
+                "timeframe": receipt.timeframe,
+                "candidate_id": receipt.candidate_id,
                 "status": pub_res.get("status"),
                 "delivery_status": pub_res.get("delivery_status"),
                 "attempt_count": receipt.attempt_count + 1,
+                "publish_result": pub_res,
+                "record": target_record,
+                "publication": pub_obj.as_dict() if pub_obj else None,
+                "contract_payload": pub_obj.to_contract_v1_payload() if pub_obj else None,
             })
         except Exception as exc:
             results.append({
                 "publication_id": receipt.publication_id,
+                "decision_id": receipt.decision_id,
+                "symbol": receipt.symbol,
+                "timeframe": receipt.timeframe,
+                "candidate_id": receipt.candidate_id,
                 "status": "FAILED_RECOVERY_EXCEPTION",
                 "error": str(exc),
                 "attempt_count": receipt.attempt_count + 1,

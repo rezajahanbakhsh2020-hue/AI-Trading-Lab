@@ -711,6 +711,61 @@ class LiveExecutionRuntime:
             }
         return execution_result
 
+    def _build_recovery_execution_result(
+        self,
+        rec_item: dict[str, Any],
+        *,
+        persist: bool = True,
+    ) -> dict[str, Any]:
+        """Construct a standardized execution result from a recovery attempt without generating a replacement decision."""
+        pub_res = rec_item.get("publish_result") or {
+            "status": rec_item.get("status") or "FAILED",
+            "published": rec_item.get("status") == "PUBLISHED" or rec_item.get("delivery_status") == "DELIVERED",
+            "reason": rec_item.get("reason"),
+            "error": rec_item.get("error"),
+        }
+        record = rec_item.get("record") or {}
+
+        execution_result = {
+            "blocked": False,
+            "symbol": self.symbol,
+            "interval": self.interval,
+            "decision": record.get("decision", "NO TRADE"),
+            "strategy": record.get("strategy_name") or record.get("strategy"),
+            "stability_score": record.get("stability_score"),
+            "candidate_id": rec_item.get("candidate_id") or record.get("candidate_id"),
+            "evidence_id": record.get("evidence_id"),
+            "research_fingerprint": record.get("research_fingerprint"),
+            "strategy_version": record.get("strategy_version"),
+            "runtime_authorization": record.get("runtime_authorization"),
+            "runtime_authorization_fingerprint": record.get("runtime_authorization_fingerprint"),
+            "authorization_policy_version": record.get("authorization_policy_version"),
+            "authorized_at_utc": record.get("authorized_at_utc"),
+            "promoted_artifact_fingerprint": record.get("promoted_artifact_fingerprint"),
+            "governance_decision_fingerprint": record.get("governance_decision_fingerprint"),
+            "campaign_selection_decision_fingerprint": record.get("campaign_selection_decision_fingerprint"),
+            "context_fingerprint": record.get("context_fingerprint"),
+            "evaluation_fingerprint": record.get("evaluation_fingerprint"),
+            "current_lifecycle_state": pub_res.get("current_lifecycle_state") or record.get("current_lifecycle_state"),
+            "delivery_status": pub_res.get("delivery_status") or rec_item.get("delivery_status"),
+            "delivery_receipt_fingerprint": pub_res.get("delivery_receipt_fingerprint"),
+            "record": record if record else None,
+            "publication": rec_item.get("publication"),
+            "contract_payload": rec_item.get("contract_payload"),
+            "publish_result": pub_res,
+            "market_data": None,
+        }
+
+        if persist:
+            self.snapshot_path.parent.mkdir(parents=True, exist_ok=True)
+            snap_dict = {k: v for k, v in execution_result.items() if k != "market_data"}
+            self.snapshot_path.write_text(
+                json.dumps(snap_dict, ensure_ascii=False, indent=2),
+                encoding="utf-8",
+            )
+
+        return execution_result
+
     def run_once(
         self,
         publish: bool = True,
@@ -742,15 +797,34 @@ class LiveExecutionRuntime:
         if publish and self.publisher and getattr(self.publisher, "enabled", False):
             from src.evaluation.live_publication_store import recover_pending_publication_deliveries
             try:
-                recover_pending_publication_deliveries(
+                rec_results = recover_pending_publication_deliveries(
                     publisher=self.publisher,
                     publication_path=self.store_path.parent / "publication_history.json",
                     delivery_path=self.store_path.parent / "delivery_history.json",
                     decision_store_path=self.store_path,
                     research_dir=self.research_dir,
                 )
+                for rec_item in rec_results:
+                    if (
+                        rec_item.get("symbol") == self.symbol
+                        and rec_item.get("timeframe") == self.interval
+                    ):
+                        return self._build_recovery_execution_result(rec_item, persist=persist)
             except Exception as exc:
                 logger.warning("Pending publication delivery recovery error: %s", exc)
+                blocked = ProductionBlocked(
+                    reason="PUBLICATION_RECOVERY_FAILED",
+                    detail=f"Recovery exception: {exc}",
+                    symbol=self.symbol,
+                    timeframe=self.interval,
+                )
+                return self._blocked_result(
+                    blocked,
+                    persist=persist,
+                    publish=publish,
+                    skip_if_no_trade=skip_if_no_trade,
+                    reference_now=ref_now,
+                )
 
         # 1. Resolve candidate EXACTLY ONCE per cycle
         resolved = resolve_authoritative_promoted_candidate(config)
