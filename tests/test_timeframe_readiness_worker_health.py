@@ -711,3 +711,116 @@ def test_repeated_deduplicated_candles_remain_operationally_healthy():
 
     assert tick_summary_2["health"]["status"] == "WORKER_HEALTHY"
     assert tick_summary_2["health"]["execution_healthy"] is True
+
+
+def test_multi_tick_failed_publication_then_recovery_sequence():
+    """Verify that a tick with failed publication is not deduplicated and retries until healthy."""
+    now_dt = datetime.datetime(2026, 10, 9, 12, 0, 0, tzinfo=datetime.timezone.utc)
+    runtime = ContinuousLiveRuntime(symbol="XAUUSD", timeframes=["5m"], clock=lambda: now_dt)
+
+    mock_df = pd.DataFrame(
+        {
+            "openTime": ["2026-10-09T11:50:00Z", "2026-10-09T11:55:00Z"],
+            "open": [2600.0, 2601.0],
+            "high": [2605.0, 2606.0],
+            "low": [2599.0, 2600.0],
+            "close": [2602.0, 2603.0],
+            "isOpen": [False, False],
+        }
+    )
+    runtime.market_data_loaders = {"5m": lambda: mock_df}
+
+    # Tick 1: Publication fails
+    failed_pub_res = {
+        "status": "FAILED",
+        "published": False,
+        "error": "HTTP 503 Service Unavailable",
+    }
+    tick1_res = make_real_run_once_success(publish_result=failed_pub_res)
+
+    with patch("src.evaluation.live_execution_runtime.resolve_authoritative_promoted_candidate", return_value=MagicMock(candidate_id="cand_moving_average_5m", timeframe="5m")):
+        with patch("src.evaluation.live_execution_runtime.LiveExecutionRuntime.run_once", return_value=tick1_res) as mock_run_once:
+            tick_summary_1 = runtime.tick(reference_now=now_dt)
+            assert mock_run_once.call_count == 1
+
+    # Assert Tick 1 is WORKER_DEGRADED due to publication failure
+    assert tick_summary_1["health"]["status"] == "WORKER_DEGRADED"
+    assert tick_summary_1["health"]["execution_healthy"] is False
+
+    # Assert key was NOT added to deduplication set
+    dedup_key = ("XAUUSD", "5m", "2026-10-09T11:55:00+00:00", "cand_moving_average_5m")
+    assert dedup_key not in runtime._evaluated_candles
+
+    # Tick 2: Same candle, publication now succeeds via recovery
+    successful_pub_res = {
+        "status": "PUBLISHED",
+        "published": True,
+        "http_code": 200,
+        "event_id": "evt_123",
+    }
+    tick2_res = make_real_run_once_success(publish_result=successful_pub_res)
+
+    with patch("src.evaluation.live_execution_runtime.resolve_authoritative_promoted_candidate", return_value=MagicMock(candidate_id="cand_moving_average_5m", timeframe="5m")):
+        with patch("src.evaluation.live_execution_runtime.LiveExecutionRuntime.run_once", return_value=tick2_res) as mock_run_once_2:
+            tick_summary_2 = runtime.tick(reference_now=now_dt)
+            # Must run run_once again (not skipped as deduplicated)
+            assert mock_run_once_2.call_count == 1
+
+    # Assert Tick 2 is WORKER_HEALTHY
+    assert tick_summary_2["health"]["status"] == "WORKER_HEALTHY"
+    assert tick_summary_2["health"]["execution_healthy"] is True
+
+    # Assert key IS now added to deduplication set
+    assert dedup_key in runtime._evaluated_candles
+
+    # Tick 3: Same candle -> Now cleanly deduplicated
+    with patch("src.evaluation.live_execution_runtime.resolve_authoritative_promoted_candidate", return_value=MagicMock(candidate_id="cand_moving_average_5m", timeframe="5m")):
+        with patch("src.evaluation.live_execution_runtime.LiveExecutionRuntime.run_once") as mock_run_once_3:
+            tick_summary_3 = runtime.tick(reference_now=now_dt)
+            # run_once should NOT be called on tick 3
+            assert mock_run_once_3.call_count == 0
+
+    assert tick_summary_3["evaluations"]["5m"]["status"] == "SKIPPED_DEDUPLICATED"
+    assert tick_summary_3["health"]["status"] == "WORKER_HEALTHY"
+
+
+def test_multi_tick_persistent_publication_failure_remains_degraded():
+    """Verify that persistent publication failure prevents false-positive deduplicated health."""
+    now_dt = datetime.datetime(2026, 10, 9, 12, 0, 0, tzinfo=datetime.timezone.utc)
+    runtime = ContinuousLiveRuntime(symbol="XAUUSD", timeframes=["5m"], clock=lambda: now_dt)
+
+    mock_df = pd.DataFrame(
+        {
+            "openTime": ["2026-10-09T11:50:00Z", "2026-10-09T11:55:00Z"],
+            "open": [2600.0, 2601.0],
+            "high": [2605.0, 2606.0],
+            "low": [2599.0, 2600.0],
+            "close": [2602.0, 2603.0],
+            "isOpen": [False, False],
+        }
+    )
+    runtime.market_data_loaders = {"5m": lambda: mock_df}
+
+    failed_pub_res = {
+        "status": "FAILED",
+        "published": False,
+        "error": "HTTP 500 Internal Server Error",
+    }
+    tick_res = make_real_run_once_success(publish_result=failed_pub_res)
+
+    # Tick 1
+    with patch("src.evaluation.live_execution_runtime.resolve_authoritative_promoted_candidate", return_value=MagicMock(candidate_id="cand_moving_average_5m", timeframe="5m")):
+        with patch("src.evaluation.live_execution_runtime.LiveExecutionRuntime.run_once", return_value=tick_res):
+            tick_1 = runtime.tick(reference_now=now_dt)
+
+    assert tick_1["health"]["status"] == "WORKER_DEGRADED"
+
+    # Tick 2: Same candle, publication fails again
+    with patch("src.evaluation.live_execution_runtime.resolve_authoritative_promoted_candidate", return_value=MagicMock(candidate_id="cand_moving_average_5m", timeframe="5m")):
+        with patch("src.evaluation.live_execution_runtime.LiveExecutionRuntime.run_once", return_value=tick_res) as mock_run_once_2:
+            tick_2 = runtime.tick(reference_now=now_dt)
+            assert mock_run_once_2.call_count == 1
+
+    assert tick_2["health"]["status"] == "WORKER_DEGRADED"
+    assert tick_2["evaluations"]["5m"].get("status") != "SKIPPED_DEDUPLICATED"
+    assert tick_2["evaluations"]["5m"]["blocked"] is False

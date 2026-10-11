@@ -1631,15 +1631,15 @@ class ContinuousLiveRuntime:
 
                     tick_evaluations[canonical_tf] = result
 
-                    # 7. Add to deduplication set ONLY AFTER successful evaluation execution
-                    if result.get("blocked") is not True:
+                    # 7. Add to deduplication set ONLY AFTER healthy evaluation execution
+                    if self._is_healthy_evaluation(result):
                         self._evaluated_candles.add(dedup_key)
                         self._last_successful_evaluation_at_utc = ref_now.isoformat()
                         pub_res = result.get("publish_result")
                         if pub_res and pub_res.get("published") is True:
                             self._last_successful_publication_at_utc = ref_now.isoformat()
                     else:
-                        self._last_failure_reason = result.get("reason") or "EVALUATION_BLOCKED"
+                        self._last_failure_reason = result.get("reason") or result.get("error") or "EVALUATION_UNHEALTHY"
 
                 except Exception as exc:
                     logger.error("Recoverable failure evaluating %s %s: %s", self.symbol, canonical_tf, exc)
