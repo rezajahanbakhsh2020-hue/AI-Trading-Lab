@@ -801,6 +801,131 @@ def test_38_39_40_41_canonical_ladder_includes_seven_canonical_timeframes() -> N
         CanonicalTimeframe.from_str("2m")
 
 
+def test_independent_startup_readiness_partial_blocked_runs_healthy_timeframe(tmp_path: Path) -> None:
+    """Test A: One BLOCKED timeframe (missing candidate) must not prevent healthy READY timeframes from starting.
+
+    Verifies:
+    1. Both 5m (READY) and 15m (BLOCKED: missing candidate) are evaluated in readiness check.
+    2. 5m is READY, 15m is BLOCKED with reason code PromotionUnavailable.
+    3. Startup readiness preflight passes because at least 1 timeframe (5m) is READY.
+    4. Continuous loop tick evaluates 5m normally and emits BLOCKED status for 15m without aborting tick.
+    5. 15m cannot borrow 5m candidate or publish signals.
+    """
+    from unittest.mock import patch
+    from src.evaluation.research_store import save_research_candidate
+    from tests.test_timeframe_identity_invariants import _make_test_evidence
+
+    # Create candidate artifact ONLY for 5m
+    save_research_candidate(
+        candidate_id="cand_5m_only",
+        evidence=_make_test_evidence("5m"),
+        operational_stability_score=0.88,
+        base_dir=tmp_path,
+    )
+
+    cont_runtime = ContinuousLiveRuntime(
+        symbol="XAUUSD",
+        timeframes=["5m", "15m"],
+        research_dir=tmp_path,
+        candidate_ids={
+            "5m": "cand_5m_only",
+            "15m": "missing_15m_cand",
+        },
+        publish=False,
+    )
+
+    readiness = cont_runtime.verify_startup_readiness()
+    assert readiness["5m"]["status"] == "READY"
+    assert readiness["5m"]["candidate_id"] == "cand_5m_only"
+
+    assert readiness["15m"]["status"] == "BLOCKED"
+    assert readiness["15m"]["reason_code"] == "PromotionUnavailable"
+
+    # Execute tick and verify 5m runs healthy while 15m remains BLOCKED safely
+    now_dt = datetime.datetime.now(datetime.timezone.utc)
+    dates = [now_dt - datetime.timedelta(minutes=5 * i) for i in range(10)]
+    dates.reverse()
+    df_5m = pd.DataFrame({
+        "openTime": [d.isoformat() for d in dates],
+        "open": [2000.0] * 10,
+        "high": [2005.0] * 10,
+        "low": [1995.0] * 10,
+        "close": [2002.0] * 10,
+    })
+
+    with patch.object(cont_runtime, "_acquire_market_data", return_value=df_5m):
+        tick_res = cont_runtime.tick(reference_now=now_dt)
+
+        eval_5m = tick_res["evaluations"]["5m"]
+        eval_15m = tick_res["evaluations"]["15m"]
+
+        assert eval_5m["blocked"] is False
+        assert eval_5m["candidate_id"] == "cand_5m_only"
+
+        assert eval_15m["blocked"] is True
+        assert eval_15m["reason"] == "PromotionUnavailable"
+        assert eval_15m["candidate_id"] == "missing_15m_cand"
+
+
+def test_independent_startup_readiness_all_blocked_fails_closed(tmp_path: Path) -> None:
+    """Test C: All timeframes BLOCKED must fail closed with PromotionUnavailable on startup preflight."""
+    from src.evaluation.research_store import PromotionUnavailable
+    cont_runtime = ContinuousLiveRuntime(
+        symbol="XAUUSD",
+        timeframes=["1m", "15m"],
+        research_dir=tmp_path,
+        candidate_ids={
+            "1m": "missing_1m",
+            "15m": "missing_15m",
+        },
+        publish=False,
+    )
+
+    with pytest.raises(PromotionUnavailable, match="0 of 2 configured timeframes are READY"):
+        cont_runtime.verify_startup_readiness()
+
+
+def test_independent_startup_readiness_seven_timeframe_ladder(tmp_path: Path) -> None:
+    """Test E: Canonical seven-timeframe ladder readiness preflight matrix."""
+    from src.evaluation.research_store import save_research_candidate
+    from tests.test_timeframe_identity_invariants import _make_test_evidence
+
+    # Only 5m and 1D candidate artifacts created
+    save_research_candidate(
+        candidate_id="cand_5m",
+        evidence=_make_test_evidence("5m"),
+        operational_stability_score=0.85,
+        base_dir=tmp_path,
+    )
+    save_research_candidate(
+        candidate_id="cand_1d",
+        evidence=_make_test_evidence("1D"),
+        operational_stability_score=0.90,
+        base_dir=tmp_path,
+    )
+
+    cont_runtime = ContinuousLiveRuntime(
+        symbol="XAUUSD",
+        timeframes=CanonicalTimeframe.canonical_ladder(),
+        research_dir=tmp_path,
+        candidate_ids={
+            "5m": "cand_5m",
+            "1D": "cand_1d",
+        },
+        publish=False,
+    )
+
+    readiness = cont_runtime.verify_startup_readiness()
+    assert len(readiness) == 7
+
+    assert readiness["5m"]["status"] == "READY"
+    assert readiness["1D"]["status"] == "READY"
+
+    for blocked_tf in ("1m", "15m", "30m", "1H", "4H"):
+        assert readiness[blocked_tf]["status"] == "BLOCKED"
+        assert readiness[blocked_tf]["reason_code"] == "PromotionUnavailable"
+
+
 def test_timeframe_scoped_persistence_path_isolation(tmp_path: Path) -> None:
     """Verify that ContinuousLiveRuntime writes snapshots and store history to distinct timeframe-scoped paths."""
     from unittest.mock import patch
