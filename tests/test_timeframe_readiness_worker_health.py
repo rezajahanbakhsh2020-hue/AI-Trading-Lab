@@ -267,3 +267,193 @@ def test_worker_health_stale_heartbeat_overrides_execution_health():
     assert h_stale["heartbeat_healthy"] is False
     assert h_stale["execution_healthy"] is True
     assert h_stale["healthy"] is False
+
+
+def test_empty_or_unknown_or_malformed_evaluations_are_degraded():
+    """Verify empty ({}), unknown status, or malformed evaluation evidence is classified as degraded."""
+    now_dt = datetime.datetime(2026, 10, 9, 12, 0, 0, tzinfo=datetime.timezone.utc)
+    runtime = ContinuousLiveRuntime(
+        symbol="XAUUSD",
+        timeframes=["5m"],
+        clock=lambda: now_dt,
+    )
+    runtime._started_at_utc = now_dt.isoformat()
+    runtime._last_tick_at_utc = now_dt.isoformat()
+
+    # 1. Explicit empty current_evaluations mapping
+    h_empty = runtime.get_health_status(reference_now=now_dt, current_evaluations={})
+    assert h_empty["status"] == "WORKER_DEGRADED"
+    assert h_empty["heartbeat_healthy"] is True
+    assert h_empty["execution_healthy"] is False
+
+    # 2. Unknown / unrecognized status without positive evidence
+    h_unknown = runtime.get_health_status(reference_now=now_dt, current_evaluations={"5m": {"status": "UNKNOWN_CUSTOM_STATUS"}})
+    assert h_unknown["status"] == "WORKER_DEGRADED"
+    assert h_unknown["execution_healthy"] is False
+
+    # 3. Malformed / non-dict evaluation object
+    h_malformed = runtime.get_health_status(reference_now=now_dt, current_evaluations={"5m": "string_not_dict"})
+    assert h_malformed["status"] == "WORKER_DEGRADED"
+    assert h_malformed["execution_healthy"] is False
+
+
+def test_no_closed_candle_is_a_recognized_benign_skip():
+    """Verify SKIPPED_NO_CLOSED_CANDLE is a recognized benign skip and classified as execution healthy."""
+    now_dt = datetime.datetime(2026, 10, 9, 12, 0, 0, tzinfo=datetime.timezone.utc)
+    runtime = ContinuousLiveRuntime(
+        symbol="XAUUSD",
+        timeframes=["5m"],
+        clock=lambda: now_dt,
+    )
+    runtime._started_at_utc = now_dt.isoformat()
+    runtime._last_tick_at_utc = now_dt.isoformat()
+
+    h_nocandle = runtime.get_health_status(
+        reference_now=now_dt,
+        current_evaluations={"5m": {"status": "SKIPPED_NO_CLOSED_CANDLE", "reason": "open_candle"}},
+    )
+    assert h_nocandle["status"] == "WORKER_HEALTHY"
+    assert h_nocandle["heartbeat_healthy"] is True
+    assert h_nocandle["execution_healthy"] is True
+
+
+def test_mixed_valid_and_failed_timeframes_policy():
+    """Verify mixed timeframe outcomes with at least 1 valid operational outcome are healthy."""
+    now_dt = datetime.datetime(2026, 10, 9, 12, 0, 0, tzinfo=datetime.timezone.utc)
+    runtime = ContinuousLiveRuntime(
+        symbol="XAUUSD",
+        timeframes=["5m", "15m"],
+        clock=lambda: now_dt,
+    )
+    runtime._started_at_utc = now_dt.isoformat()
+    runtime._last_tick_at_utc = now_dt.isoformat()
+
+    mixed_evals = {
+        "5m": {"blocked": False, "status": "EVALUATED"},
+        "15m": {"blocked": True, "status": "BLOCKED"},
+    }
+    h_mixed = runtime.get_health_status(reference_now=now_dt, current_evaluations=mixed_evals)
+    assert h_mixed["status"] == "WORKER_HEALTHY"
+    assert h_mixed["execution_healthy"] is True
+
+
+def test_publication_failure_degrades_when_publication_required():
+    """Verify failed publication degrades execution health when publication is enabled."""
+    now_dt = datetime.datetime(2026, 10, 9, 12, 0, 0, tzinfo=datetime.timezone.utc)
+    mock_publisher = MagicMock(enabled=True)
+    runtime = ContinuousLiveRuntime(
+        symbol="XAUUSD",
+        timeframes=["5m"],
+        publish=True,
+        publisher=mock_publisher,
+        clock=lambda: now_dt,
+    )
+    runtime._started_at_utc = now_dt.isoformat()
+    runtime._last_tick_at_utc = now_dt.isoformat()
+
+    failed_pub_evals = {
+        "5m": {
+            "blocked": False,
+            "publish_result": {"published": False, "status": "FAILED", "error": "ConnectionRefused"},
+        }
+    }
+    h_failed_pub = runtime.get_health_status(reference_now=now_dt, current_evaluations=failed_pub_evals)
+    assert h_failed_pub["status"] == "WORKER_DEGRADED"
+    assert h_failed_pub["execution_healthy"] is False
+
+    # When publish=False, publication failure is not required and evaluation is healthy
+    runtime_no_pub = ContinuousLiveRuntime(
+        symbol="XAUUSD",
+        timeframes=["5m"],
+        publish=False,
+        clock=lambda: now_dt,
+    )
+    runtime_no_pub._started_at_utc = now_dt.isoformat()
+    runtime_no_pub._last_tick_at_utc = now_dt.isoformat()
+
+    h_no_pub = runtime_no_pub.get_health_status(reference_now=now_dt, current_evaluations=failed_pub_evals)
+    assert h_no_pub["status"] == "WORKER_HEALTHY"
+    assert h_no_pub["execution_healthy"] is True
+
+
+@pytest.mark.parametrize(
+    "fail_status",
+    [
+        "FAILED",
+        "REJECTED",
+        "AUTH_FAILED",
+        "FORBIDDEN",
+        "UNAVAILABLE",
+        "TIMED_OUT",
+        "INVALID_RESPONSE",
+        "MISCONFIGURED",
+    ],
+)
+def test_all_publisher_failure_statuses_degrade_health(fail_status: str):
+    """Verify all explicit publisher failure statuses trigger WORKER_DEGRADED when publication is required."""
+    now_dt = datetime.datetime(2026, 10, 9, 12, 0, 0, tzinfo=datetime.timezone.utc)
+    mock_publisher = MagicMock(enabled=True)
+    runtime = ContinuousLiveRuntime(
+        symbol="XAUUSD",
+        timeframes=["5m"],
+        publish=True,
+        publisher=mock_publisher,
+        clock=lambda: now_dt,
+    )
+    runtime._started_at_utc = now_dt.isoformat()
+    runtime._last_tick_at_utc = now_dt.isoformat()
+
+    eval_data = {
+        "5m": {
+            "blocked": False,
+            "publish_result": {"published": False, "status": fail_status, "error": f"Error {fail_status}"},
+        }
+    }
+    h = runtime.get_health_status(reference_now=now_dt, current_evaluations=eval_data)
+    assert h["status"] == "WORKER_DEGRADED"
+    assert h["execution_healthy"] is False
+
+
+def test_missing_publish_result_when_publication_required_is_degraded():
+    """Verify missing publish_result when publication is required fails closed to WORKER_DEGRADED."""
+    now_dt = datetime.datetime(2026, 10, 9, 12, 0, 0, tzinfo=datetime.timezone.utc)
+    mock_publisher = MagicMock(enabled=True)
+    runtime = ContinuousLiveRuntime(
+        symbol="XAUUSD",
+        timeframes=["5m"],
+        publish=True,
+        publisher=mock_publisher,
+        clock=lambda: now_dt,
+    )
+    runtime._started_at_utc = now_dt.isoformat()
+    runtime._last_tick_at_utc = now_dt.isoformat()
+
+    eval_data = {"5m": {"blocked": False, "publish_result": None}}
+    h = runtime.get_health_status(reference_now=now_dt, current_evaluations=eval_data)
+    assert h["status"] == "WORKER_DEGRADED"
+    assert h["execution_healthy"] is False
+
+
+def test_contradictory_publication_fields_degrade_health():
+    """Verify contradictory publication evidence (published=True with status=FAILED) degrades health."""
+    now_dt = datetime.datetime(2026, 10, 9, 12, 0, 0, tzinfo=datetime.timezone.utc)
+    mock_publisher = MagicMock(enabled=True)
+    runtime = ContinuousLiveRuntime(
+        symbol="XAUUSD",
+        timeframes=["5m"],
+        publish=True,
+        publisher=mock_publisher,
+        clock=lambda: now_dt,
+    )
+    runtime._started_at_utc = now_dt.isoformat()
+    runtime._last_tick_at_utc = now_dt.isoformat()
+
+    eval_data = {
+        "5m": {
+            "blocked": False,
+            "publish_result": {"published": True, "status": "FAILED", "error": "Contradictory status"},
+        }
+    }
+    h = runtime.get_health_status(reference_now=now_dt, current_evaluations=eval_data)
+    assert h["status"] == "WORKER_DEGRADED"
+    assert h["execution_healthy"] is False
