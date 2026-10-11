@@ -56,14 +56,14 @@ class AuthorizedProductionRuntimeContext:
             )
 
         req_symbol = str(self.symbol).strip().upper() if self.symbol else ""
-        req_timeframe = str(self.timeframe).strip() if self.timeframe else ""
+        raw_timeframe = str(self.timeframe).strip() if self.timeframe else ""
         req_cand_id = str(self.candidate_id).strip() if self.candidate_id else ""
         req_strat_id = str(self.strategy_id).strip() if self.strategy_id else ""
         req_strat_ver = str(self.strategy_version).strip() if self.strategy_version else ""
 
         if not req_symbol:
             raise RuntimeContextValidationError("symbol must be a non-empty string.")
-        if not req_timeframe:
+        if not raw_timeframe:
             raise RuntimeContextValidationError("timeframe must be a non-empty string.")
         if not req_cand_id:
             raise RuntimeContextValidationError("candidate_id must be a non-empty string.")
@@ -71,6 +71,14 @@ class AuthorizedProductionRuntimeContext:
             raise RuntimeContextValidationError("strategy_id must be a non-empty string.")
         if not req_strat_ver:
             raise RuntimeContextValidationError("strategy_version must be a non-empty string.")
+
+        try:
+            from src.evaluation.mtf_intelligence import CanonicalTimeframe
+            req_timeframe = CanonicalTimeframe.from_str(raw_timeframe).value
+            cand_timeframe = CanonicalTimeframe.from_str(self.candidate.timeframe).value
+            auth_timeframe = CanonicalTimeframe.from_str(self.authorization.timeframe).value
+        except (ValueError, TypeError) as exc:
+            raise RuntimeContextValidationError(f"Invalid timeframe: {exc}")
 
         # Normalize string attributes
         object.__setattr__(self, "symbol", req_symbol)
@@ -98,11 +106,11 @@ class AuthorizedProductionRuntimeContext:
             raise RuntimeContextValidationError(
                 f"Authorization symbol '{self.authorization.symbol}' does not match context symbol '{self.symbol}'."
             )
-        if self.timeframe != self.candidate.timeframe:
+        if req_timeframe != cand_timeframe:
             raise RuntimeContextValidationError(
                 f"Context timeframe '{self.timeframe}' does not match candidate timeframe '{self.candidate.timeframe}'."
             )
-        if self.authorization.timeframe != self.timeframe:
+        if auth_timeframe != req_timeframe:
             raise RuntimeContextValidationError(
                 f"Authorization timeframe '{self.authorization.timeframe}' does not match context timeframe '{self.timeframe}'."
             )

@@ -3,6 +3,7 @@ from __future__ import annotations
 import pandas as pd
 import pytest
 
+from src.evaluation.mtf_intelligence import CanonicalTimeframe
 from src.evaluation.live_production_decision import (
     build_live_production_decision,
 )
@@ -93,7 +94,7 @@ def test_end_to_end_live_proof():
     )
 
     assert overlay["symbol"] == "XAUUSD"
-    assert overlay["interval"] == "1d"
+    assert CanonicalTimeframe.from_str(overlay["interval"]) == CanonicalTimeframe.ONE_DAY
     assert overlay["decision"] == "BUY"
     assert overlay["trend"] == "UP"
     assert overlay["stable_strategy"] == "momentum"

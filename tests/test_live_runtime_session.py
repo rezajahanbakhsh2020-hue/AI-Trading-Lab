@@ -15,6 +15,7 @@ def _market_data() -> pd.DataFrame:
                 "2025-01-01",
                 periods=10,
                 freq="D",
+                tz="UTC",
             ),
             "open": [
                 2600.0,

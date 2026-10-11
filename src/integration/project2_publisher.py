@@ -9,6 +9,7 @@ import os
 import time
 import urllib.request
 import urllib.error
+from urllib.parse import urlparse
 from typing import Any, Dict, Optional
 
 logger = logging.getLogger(__name__)
@@ -19,6 +20,47 @@ def _redact_secret(text: str, secret: Optional[str]) -> str:
     if secret and len(secret) > 0 and secret in text:
         return text.replace(secret, "[REDACTED]")
     return text
+
+
+def validate_publication_configuration(
+    publish_url: object,
+    api_key: object,
+) -> tuple[bool, str]:
+    """Deterministically validate publication configuration without network I/O or secret disclosure.
+
+    Returns (is_valid, safe_reason_or_message).
+    """
+    if api_key is None or not str(api_key).strip():
+        return False, "Missing PROJECT2_API_KEY configuration"
+
+    if publish_url is None or not str(publish_url).strip():
+        return False, "Missing PROJECT2_PUBLISH_URL configuration"
+
+    url_str = str(publish_url).strip()
+    key_str = str(api_key).strip()
+
+    try:
+        parsed = urlparse(url_str)
+        if not parsed.scheme or parsed.scheme.lower() not in ("http", "https"):
+            return False, "Invalid PROJECT2_PUBLISH_URL scheme (must be http or https)"
+        if not parsed.netloc:
+            return False, "Invalid PROJECT2_PUBLISH_URL missing host"
+        if not parsed.hostname or not str(parsed.hostname).strip():
+            return False, "Invalid PROJECT2_PUBLISH_URL missing host"
+        if any(c.isspace() for c in parsed.netloc):
+            return False, "Invalid PROJECT2_PUBLISH_URL host contains invalid whitespace"
+        try:
+            _ = parsed.hostname
+            _ = parsed.port
+        except ValueError:
+            return False, "Invalid PROJECT2_PUBLISH_URL host or port"
+
+        if key_str in parsed.query:
+            return False, "PROJECT2_API_KEY must not be passed in query parameters"
+    except Exception:
+        return False, "Malformed PROJECT2_PUBLISH_URL"
+
+    return True, ""
 
 
 
@@ -129,47 +171,12 @@ class Project2Publisher:
                 "reason": "Publisher disabled in configuration",
             }
 
-        if not self.publish_url or not str(self.publish_url).strip():
+        valid_config, config_reason = validate_publication_configuration(self.publish_url, self.api_key)
+        if not valid_config:
             return {
                 "status": "FAILED",
                 "published": False,
-                "reason": "Missing PROJECT2_PUBLISH_URL configuration",
-            }
-
-        url_str = str(self.publish_url).strip()
-        from urllib.parse import urlparse
-        try:
-            parsed_url = urlparse(url_str)
-            if not parsed_url.scheme or parsed_url.scheme.lower() not in ("http", "https"):
-                return {
-                    "status": "FAILED",
-                    "published": False,
-                    "reason": f"Invalid PROJECT2_PUBLISH_URL scheme: '{parsed_url.scheme}'",
-                }
-            if not parsed_url.netloc:
-                return {
-                    "status": "FAILED",
-                    "published": False,
-                    "reason": f"Invalid PROJECT2_PUBLISH_URL missing host: '{url_str}'",
-                }
-            if self.api_key and self.api_key in parsed_url.query:
-                return {
-                    "status": "FAILED",
-                    "published": False,
-                    "reason": "PROJECT2_API_KEY must not be passed in query parameters",
-                }
-        except Exception as exc:
-            return {
-                "status": "FAILED",
-                "published": False,
-                "reason": f"Malformed PROJECT2_PUBLISH_URL '{url_str}': {exc}",
-            }
-
-        if not self.api_key:
-            return {
-                "status": "FAILED",
-                "published": False,
-                "reason": "Missing PROJECT2_API_KEY configuration",
+                "reason": config_reason,
             }
 
         decision = payload_dict.get("signal", {}).get("decision")
