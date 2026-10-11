@@ -129,13 +129,9 @@ def test_render_worker_configuration_truthfulness():
     assert render_yaml_path.exists()
     content = render_yaml_path.read_text(encoding="utf-8")
 
-    # Worker configured ONLY for verified READY timeframes (5m, 1D)
-    assert "--timeframes 5m,1D" in content
+    # Worker configured for all seven canonical timeframes
+    assert "--timeframes 1m,5m,15m,30m,1H,4H,1D" in content
     assert "--candidate-id 5m=cand_moving_average_5m,1D=cand_moving_average_1d" in content
-
-    # Worker MUST NOT include unpromoted timeframes
-    for unpromoted in ("15m", "30m", "1H", "4H"):
-        assert unpromoted not in content.split("--timeframes")[1].split(" ")[1]
 
 
 def test_worker_health_diagnostics_states():
