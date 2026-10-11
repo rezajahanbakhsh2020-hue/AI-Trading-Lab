@@ -1259,7 +1259,7 @@ class ContinuousLiveRuntime:
         symbol: str = "XAUUSD",
         timeframes: Sequence[str] | str | None = None,
         poll_interval: float = 1.0,
-        publish: bool = True,
+        publish: bool | None = None,
         skip_if_no_trade: bool = False,
         persist: bool = True,
         max_age_seconds: float = 300.0,
@@ -1286,7 +1286,15 @@ class ContinuousLiveRuntime:
         self.timeframes = tuple(CanonicalTimeframe.from_str(tf).value for tf in tf_list)
 
         self.poll_interval = max(0.0, poll_interval)
-        self.publish = publish
+        if publisher is not None:
+            self.publisher = publisher
+            self.publish = publish if publish is not None else getattr(publisher, "enabled", False)
+        else:
+            self.publisher = Project2Publisher(
+                enabled=publish if publish is not None else None,
+                max_age_seconds=int(max_age_seconds),
+            )
+            self.publish = self.publisher.enabled if publish is None else publish
         self.skip_if_no_trade = skip_if_no_trade
         self.persist = persist
         self.max_age_seconds = max_age_seconds
@@ -1294,7 +1302,6 @@ class ContinuousLiveRuntime:
         self.research_dir = Path(research_dir)
         self.store_path = Path(store_path)
         self.snapshot_path = Path(snapshot_path)
-        self.publisher = publisher or Project2Publisher(max_age_seconds=int(max_age_seconds))
         self.market_data_loaders = market_data_loaders
         self.candidate_ids = candidate_ids or {}
         self.clock = clock or (lambda: datetime.datetime.now(datetime.timezone.utc))
