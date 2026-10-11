@@ -301,6 +301,7 @@ def verify_timeframe_production_readiness(
 
     # 1. Provider interval support check
     provider_interval_map = {
+        "1m": "1m",
         "5m": "5m",
         "15m": "15m",
         "30m": "30m",
@@ -1067,7 +1068,9 @@ class LiveExecutionRuntime:
 def get_canonical_timeframe_duration(timeframe: str | CanonicalTimeframe) -> datetime.timedelta:
     """Return exact timedelta duration for a canonical timeframe. Fails closed on unsupported timeframes."""
     tf = CanonicalTimeframe.from_str(timeframe)
-    if tf == CanonicalTimeframe.FIVE_MINUTES:
+    if tf == CanonicalTimeframe.ONE_MINUTE:
+        return datetime.timedelta(minutes=1)
+    elif tf == CanonicalTimeframe.FIVE_MINUTES:
         return datetime.timedelta(minutes=5)
     elif tf == CanonicalTimeframe.FIFTEEN_MINUTES:
         return datetime.timedelta(minutes=15)
@@ -1233,6 +1236,7 @@ class ContinuousLiveRuntime:
         self._last_successful_evaluation_at_utc: str | None = None
         self._last_successful_publication_at_utc: str | None = None
         self._last_failure_reason: str | None = None
+        self._timeframe_readiness: dict[str, dict[str, Any]] = {}
 
     @property
     def is_running(self) -> bool:
@@ -1355,6 +1359,20 @@ class ContinuousLiveRuntime:
 
                 canonical_tf = CanonicalTimeframe.from_str(tf).value
 
+                # Check preflight readiness if cached; if marked BLOCKED at startup preflight, skip execution safely
+                cached_readiness = getattr(self, "_timeframe_readiness", {}).get(canonical_tf)
+                if cached_readiness and cached_readiness.get("status") == "BLOCKED":
+                    tick_evaluations[canonical_tf] = {
+                        "blocked": True,
+                        "status": "BLOCKED",
+                        "reason": cached_readiness.get("reason_code") or "PREFLIGHT_BLOCKED",
+                        "detail": cached_readiness.get("detail") or "Timeframe blocked during startup preflight.",
+                        "candidate_id": cached_readiness.get("candidate_id"),
+                        "symbol": self.symbol,
+                        "timeframe": canonical_tf,
+                    }
+                    continue
+
                 # 1. Acquire market data snapshot for timeframe
                 try:
                     raw_df = self._acquire_market_data(canonical_tf)
@@ -1426,6 +1444,10 @@ class ContinuousLiveRuntime:
                     }
                     continue
 
+                # Derive timeframe-scoped persistence paths to guarantee path isolation across timeframes
+                tf_store_path = self.store_path.parent / canonical_tf / self.store_path.name
+                tf_snapshot_path = self.snapshot_path.parent / canonical_tf / self.snapshot_path.name
+
                 # 6. Delegate strictly to existing authoritative run_once() primitive
                 try:
                     runtime = LiveExecutionRuntime(
@@ -1433,8 +1455,8 @@ class ContinuousLiveRuntime:
                         interval=canonical_tf,
                         limit=self.limit,
                         publisher=self.publisher,
-                        store_path=self.store_path,
-                        snapshot_path=self.snapshot_path,
+                        store_path=tf_store_path,
+                        snapshot_path=tf_snapshot_path,
                         max_age_seconds=self.max_age_seconds,
                         research_dir=self.research_dir,
                         production_config=config,
@@ -1498,10 +1520,12 @@ class ContinuousLiveRuntime:
         return results
 
     def verify_startup_readiness(self) -> dict[str, Any]:
-        """Perform preflight checks ensuring authoritative promoted candidate artifacts are resolvable before starting loop.
+        """Perform preflight checks evaluating readiness independently across every configured timeframe.
 
-        Fails closed with PromotionUnavailable / RuntimeError if any configured timeframe candidate cannot be resolved.
+        Fails closed with PromotionUnavailable if 0 configured timeframes are READY.
+        Allows continuous polling loop to proceed if at least 1 configured timeframe is READY.
         """
+        self._timeframe_readiness = {}
         if self.publish and self.publisher and getattr(self.publisher, "enabled", False):
             from src.evaluation.live_publication_store import recover_pending_publication_deliveries
             try:
@@ -1516,6 +1540,7 @@ class ContinuousLiveRuntime:
                 logger.warning("Startup pending delivery recovery warning: %s", exc)
 
         readiness_results = {}
+        ready_count = 0
         for tf in self.timeframes:
             canonical_tf = CanonicalTimeframe.from_str(tf).value
             cand_id = self.candidate_ids.get(canonical_tf)
@@ -1527,14 +1552,31 @@ class ContinuousLiveRuntime:
                 publisher=self.publisher,
                 reference_now=self.clock(),
             )
-            if readiness.get("status") != "READY":
-                msg = (
-                    f"Startup readiness preflight failed for {self.symbol} {canonical_tf}: "
-                    f"[{readiness.get('reason_code')}] {readiness.get('detail')}"
-                )
-                logger.error(msg)
-                raise PromotionUnavailable(msg)
             readiness_results[canonical_tf] = readiness
+            if readiness.get("status") == "READY":
+                ready_count += 1
+            else:
+                logger.warning(
+                    "Startup readiness preflight non-ready for %s %s: [%s] %s",
+                    self.symbol,
+                    canonical_tf,
+                    readiness.get("reason_code"),
+                    readiness.get("detail"),
+                )
+
+        if ready_count == 0:
+            details = [
+                f"{tf}: [{res.get('reason_code')}] {res.get('detail')}"
+                for tf, res in readiness_results.items()
+            ]
+            msg = (
+                f"Startup readiness preflight failed for {self.symbol}: 0 of {len(self.timeframes)} "
+                f"configured timeframes are READY. Failure details:\n" + "\n".join(details)
+            )
+            logger.error(msg)
+            raise PromotionUnavailable(msg)
+
+        self._timeframe_readiness = readiness_results
         return readiness_results
 
     def run_continuous(self, max_ticks: int | None = None) -> None:

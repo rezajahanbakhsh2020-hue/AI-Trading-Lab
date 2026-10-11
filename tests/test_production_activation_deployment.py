@@ -120,10 +120,10 @@ def test_secrets_never_committed() -> None:
     assert "value:" not in render_text.split("PROJECT2_API_KEY")[1].split("\n")[0]
 
 
-def test_1m_timeframe_is_rejected_as_non_canonical() -> None:
-    """1m timeframe is non-canonical and fails closed on timeframe parsing."""
-    with pytest.raises(ValueError, match="Unknown or unsupported timeframe '1m'"):
-        CanonicalTimeframe.from_str("1m")
+def test_1m_timeframe_is_accepted_as_canonical() -> None:
+    """1m timeframe is canonical and parses to CanonicalTimeframe.ONE_MINUTE."""
+    assert CanonicalTimeframe.from_str("1m") == CanonicalTimeframe.ONE_MINUTE
+    assert CanonicalTimeframe.ONE_MINUTE.value == "1m"
 
 
 def test_existing_continuous_runtime_behavior_intact(tmp_path) -> None:
