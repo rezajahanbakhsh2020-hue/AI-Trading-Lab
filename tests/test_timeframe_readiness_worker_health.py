@@ -164,12 +164,12 @@ def test_mismatched_candidate_scope_rejection():
 
 
 def test_render_worker_configuration_truthfulness():
-    """Verify render.yaml worker configuration matches verified READY timeframes without unverified mappings."""
+    """Verify render.yaml worker configuration matches verified canonical six-timeframe ladder without 1m."""
     render_yaml_path = Path("render.yaml")
     assert render_yaml_path.exists()
     content = render_yaml_path.read_text(encoding="utf-8")
 
-    assert "--timeframes 1m,5m,15m,30m,1H,4H,1D" in content
+    assert "--timeframes 5m,15m,30m,1H,4H,1D" in content
     assert "--candidate-id 5m=cand_moving_average_5m,1D=cand_moving_average_1d" in content
 
 
