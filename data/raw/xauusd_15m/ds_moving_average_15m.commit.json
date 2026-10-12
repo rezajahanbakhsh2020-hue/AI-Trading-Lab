@@ -1,0 +1,10 @@
+{
+  "commit_version": "1.0",
+  "dataset_id": "ds_moving_average_15m",
+  "symbol": "XAUUSD",
+  "timeframe": "15m",
+  "raw_sha256": "b23257db4b38cbffe431b98449f1aef523cecc232f659e79781aeeff8f2bb4c9",
+  "output_sha256": "45467b12196b1f762a6d78742fee5bca1f69abd744b0e1a9eeffb226ccc1ff56",
+  "row_count": 11989,
+  "committed_at_utc": "2026-10-12T11:24:08.106150+00:00"
+}
