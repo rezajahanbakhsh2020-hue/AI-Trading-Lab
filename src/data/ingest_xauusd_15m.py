@@ -1,11 +1,15 @@
 """
-Ingest and validate historical XAUUSD 15-minute market data for Project 1 research.
+Ingest, validate, and persist historical XAUUSD 15-minute market data with provenance manifests
+and atomic crash-safe replacement for Project 1 research.
 """
 
 from __future__ import annotations
 
 import hashlib
 import io
+import json
+import math
+import os
 from pathlib import Path
 import urllib.parse
 import urllib.request
@@ -19,39 +23,121 @@ DEFAULT_SOURCE_URL = (
 
 DEFAULT_OUTPUT_DIR = Path(__file__).resolve().parents[2] / "data" / "raw" / "xauusd_15m"
 DEFAULT_OUTPUT_FILE = DEFAULT_OUTPUT_DIR / "ds_moving_average_15m.csv"
+DEFAULT_MANIFEST_FILE = DEFAULT_OUTPUT_DIR / "ds_moving_average_15m.manifest.json"
+
+
+def _validate_numeric_series(series: pd.Series, name: str) -> pd.Series:
+    """Ensure all values in a numeric series are finite float numbers."""
+    converted = pd.to_numeric(series, errors="coerce")
+
+    if converted.isna().any():
+        raise ValueError(f"Column '{name}' contains NaN or unparseable numeric values.")
+
+    # Check for infinity explicitly
+    is_inf = converted.apply(lambda x: math.isinf(x) if isinstance(x, (int, float)) else True)
+    if is_inf.any():
+        raise ValueError(f"Column '{name}' contains non-finite infinity values.")
+
+    return converted
+
+
+def analyze_temporal_gaps(timestamps: pd.Series) -> dict:
+    """Analyze gap distribution for 15-minute bars (>900 seconds).
+
+    Distinguishes weekend/session breaks from intraday gaps.
+    """
+    diffs = timestamps.diff().dropna()
+    gap_mask = diffs > pd.Timedelta(minutes=15)
+    gaps = diffs[gap_mask]
+
+    weekend_gaps = []
+    session_gaps = []
+    unexplained_gaps = []
+
+    for idx, delta in gaps.items():
+        prev_ts = timestamps.loc[idx - 1]
+        curr_ts = timestamps.loc[idx]
+        delta_sec = delta.total_seconds()
+
+        gap_info = {
+            "start": prev_ts.isoformat(),
+            "end": curr_ts.isoformat(),
+            "gap_seconds": delta_sec,
+        }
+
+        # Weekend gap: Friday close to Sunday open (~48 hours)
+        if prev_ts.weekday() == 4 and curr_ts.weekday() == 6:
+            weekend_gaps.append(gap_info)
+        # Daily session break: typical ~1 hour break around 21:00-22:00 UTC
+        elif delta_sec <= 7200 and (prev_ts.hour in (20, 21, 22) or curr_ts.hour in (21, 22, 23)):
+            session_gaps.append(gap_info)
+        else:
+            unexplained_gaps.append(gap_info)
+
+    return {
+        "total_gaps_count": len(gaps),
+        "weekend_gaps_count": len(weekend_gaps),
+        "session_gaps_count": len(session_gaps),
+        "unexplained_gaps_count": len(unexplained_gaps),
+        "max_gap_seconds": gaps.max().total_seconds() if not gaps.empty else 0.0,
+        "unexplained_gaps": unexplained_gaps[:10],  # Sample first 10 for diagnostics
+    }
 
 
 def download_and_validate_xauusd_15m(
     source_url: str = DEFAULT_SOURCE_URL,
     output_path: str | Path = DEFAULT_OUTPUT_FILE,
+    manifest_path: str | Path = DEFAULT_MANIFEST_FILE,
+    raw_data_bytes: bytes | None = None,
 ) -> tuple[Path, dict]:
-    """Download, validate, and persist canonical XAUUSD 15m historical dataset.
+    """Download, validate, and atomically persist canonical XAUUSD 15m historical dataset.
 
-    Returns output Path and dataset metadata summary dict.
+    Enforces atomic staging and rollback protection to prevent partially written or corrupt files.
     """
     out_p = Path(output_path)
+    manifest_p = Path(manifest_path)
     out_p.parent.mkdir(parents=True, exist_ok=True)
 
-    # Download raw CSV data
-    req = urllib.request.Request(
-        source_url,
-        headers={"User-Agent": "AI-Trading-Lab/1.0"},
-    )
-    with urllib.request.urlopen(req, timeout=30) as resp:
-        raw_bytes = resp.read()
+    # Acquire raw bytes if not provided directly
+    if raw_data_bytes is None:
+        req = urllib.request.Request(
+            source_url,
+            headers={"User-Agent": "AI-Trading-Lab/1.0"},
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=30) as resp:
+                raw_bytes = resp.read()
+        except Exception as exc:
+            raise RuntimeError(f"Failed to fetch raw dataset from {source_url}: {exc}") from exc
+    else:
+        raw_bytes = raw_data_bytes
 
-    sha256_hash = hashlib.sha256(raw_bytes).hexdigest()
+    if not raw_bytes:
+        raise ValueError("Source dataset payload is empty.")
 
-    # Parse and validate DataFrame
-    df = pd.read_csv(io.BytesIO(raw_bytes))
+    raw_sha256 = hashlib.sha256(raw_bytes).hexdigest()
 
+    # Parse CSV DataFrame
+    try:
+        df = pd.read_csv(io.BytesIO(raw_bytes))
+    except Exception as exc:
+        raise ValueError(f"Failed to parse source CSV payload: {exc}") from exc
+
+    if df.empty:
+        raise ValueError("Source dataset DataFrame is empty.")
+
+    # Validate required columns
     required_raw_cols = {"datetime", "open", "high", "low", "close"}
     missing = required_raw_cols - set(df.columns)
     if missing:
         raise ValueError(f"Source CSV missing required columns: {sorted(missing)}")
 
     # Timeframe and Timestamp Validation
-    parsed_ts = pd.to_datetime(df["datetime"], utc=True)
+    try:
+        parsed_ts = pd.to_datetime(df["datetime"], utc=True)
+    except Exception as exc:
+        raise ValueError(f"Source CSV contains invalid or unparseable timestamps: {exc}") from exc
+
     if parsed_ts.isna().any():
         raise ValueError("Source CSV contains invalid or unparseable timestamps.")
 
@@ -61,49 +147,120 @@ def download_and_validate_xauusd_15m(
     if not parsed_ts.is_unique:
         raise ValueError("Source CSV contains duplicate timestamps.")
 
-    # Validate OHLC geometry
-    for col in ("open", "high", "low", "close"):
-        df[col] = pd.to_numeric(df[col], errors="coerce")
+    # Validate OHLC values and finite float numbers
+    open_s = _validate_numeric_series(df["open"], "open")
+    high_s = _validate_numeric_series(df["high"], "high")
+    low_s = _validate_numeric_series(df["low"], "low")
+    close_s = _validate_numeric_series(df["close"], "close")
 
-    if df[["open", "high", "low", "close"]].isna().any().any():
-        raise ValueError("Source CSV contains non-numeric or NaN OHLC values.")
-
-    invalid_high = (df["high"] < df["open"]) | (df["high"] < df["close"])
-    invalid_low = (df["low"] > df["open"]) | (df["low"] > df["close"])
+    # Validate explicit candle geometry invariants:
+    # high >= max(open, close, low) and low <= min(open, close, high)
+    invalid_high = (high_s < open_s) | (high_s < close_s) | (high_s < low_s)
+    invalid_low = (low_s > open_s) | (low_s > close_s) | (low_s > high_s)
 
     if invalid_high.any() or invalid_low.any():
         raise ValueError("Source CSV contains invalid OHLC candle geometry.")
 
-    # Prepare canonical schema
+    # Validate Volume policy:
+    # If absent, volume is omitted or handled. If present, MUST be finite and non-negative.
+    volume_s = None
+    if "volume" in df.columns:
+        vol_num = pd.to_numeric(df["volume"], errors="coerce")
+        if vol_num.isna().any():
+            raise ValueError("Column 'volume' contains invalid or NaN numeric values.")
+        if vol_num.apply(lambda x: math.isinf(x) if isinstance(x, (int, float)) else True).any():
+            raise ValueError("Column 'volume' contains non-finite infinity values.")
+        if (vol_num < 0.0).any():
+            raise ValueError("Column 'volume' contains negative volume values.")
+        volume_s = vol_num
+
+    # Gap diagnostics
+    gap_analysis = analyze_temporal_gaps(parsed_ts)
+
+    # Build canonical output DataFrame
     canonical_df = pd.DataFrame(
         {
             "timestamp": df["datetime"],
-            "open": df["open"],
-            "high": df["high"],
-            "low": df["low"],
-            "close": df["close"],
+            "open": open_s,
+            "high": high_s,
+            "low": low_s,
+            "close": close_s,
         }
     )
+    if volume_s is not None:
+        canonical_df["volume"] = volume_s
 
-    if "volume" in df.columns:
-        canonical_df["volume"] = pd.to_numeric(df["volume"], errors="coerce").fillna(0.0)
+    # Serialize canonical CSV to buffer for output checksum calculation
+    csv_buf = io.StringIO()
+    canonical_df.to_csv(csv_buf, index=False)
+    output_csv_str = csv_buf.getvalue()
+    output_csv_bytes = output_csv_str.encode("utf-8")
+    output_sha256 = hashlib.sha256(output_csv_bytes).hexdigest()
 
-    canonical_df.to_csv(out_p, index=False)
-
-    metadata = {
+    # Build machine-readable provenance manifest
+    manifest_data = {
+        "manifest_version": "1.0",
+        "dataset_id": "ds_moving_average_15m",
+        "symbol": "XAUUSD",
+        "timeframe": "15m",
         "source_url": source_url,
-        "output_path": str(out_p),
-        "sha256": sha256_hash,
+        "raw_sha256": raw_sha256,
+        "output_sha256": output_sha256,
         "row_count": len(canonical_df),
+        "columns": list(canonical_df.columns),
         "start_timestamp_utc": parsed_ts.min().isoformat(),
         "end_timestamp_utc": parsed_ts.max().isoformat(),
+        "validation_summary": {
+            "columns_valid": True,
+            "timestamps_monotonic": True,
+            "timestamps_unique": True,
+            "ohlc_geometry_valid": True,
+            "volume_valid": volume_s is not None,
+        },
+        "gap_diagnostics": gap_analysis,
     }
 
-    return out_p, metadata
+    manifest_json_str = json.dumps(manifest_data, indent=2)
+
+    # Atomic Staging and Rollback Protection
+    tmp_csv = out_p.with_suffix(".tmp.csv")
+    tmp_json = manifest_p.with_suffix(".tmp.json")
+
+    try:
+        # Write staged temporary files
+        tmp_csv.write_bytes(output_csv_bytes)
+        tmp_json.write_text(manifest_json_str, encoding="utf-8")
+
+        # Read back staged CSV and verify schema & hash
+        readback_df = pd.read_csv(tmp_csv)
+        if len(readback_df) != len(canonical_df):
+            raise RuntimeError("Readback verification failed: row count mismatch.")
+
+        readback_sha = hashlib.sha256(tmp_csv.read_bytes()).hexdigest()
+        if readback_sha != output_sha256:
+            raise RuntimeError("Readback verification failed: SHA-256 checksum mismatch.")
+
+        # Atomic replacement of target dataset and manifest
+        os.replace(tmp_csv, out_p)
+        os.replace(tmp_json, manifest_p)
+
+    except Exception as exc:
+        # Clean up temporary staged files on error
+        if tmp_csv.exists():
+            tmp_csv.unlink()
+        if tmp_json.exists():
+            tmp_json.unlink()
+        raise RuntimeError(f"Atomic dataset persistence failed: {exc}") from exc
+
+    return out_p, manifest_data
 
 
 if __name__ == "__main__":
     out_path, meta = download_and_validate_xauusd_15m()
-    print("Downloaded and validated XAUUSD 15m dataset successfully:")
-    for k, v in meta.items():
-        print(f"  {k}: {v}")
+    print("Downloaded, validated, and persisted XAUUSD 15m dataset and manifest successfully:")
+    print("  Output Path:", out_path)
+    print("  Raw SHA-256:", meta["raw_sha256"])
+    print("  Output SHA-256:", meta["output_sha256"])
+    print("  Row Count:", meta["row_count"])
+    print("  Start UTC:", meta["start_timestamp_utc"])
+    print("  End UTC:", meta["end_timestamp_utc"])
