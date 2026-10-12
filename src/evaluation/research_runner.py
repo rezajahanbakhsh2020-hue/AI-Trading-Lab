@@ -96,16 +96,25 @@ def resolve_historical_dataset(dataset_scope: DatasetScope) -> pd.DataFrame:
         repo_root / "data" / f"{dataset_id}.csv",
     ]
 
+    def _load_and_verify_csv(p: Path) -> pd.DataFrame:
+        man_p = p.with_suffix(".manifest.json")
+        commit_p = p.with_suffix(".commit.json")
+        if man_p.exists():
+            from src.data.ingest_xauusd_15m import verify_dataset_and_manifest_integrity
+            df, _ = verify_dataset_and_manifest_integrity(p, man_p, commit_p if commit_p.exists() else None)
+            return df
+        return load_csv(p)
+
     for p in search_paths:
         if p.exists() and p.is_file():
-            return load_csv(p)
+            return _load_and_verify_csv(p)
 
     glob_matches = sorted([
         p for p in (repo_root / "data").glob(f"**/*{dataset_id}*.csv") if p.is_file()
     ])
 
     if len(glob_matches) == 1:
-        return load_csv(glob_matches[0])
+        return _load_and_verify_csv(glob_matches[0])
     elif len(glob_matches) > 1:
         raise FileNotFoundError(
             f"Ambiguous dataset resolution for dataset_id '{dataset_id}' and symbol '{dataset_scope.symbol}'. "

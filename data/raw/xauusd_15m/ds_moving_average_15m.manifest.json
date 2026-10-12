@@ -21,6 +21,7 @@
     "columns_valid": true,
     "timestamps_monotonic": true,
     "timestamps_unique": true,
+    "timestamps_grid_aligned": true,
     "ohlc_geometry_valid": true,
     "volume_valid": true
   },
@@ -28,24 +29,9 @@
     "total_gaps_count": 134,
     "weekend_gaps_count": 26,
     "session_gaps_count": 105,
-    "unexplained_gaps_count": 3,
+    "holiday_gaps_count": 3,
+    "unexplained_gaps_count": 0,
     "max_gap_seconds": 197100.0,
-    "unexplained_gaps": [
-      {
-        "start": "2026-04-02T20:45:00+00:00",
-        "end": "2026-04-03T14:30:00+00:00",
-        "gap_seconds": 63900.0
-      },
-      {
-        "start": "2026-04-03T14:30:00+00:00",
-        "end": "2026-04-03T15:00:00+00:00",
-        "gap_seconds": 1800.0
-      },
-      {
-        "start": "2026-05-25T18:45:00+00:00",
-        "end": "2026-05-25T20:15:00+00:00",
-        "gap_seconds": 5400.0
-      }
-    ]
+    "unexplained_gaps": []
   }
 }

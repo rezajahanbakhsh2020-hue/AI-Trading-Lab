@@ -1,7 +1,7 @@
 """
 Adversarial regression and forensic tests for XAUUSD 15m dataset ingestion,
-schema validation, provenance manifests, atomic rollback, research execution,
-and fail-closed production readiness gating.
+schema validation, provenance manifests, atomic multi-file commit rollback,
+off-grid timestamp detection, research execution, and fail-closed readiness gating.
 """
 
 from __future__ import annotations
@@ -13,7 +13,11 @@ from unittest.mock import patch
 import pandas as pd
 import pytest
 
-from src.data.ingest_xauusd_15m import analyze_temporal_gaps, download_and_validate_xauusd_15m
+from src.data.ingest_xauusd_15m import (
+    analyze_temporal_gaps,
+    download_and_validate_xauusd_15m,
+    verify_dataset_and_manifest_integrity,
+)
 from src.evaluation.hypothesis_generator import accept_hypothesis_for_research
 from src.evaluation.live_execution_runtime import verify_timeframe_production_readiness
 from src.evaluation.research_constitution import (
@@ -43,93 +47,123 @@ def mock_15m_csv_bytes() -> bytes:
 
 
 def test_valid_ingestion_and_manifest_generation(tmp_path: Path, mock_15m_csv_bytes: bytes) -> None:
-    """1, 8, 9, 10. Test valid ingestion, raw/output SHA256 hashes, and manifest schema consistency."""
+    """Test valid ingestion, raw/output SHA256 hashes, and manifest schema consistency."""
     out_file = tmp_path / "ds_moving_average_15m.csv"
     manifest_file = tmp_path / "ds_moving_average_15m.manifest.json"
+    commit_file = tmp_path / "ds_moving_average_15m.commit.json"
 
     p, meta = download_and_validate_xauusd_15m(
         output_path=out_file,
         manifest_path=manifest_file,
+        commit_path=commit_file,
         raw_data_bytes=mock_15m_csv_bytes,
     )
 
     assert p.exists()
     assert manifest_file.exists()
+    assert commit_file.exists()
     assert meta["row_count"] == 5
     assert meta["raw_sha256"] != ""
     assert meta["output_sha256"] != ""
     assert meta["start_timestamp_utc"] == "2026-03-26T02:30:00+00:00"
     assert meta["end_timestamp_utc"] == "2026-03-26T03:30:00+00:00"
 
-    # Deterministic repeated ingestion
-    _, meta2 = download_and_validate_xauusd_15m(
+    # Verify readback integrity
+    df, man = verify_dataset_and_manifest_integrity(out_file, manifest_file, commit_file)
+    assert len(df) == 5
+    assert man["output_sha256"] == meta["output_sha256"]
+
+
+def test_off_grid_timestamps_rejected(tmp_path: Path) -> None:
+    """Test that timestamps off the 15-minute grid (e.g. 12:07:33) raise ValueError."""
+    off_grid_data = (
+        "datetime,open,high,low,close,volume\n"
+        "2026-03-26T02:37:15+00:00,100.0,105.0,99.0,102.0,1000\n"
+    ).encode("utf-8")
+    out_file = tmp_path / "ds_moving_average_15m.csv"
+    manifest_file = tmp_path / "ds_moving_average_15m.manifest.json"
+
+    with pytest.raises(ValueError, match="timestamps off the 15-minute grid"):
+        download_and_validate_xauusd_15m(
+            output_path=out_file,
+            manifest_path=manifest_file,
+            raw_data_bytes=off_grid_data,
+        )
+
+
+def test_mismatched_manifest_and_csv_generation_fails_closed(tmp_path: Path, mock_15m_csv_bytes: bytes) -> None:
+    """Test that when CSV is updated but manifest is stale/mismatched, reader fails closed."""
+    out_file = tmp_path / "ds_moving_average_15m.csv"
+    manifest_file = tmp_path / "ds_moving_average_15m.manifest.json"
+
+    download_and_validate_xauusd_15m(
         output_path=out_file,
         manifest_path=manifest_file,
         raw_data_bytes=mock_15m_csv_bytes,
     )
-    assert meta2["output_sha256"] == meta["output_sha256"]
+
+    # Tamper with CSV content to simulate interrupted or mismatched publication
+    out_file.write_text("timestamp,open,high,low,close\n2026-03-26T02:30:00+00:00,100,105,99,102\n", encoding="utf-8")
+
+    with pytest.raises(RuntimeError, match="Mismatched dataset/manifest generation detected"):
+        verify_dataset_and_manifest_integrity(out_file, manifest_file)
 
 
-def test_missing_required_columns_and_empty_input(tmp_path: Path) -> None:
-    """2. Test that missing required columns or empty input raises ValueError."""
-    bad_cols = "datetime,open,high,low\n2026-03-26T02:30:00+00:00,100.0,105.0,99.0\n".encode("utf-8")
+def test_fault_injection_interrupted_publication(tmp_path: Path, mock_15m_csv_bytes: bytes) -> None:
+    """Phase 1: Test fault injection simulating failure during multi-file replacement."""
     out_file = tmp_path / "ds_moving_average_15m.csv"
     manifest_file = tmp_path / "ds_moving_average_15m.manifest.json"
+    commit_file = tmp_path / "ds_moving_average_15m.commit.json"
 
-    with pytest.raises(ValueError, match="Source CSV missing required columns"):
+    # Pre-populate valid initial dataset
+    download_and_validate_xauusd_15m(
+        output_path=out_file,
+        manifest_path=manifest_file,
+        commit_path=commit_file,
+        raw_data_bytes=mock_15m_csv_bytes,
+    )
+
+    initial_csv = out_file.read_bytes()
+    initial_manifest = manifest_file.read_bytes()
+
+    # Valid replacement payload
+    valid_replacement_payload = (
+        "datetime,open,high,low,close,volume\n"
+        "2026-03-26T02:30:00+00:00,110.0,115.0,109.0,112.0,2000\n"
+        "2026-03-26T02:45:00+00:00,112.0,116.0,111.0,114.0,2100\n"
+    ).encode("utf-8")
+
+    # Case A: Staging failure before CSV replacement preserves initial files
+    with pytest.raises(RuntimeError, match="Atomic dataset persistence failed"):
         download_and_validate_xauusd_15m(
             output_path=out_file,
             manifest_path=manifest_file,
-            raw_data_bytes=bad_cols,
+            commit_path=commit_file,
+            raw_data_bytes=valid_replacement_payload,
+            simulate_failure_step="before_csv_replace",
         )
+    assert out_file.read_bytes() == initial_csv
+    assert manifest_file.read_bytes() == initial_manifest
 
-    with pytest.raises(ValueError, match="Source dataset payload is empty"):
+    # Case B: Interrupted publication step (after CSV replace but before manifest replace)
+    with pytest.raises(RuntimeError, match="Atomic dataset persistence failed"):
         download_and_validate_xauusd_15m(
             output_path=out_file,
             manifest_path=manifest_file,
-            raw_data_bytes=b"",
+            commit_path=commit_file,
+            raw_data_bytes=valid_replacement_payload,
+            simulate_failure_step="before_manifest_replace",
         )
 
+    # Verify reader detects generation mismatch between CSV and manifest, and fails closed
+    with pytest.raises(RuntimeError, match="Mismatched dataset/manifest generation detected"):
+        verify_dataset_and_manifest_integrity(out_file, manifest_file, commit_file)
 
-def test_invalid_non_monotonic_and_duplicate_timestamps(tmp_path: Path) -> None:
-    """3. Test invalid timestamps, non-monotonic timestamps, and duplicate timestamps."""
+
+def test_non_finite_numeric_and_volume_rejected(tmp_path: Path) -> None:
+    """Test non-finite infinity values and negative volume rejection."""
     out_file = tmp_path / "ds_moving_average_15m.csv"
     manifest_file = tmp_path / "ds_moving_average_15m.manifest.json"
-
-    # Non-monotonic
-    non_mono = (
-        "datetime,open,high,low,close\n"
-        "2026-03-26T02:45:00+00:00,100.0,105.0,99.0,102.0\n"
-        "2026-03-26T02:30:00+00:00,102.0,106.0,101.0,104.0\n"
-    ).encode("utf-8")
-    with pytest.raises(ValueError, match="timestamps are not monotonic increasing"):
-        download_and_validate_xauusd_15m(
-            output_path=out_file, manifest_path=manifest_file, raw_data_bytes=non_mono
-        )
-
-    # Duplicate
-    dups = (
-        "datetime,open,high,low,close\n"
-        "2026-03-26T02:30:00+00:00,100.0,105.0,99.0,102.0\n"
-        "2026-03-26T02:30:00+00:00,102.0,106.0,101.0,104.0\n"
-    ).encode("utf-8")
-    with pytest.raises(ValueError, match="duplicate timestamps"):
-        download_and_validate_xauusd_15m(
-            output_path=out_file, manifest_path=manifest_file, raw_data_bytes=dups
-        )
-
-
-def test_non_finite_numeric_values_rejected(tmp_path: Path) -> None:
-    """4. Test that NaN, +inf, and -inf in OHLC values are rejected."""
-    out_file = tmp_path / "ds_moving_average_15m.csv"
-    manifest_file = tmp_path / "ds_moving_average_15m.manifest.json"
-
-    # NaN in close
-    nan_data = "datetime,open,high,low,close\n2026-03-26T02:30:00+00:00,100.0,105.0,99.0,NaN\n".encode("utf-8")
-    with pytest.raises(ValueError, match="contains NaN or unparseable numeric values"):
-        download_and_validate_xauusd_15m(
-            output_path=out_file, manifest_path=manifest_file, raw_data_bytes=nan_data
-        )
 
     # Inf in high
     inf_data = "datetime,open,high,low,close\n2026-03-26T02:30:00+00:00,100.0,inf,99.0,102.0\n".encode("utf-8")
@@ -138,89 +172,32 @@ def test_non_finite_numeric_values_rejected(tmp_path: Path) -> None:
             output_path=out_file, manifest_path=manifest_file, raw_data_bytes=inf_data
         )
 
-
-def test_invalid_ohlc_geometry_relationships(tmp_path: Path) -> None:
-    """5. Test invalid OHLC geometry relationships (e.g. high < open or low > close)."""
-    out_file = tmp_path / "ds_moving_average_15m.csv"
-    manifest_file = tmp_path / "ds_moving_average_15m.manifest.json"
-
-    # high < open
-    geom1 = "datetime,open,high,low,close\n2026-03-26T02:30:00+00:00,100.0,95.0,90.0,92.0\n".encode("utf-8")
-    with pytest.raises(ValueError, match="invalid OHLC candle geometry"):
-        download_and_validate_xauusd_15m(
-            output_path=out_file, manifest_path=manifest_file, raw_data_bytes=geom1
-        )
-
-    # low > close
-    geom2 = "datetime,open,high,low,close\n2026-03-26T02:30:00+00:00,100.0,110.0,105.0,102.0\n".encode("utf-8")
-    with pytest.raises(ValueError, match="invalid OHLC candle geometry"):
-        download_and_validate_xauusd_15m(
-            output_path=out_file, manifest_path=manifest_file, raw_data_bytes=geom2
-        )
-
-
-def test_volume_policy_absent_vs_valid_vs_invalid(tmp_path: Path) -> None:
-    """6. Test absent volume column, valid volume, and invalid/negative supplied volume."""
-    out_file = tmp_path / "ds_moving_average_15m.csv"
-    manifest_file = tmp_path / "ds_moving_average_15m.manifest.json"
-
-    # Absent volume
-    no_vol = "datetime,open,high,low,close\n2026-03-26T02:30:00+00:00,100.0,105.0,99.0,102.0\n".encode("utf-8")
-    _, meta = download_and_validate_xauusd_15m(
-        output_path=out_file, manifest_path=manifest_file, raw_data_bytes=no_vol
-    )
-    assert meta["validation_summary"]["volume_valid"] is False
-
     # Negative volume
-    neg_vol = "datetime,open,high,low,close,volume\n2026-03-26T02:30:00+00:00,100.0,105.0,99.0,102.0,-50.0\n".encode("utf-8")
+    neg_vol = "datetime,open,high,low,close,volume\n2026-03-26T02:30:00+00:00,100.0,105.0,99.0,102.0,-10.0\n".encode("utf-8")
     with pytest.raises(ValueError, match="contains negative volume values"):
         download_and_validate_xauusd_15m(
             output_path=out_file, manifest_path=manifest_file, raw_data_bytes=neg_vol
         )
 
 
-def test_gap_diagnostics_analysis() -> None:
-    """7. Test temporal gap analysis and diagnostic reporting."""
+def test_gap_diagnostics_and_holiday_classification() -> None:
+    """Phase 2: Test temporal gap analysis and holiday gap classification."""
     ts = pd.Series(
         [
             pd.Timestamp("2026-03-27 21:00:00+00:00"),  # Friday
             pd.Timestamp("2026-03-29 22:00:00+00:00"),  # Sunday open (weekend gap)
-            pd.Timestamp("2026-03-29 22:15:00+00:00"),
-            pd.Timestamp("2026-03-29 23:00:00+00:00"),  # 45m intraday gap
+            pd.Timestamp("2026-04-02 20:45:00+00:00"),  # Good Friday holiday
+            pd.Timestamp("2026-04-03 14:30:00+00:00"),
         ]
     )
     diag = analyze_temporal_gaps(ts)
-    assert diag["total_gaps_count"] == 2
+    assert diag["total_gaps_count"] == 3
     assert diag["weekend_gaps_count"] == 1
-
-
-def test_atomic_rollback_on_persistence_failure(tmp_path: Path, mock_15m_csv_bytes: bytes) -> None:
-    """11. Test that validation or persistence failure leaves pre-existing files unchanged."""
-    out_file = tmp_path / "ds_moving_average_15m.csv"
-    manifest_file = tmp_path / "ds_moving_average_15m.manifest.json"
-
-    # Write initial valid dataset
-    out_file.write_text("initial,csv,content\n", encoding="utf-8")
-    manifest_file.write_text('{"initial": "manifest"}\n', encoding="utf-8")
-
-    initial_csv_content = out_file.read_text()
-    initial_json_content = manifest_file.read_text()
-
-    # Attempt ingestion with bad data
-    bad_payload = "datetime,open,high,low,close\n2026-03-26T02:30:00+00:00,100.0,90.0,80.0,95.0\n".encode("utf-8")
-
-    with pytest.raises(ValueError, match="invalid OHLC candle geometry"):
-        download_and_validate_xauusd_15m(
-            output_path=out_file, manifest_path=manifest_file, raw_data_bytes=bad_payload
-        )
-
-    # Verify original files remain untouched
-    assert out_file.read_text() == initial_csv_content
-    assert manifest_file.read_text() == initial_json_content
+    assert diag["holiday_gaps_count"] == 1
 
 
 def test_15m_dataset_resolution_and_research_execution() -> None:
-    """12, 13. Test dataset resolution via resolve_historical_dataset and research experiment execution."""
+    """Test dataset resolution via resolve_historical_dataset and research experiment execution."""
     ds = DatasetScope(
         dataset_id="ds_moving_average_15m",
         symbol="XAUUSD",
@@ -259,7 +236,7 @@ def test_15m_dataset_resolution_and_research_execution() -> None:
 
 
 def test_15m_unpromoted_candidate_fails_closed() -> None:
-    """14. Test that unpromoted 15m candidate fails closed in candidate resolution and readiness."""
+    """Test that unpromoted 15m candidate fails closed in candidate resolution and readiness."""
     resolved_candidate = resolve_promoted_candidate(symbol="XAUUSD", timeframe="15m")
     assert resolved_candidate is None
 

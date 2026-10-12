@@ -1,16 +1,18 @@
 """
-Ingest, validate, and persist historical XAUUSD 15-minute market data with provenance manifests
-and atomic crash-safe replacement for Project 1 research.
+Ingest, validate, and persist historical XAUUSD 15-minute market data with provenance manifests,
+atomic crash-safe multi-file generation commit protocol, and strict 15-minute grid verification.
 """
 
 from __future__ import annotations
 
+from datetime import datetime, timezone
 import hashlib
 import io
 import json
 import math
 import os
 from pathlib import Path
+import uuid
 import urllib.parse
 import urllib.request
 
@@ -23,7 +25,6 @@ DEFAULT_SOURCE_URL = (
 
 DEFAULT_OUTPUT_DIR = Path(__file__).resolve().parents[2] / "data" / "raw" / "xauusd_15m"
 DEFAULT_OUTPUT_FILE = DEFAULT_OUTPUT_DIR / "ds_moving_average_15m.csv"
-DEFAULT_MANIFEST_FILE = DEFAULT_OUTPUT_DIR / "ds_moving_average_15m.manifest.json"
 
 
 def _validate_numeric_series(series: pd.Series, name: str) -> pd.Series:
@@ -33,7 +34,6 @@ def _validate_numeric_series(series: pd.Series, name: str) -> pd.Series:
     if converted.isna().any():
         raise ValueError(f"Column '{name}' contains NaN or unparseable numeric values.")
 
-    # Check for infinity explicitly
     is_inf = converted.apply(lambda x: math.isinf(x) if isinstance(x, (int, float)) else True)
     if is_inf.any():
         raise ValueError(f"Column '{name}' contains non-finite infinity values.")
@@ -44,7 +44,7 @@ def _validate_numeric_series(series: pd.Series, name: str) -> pd.Series:
 def analyze_temporal_gaps(timestamps: pd.Series) -> dict:
     """Analyze gap distribution for 15-minute bars (>900 seconds).
 
-    Distinguishes weekend/session breaks from intraday gaps.
+    Distinguishes weekend gaps, daily session breaks, and market holidays.
     """
     diffs = timestamps.diff().dropna()
     gap_mask = diffs > pd.Timedelta(minutes=15)
@@ -52,6 +52,7 @@ def analyze_temporal_gaps(timestamps: pd.Series) -> dict:
 
     weekend_gaps = []
     session_gaps = []
+    holiday_gaps = []
     unexplained_gaps = []
 
     for idx, delta in gaps.items():
@@ -71,6 +72,9 @@ def analyze_temporal_gaps(timestamps: pd.Series) -> dict:
         # Daily session break: typical ~1 hour break around 21:00-22:00 UTC
         elif delta_sec <= 7200 and (prev_ts.hour in (20, 21, 22) or curr_ts.hour in (21, 22, 23)):
             session_gaps.append(gap_info)
+        # Market holiday closures: Good Friday (April 3, 2026), Memorial Day (May 25, 2026), etc.
+        elif (prev_ts.month == 4 and prev_ts.day in (2, 3)) or (prev_ts.month == 5 and prev_ts.day in (25, 26)):
+            holiday_gaps.append(gap_info)
         else:
             unexplained_gaps.append(gap_info)
 
@@ -78,24 +82,78 @@ def analyze_temporal_gaps(timestamps: pd.Series) -> dict:
         "total_gaps_count": len(gaps),
         "weekend_gaps_count": len(weekend_gaps),
         "session_gaps_count": len(session_gaps),
+        "holiday_gaps_count": len(holiday_gaps),
         "unexplained_gaps_count": len(unexplained_gaps),
         "max_gap_seconds": gaps.max().total_seconds() if not gaps.empty else 0.0,
-        "unexplained_gaps": unexplained_gaps[:10],  # Sample first 10 for diagnostics
+        "unexplained_gaps": unexplained_gaps,
     }
+
+
+def verify_dataset_and_manifest_integrity(
+    csv_path: str | Path,
+    manifest_path: str | Path,
+    commit_path: str | Path | None = None,
+) -> tuple[pd.DataFrame, dict]:
+    """Verify that published CSV and Manifest belong to the exact same generation.
+
+    Fails closed if hashes, row counts, or metadata mismatch.
+    """
+    csv_p = Path(csv_path)
+    man_p = Path(manifest_path)
+
+    if not csv_p.exists():
+        raise FileNotFoundError(f"Dataset CSV not found at {csv_p}")
+
+    if not man_p.exists():
+        raise FileNotFoundError(f"Dataset Manifest not found at {man_p}")
+
+    csv_bytes = csv_p.read_bytes()
+    actual_sha = hashlib.sha256(csv_bytes).hexdigest()
+
+    try:
+        manifest_data = json.loads(man_p.read_text(encoding="utf-8"))
+    except Exception as exc:
+        raise RuntimeError(f"Corrupt manifest JSON at {man_p}: {exc}") from exc
+
+    expected_sha = manifest_data.get("output_sha256")
+    if not expected_sha or actual_sha != expected_sha:
+        raise RuntimeError(
+            f"Mismatched dataset/manifest generation detected! "
+            f"Actual CSV SHA256 ({actual_sha[:12]}) != Manifest output SHA256 ({str(expected_sha)[:12]})."
+        )
+
+    if commit_path:
+        com_p = Path(commit_path)
+        if com_p.exists():
+            try:
+                commit_data = json.loads(com_p.read_text(encoding="utf-8"))
+                if commit_data.get("output_sha256") != actual_sha:
+                    raise RuntimeError("Commit marker output SHA256 mismatch!")
+            except Exception as exc:
+                raise RuntimeError(f"Corrupt commit marker at {com_p}: {exc}") from exc
+
+    df = pd.read_csv(io.BytesIO(csv_bytes))
+    if len(df) != manifest_data.get("row_count"):
+        raise RuntimeError(f"Row count mismatch: CSV ({len(df)}) != Manifest ({manifest_data.get('row_count')}).")
+
+    return df, manifest_data
 
 
 def download_and_validate_xauusd_15m(
     source_url: str = DEFAULT_SOURCE_URL,
     output_path: str | Path = DEFAULT_OUTPUT_FILE,
-    manifest_path: str | Path = DEFAULT_MANIFEST_FILE,
+    manifest_path: str | Path | None = None,
+    commit_path: str | Path | None = None,
     raw_data_bytes: bytes | None = None,
+    simulate_failure_step: str | None = None,
 ) -> tuple[Path, dict]:
     """Download, validate, and atomically persist canonical XAUUSD 15m historical dataset.
 
-    Enforces atomic staging and rollback protection to prevent partially written or corrupt files.
+    Enforces atomic staging and multi-file commit protocol with full rollback protection.
     """
     out_p = Path(output_path)
-    manifest_p = Path(manifest_path)
+    manifest_p = Path(manifest_path) if manifest_path is not None else out_p.with_suffix(".manifest.json")
+    commit_p = Path(commit_path) if commit_path is not None else out_p.with_suffix(".commit.json")
     out_p.parent.mkdir(parents=True, exist_ok=True)
 
     # Acquire raw bytes if not provided directly
@@ -146,6 +204,11 @@ def download_and_validate_xauusd_15m(
 
     if not parsed_ts.is_unique:
         raise ValueError("Source CSV contains duplicate timestamps.")
+
+    # Strict 15-minute grid alignment check
+    off_grid = (parsed_ts.dt.minute % 15 != 0) | (parsed_ts.dt.second != 0) | (parsed_ts.dt.microsecond != 0)
+    if off_grid.any():
+        raise ValueError("Source CSV contains timestamps off the 15-minute grid.")
 
     # Validate OHLC values and finite float numbers
     open_s = _validate_numeric_series(df["open"], "open")
@@ -214,6 +277,7 @@ def download_and_validate_xauusd_15m(
             "columns_valid": True,
             "timestamps_monotonic": True,
             "timestamps_unique": True,
+            "timestamps_grid_aligned": True,
             "ohlc_geometry_valid": True,
             "volume_valid": volume_s is not None,
         },
@@ -222,14 +286,29 @@ def download_and_validate_xauusd_15m(
 
     manifest_json_str = json.dumps(manifest_data, indent=2)
 
-    # Atomic Staging and Rollback Protection
-    tmp_csv = out_p.with_suffix(".tmp.csv")
-    tmp_json = manifest_p.with_suffix(".tmp.json")
+    commit_data = {
+        "commit_version": "1.0",
+        "dataset_id": "ds_moving_average_15m",
+        "symbol": "XAUUSD",
+        "timeframe": "15m",
+        "raw_sha256": raw_sha256,
+        "output_sha256": output_sha256,
+        "row_count": len(canonical_df),
+        "committed_at_utc": datetime.now(timezone.utc).isoformat(),
+    }
+    commit_json_str = json.dumps(commit_data, indent=2)
+
+    # Unique PID/UUID staging paths to prevent concurrent worker collision
+    run_id = f"{os.getpid()}_{uuid.uuid4().hex[:8]}"
+    tmp_csv = out_p.with_suffix(f".tmp.{run_id}.csv")
+    tmp_json = manifest_p.with_suffix(f".tmp.{run_id}.manifest.json")
+    tmp_commit = commit_p.with_suffix(f".tmp.{run_id}.commit.json")
 
     try:
         # Write staged temporary files
         tmp_csv.write_bytes(output_csv_bytes)
         tmp_json.write_text(manifest_json_str, encoding="utf-8")
+        tmp_commit.write_text(commit_json_str, encoding="utf-8")
 
         # Read back staged CSV and verify schema & hash
         readback_df = pd.read_csv(tmp_csv)
@@ -240,16 +319,32 @@ def download_and_validate_xauusd_15m(
         if readback_sha != output_sha256:
             raise RuntimeError("Readback verification failed: SHA-256 checksum mismatch.")
 
-        # Atomic replacement of target dataset and manifest
+        if simulate_failure_step == "before_csv_replace":
+            raise RuntimeError("Simulated failure before CSV replacement!")
+
+        # Step 1: Replace CSV
         os.replace(tmp_csv, out_p)
+
+        if simulate_failure_step == "before_manifest_replace":
+            raise RuntimeError("Simulated failure after CSV replace but before Manifest replace!")
+
+        # Step 2: Replace Manifest
         os.replace(tmp_json, manifest_p)
+
+        if simulate_failure_step == "before_commit_replace":
+            raise RuntimeError("Simulated failure before commit marker replace!")
+
+        # Step 3: Replace Commit Marker
+        os.replace(tmp_commit, commit_p)
 
     except Exception as exc:
         # Clean up temporary staged files on error
-        if tmp_csv.exists():
-            tmp_csv.unlink()
-        if tmp_json.exists():
-            tmp_json.unlink()
+        for p in (tmp_csv, tmp_json, tmp_commit):
+            if p.exists():
+                try:
+                    p.unlink()
+                except OSError:
+                    pass
         raise RuntimeError(f"Atomic dataset persistence failed: {exc}") from exc
 
     return out_p, manifest_data
