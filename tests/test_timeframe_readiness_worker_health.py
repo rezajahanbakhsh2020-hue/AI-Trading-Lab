@@ -980,3 +980,127 @@ def test_seven_timeframes_unhealthy_evaluations_never_report_ready(tf: str):
     assert tf_diag["reason_code"] != "READY"
     assert "Simulated failure" in tf_diag["reason_code"] or tf_diag["reason_code"] == "FAILED"
     assert tf_diag["execution"] == "UNHEALTHY"
+
+
+def test_promotable_evidence_alone_cannot_bypass_production_checks(tmp_path: Path):
+    """Verify that a PROMOTABLE label on evidence alone cannot bypass binding and production checks."""
+    from src.evaluation.research_constitution import (
+        CodeProvenance,
+        DatasetScope,
+        EvidencePartition,
+        EvidencePartitionRole,
+        ExecutionAssumptions,
+        PromotionStatus,
+        ResearchEvidence,
+        ResearchExperimentSpec,
+    )
+    from src.evaluation.research_store import (
+        resolve_promoted_candidate,
+        save_research_experiment,
+    )
+
+    spec = ResearchExperimentSpec(
+        hypothesis="Test hypothesis",
+        methodology_version="1.0",
+        strategy_name="moving_average",
+        strategy_version="1.0",
+        dataset_scope=DatasetScope(
+            dataset_id="ds_test_15m",
+            symbol="XAUUSD",
+            timeframe="15m",
+            start_date="2025-01-01",
+            end_date="2025-12-31",
+        ),
+        execution_assumptions=ExecutionAssumptions(
+            transaction_cost=0.001,
+            slippage=0.001,
+            latency_ms=10.0,
+        ),
+        code_provenance=CodeProvenance(commit_sha="abc1234"),
+        benchmark_reference="buy_and_hold",
+        parameters={"fast_window": 20, "slow_window": 50},
+    )
+    evidence = ResearchEvidence(
+        experiment_fingerprint=spec.fingerprint,
+        spec=spec,
+        partitions=(
+            EvidencePartition(
+                role=EvidencePartitionRole.OUT_OF_SAMPLE,
+                start_date="2025-01-01",
+                end_date="2025-12-31",
+                total_return=0.15,
+                max_drawdown=0.05,
+                sharpe_ratio=1.8,
+            ),
+        ),
+        robustness_verdict={"passed": True},
+        promotion_status=PromotionStatus.PROMOTABLE,
+    )
+
+    save_research_experiment(evidence, base_dir=tmp_path)
+
+    # Attempt to resolve candidate for 15m without a candidate binding file
+    resolved = resolve_promoted_candidate(
+        candidate_id="cand_unbound_15m",
+        symbol="XAUUSD",
+        timeframe="15m",
+        base_dir=tmp_path,
+    )
+    assert resolved is None
+
+    readiness = verify_timeframe_production_readiness(
+        symbol="XAUUSD",
+        timeframe="15m",
+        candidate_id="cand_unbound_15m",
+        research_dir=tmp_path,
+    )
+    assert readiness["status"] == "BLOCKED"
+    assert readiness["reason_code"] == "PromotionUnavailable"
+
+
+def test_malformed_or_conflicting_binding_fails_closed_without_crashing_diagnostics(tmp_path: Path):
+    """Verify malformed candidate JSON or missing evidence fails closed to BLOCKED without crashing readiness report."""
+    by_cand_15m = tmp_path / "by_candidate" / "corrupt_cand_15m"
+    by_cand_15m.mkdir(parents=True)
+    (by_cand_15m / "candidate.json").write_text("{ corrupt json }", encoding="utf-8")
+
+    matrix = verify_all_canonical_timeframes_readiness(
+        symbol="XAUUSD",
+        candidate_ids={"15m": "corrupt_cand_15m"},
+        research_dir=tmp_path,
+    )
+
+    canonical_tfs = [tf.value for tf in CanonicalTimeframe.canonical_ladder()]
+    assert len(matrix) == 7
+    assert set(matrix.keys()) == set(canonical_tfs)
+
+    assert matrix["15m"]["status"] == "BLOCKED"
+    assert matrix["15m"]["reason_code"] == "PromotionIntegrityError"
+
+    for tf in canonical_tfs:
+        assert tf in matrix
+        assert matrix[tf]["status"] in ("READY", "BLOCKED")
+
+
+def test_readiness_distinguished_from_live_evaluation_and_publication(tmp_path: Path):
+    """Verify readiness preflight checks candidate authorization without triggering market evaluation or publication delivery."""
+    from tests.test_continuous_live_runtime import persist_momentum_candidate
+
+    cand_id = persist_momentum_candidate(tmp_path, candidate_id="cand_preflight_test", timeframe="5m")
+
+    pub_mock = MagicMock(enabled=True, publish_url="https://example.com/ingest", api_key="secret")
+
+    res = verify_timeframe_production_readiness(
+        symbol="XAUUSD",
+        timeframe="5m",
+        candidate_id=cand_id,
+        research_dir=tmp_path,
+        publisher=pub_mock,
+    )
+
+    assert res["status"] == "READY"
+    assert res["reason_code"] == "READY"
+    assert "authorization_fingerprint" in res
+
+    # Readiness MUST NOT call publisher.publish()
+    pub_mock.publish.assert_not_called()
