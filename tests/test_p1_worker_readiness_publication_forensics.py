@@ -485,7 +485,7 @@ class TestP1WorkerReadinessAndPublicationForensics:
         assert res_1m_mismatch["reason_code"] in ("TIMEFRAME_IDENTITY_MISMATCH", "PromotionEligibilityError")
 
     def test_1m_promoted_candidate_resolution_and_publication(self, tmp_path):
-        """Verify that when a genuine 1m candidate artifact exists, 1m evaluates READY, executes live decision, and constructs publication payload."""
+        """Verify that when a genuine 1m candidate artifact exists, 1m evaluates READY, executes live decision, and constructs publication payload locally (testing local execution/publication construction boundary, not deployed remote publication)."""
         from tests.test_continuous_live_runtime import persist_momentum_candidate, make_tf_market_data
         from src.evaluation.live_execution_runtime import ProductionRuntimeConfig
 

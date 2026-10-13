@@ -61,6 +61,18 @@ DEFAULT_LIMIT = 200
 DEFAULT_STORE_PATH = Path("results/live/decision_history.json")
 DEFAULT_SNAPSHOT_PATH = Path("results/live/latest_execution.json")
 
+PUB_FAILURE_STATUSES: tuple[str, ...] = (
+    "FAILED",
+    "REJECTED",
+    "AUTH_FAILED",
+    "FORBIDDEN",
+    "UNAVAILABLE",
+    "TIMED_OUT",
+    "INVALID_RESPONSE",
+    "SKIPPED_BLOCKED",
+    "MISCONFIGURED",
+)
+
 
 @dataclass(frozen=True)
 class ProductionRuntimeConfig:
@@ -1332,6 +1344,11 @@ class ContinuousLiveRuntime:
         if res.get("blocked") is True:
             return False
 
+        # Validate blocked_state structure if present
+        if "blocked_state" in res and res["blocked_state"] is not None:
+            if not isinstance(res["blocked_state"], dict):
+                return False
+
         # Check for explicit error/exception fields
         if "error" in res or "exception" in res:
             return False
@@ -1424,17 +1441,6 @@ class ContinuousLiveRuntime:
                 pub_status = pub_res.get("status")
                 is_published = pub_res.get("published")
 
-                PUB_FAILURE_STATUSES = (
-                    "FAILED",
-                    "REJECTED",
-                    "AUTH_FAILED",
-                    "FORBIDDEN",
-                    "UNAVAILABLE",
-                    "TIMED_OUT",
-                    "INVALID_RESPONSE",
-                    "SKIPPED_BLOCKED",
-                    "MISCONFIGURED",
-                )
                 if pub_status in PUB_FAILURE_STATUSES:
                     return False
 
@@ -1549,18 +1555,7 @@ class ContinuousLiveRuntime:
                         reason_code = str(bs["reason"])
 
             # Precedence 2: Publication failure
-            PUB_FAILURES = (
-                "FAILED",
-                "REJECTED",
-                "AUTH_FAILED",
-                "FORBIDDEN",
-                "UNAVAILABLE",
-                "TIMED_OUT",
-                "INVALID_RESPONSE",
-                "SKIPPED_BLOCKED",
-                "MISCONFIGURED",
-            )
-            if not reason_code and pub_status in PUB_FAILURES and isinstance(pub_res, dict):
+            if not reason_code and pub_status in PUB_FAILURE_STATUSES and isinstance(pub_res, dict):
                 reason_code = str(pub_res.get("reason") or pub_res.get("error") or pub_status)
 
             # Precedence 3: Evaluation blocked or benign skip reason
