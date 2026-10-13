@@ -1537,17 +1537,29 @@ class ContinuousLiveRuntime:
             # Derive actionable reason code following strict precedence
             reason_code = None
 
-            # Precedence 1: Explicit evaluation failure/error in current tick
+            # Precedence 1: Explicit evaluation failure/error/exception in current tick
             if isinstance(tf_eval, dict):
                 if tf_eval.get("error"):
                     reason_code = str(tf_eval["error"])
                 elif tf_eval.get("exception"):
                     reason_code = str(tf_eval["exception"])
-                elif tf_eval.get("blocked_state", {}).get("reason"):
-                    reason_code = str(tf_eval["blocked_state"]["reason"])
+                else:
+                    bs = tf_eval.get("blocked_state")
+                    if isinstance(bs, dict) and bs.get("reason"):
+                        reason_code = str(bs["reason"])
 
             # Precedence 2: Publication failure
-            PUB_FAILURES = ("FAILED", "REJECTED", "AUTH_FAILED", "FORBIDDEN", "TIMED_OUT", "INVALID_RESPONSE", "MISCONFIGURED")
+            PUB_FAILURES = (
+                "FAILED",
+                "REJECTED",
+                "AUTH_FAILED",
+                "FORBIDDEN",
+                "UNAVAILABLE",
+                "TIMED_OUT",
+                "INVALID_RESPONSE",
+                "SKIPPED_BLOCKED",
+                "MISCONFIGURED",
+            )
             if not reason_code and pub_status in PUB_FAILURES and isinstance(pub_res, dict):
                 reason_code = str(pub_res.get("reason") or pub_res.get("error") or pub_status)
 
@@ -1556,12 +1568,17 @@ class ContinuousLiveRuntime:
                 st = tf_eval.get("status")
                 if st in ("SKIPPED_DEDUPLICATED", "SKIPPED_NO_CLOSED_CANDLE"):
                     reason_code = str(tf_eval.get("reason") or st)
-                elif tf_eval.get("blocked") or st in ("BLOCKED", "FAILED_RECOVERABLE", "SKIPPED_BLOCKED"):
+                elif tf_eval.get("blocked") or st in ("BLOCKED", "FAILED_RECOVERABLE", "SKIPPED_BLOCKED", "EXCEPTIONAL_FAILURE", "UNAUTHORIZED"):
                     reason_code = str(tf_eval.get("reason") or tf_eval.get("detail") or st)
 
             # Precedence 4: Readiness non-ready reason
             if not reason_code and readiness_info.get("status") != "READY":
                 reason_code = str(readiness_info.get("reason_code") or readiness_info.get("detail") or "BLOCKED")
+
+            # Safety fallback: An unhealthy evaluation must NEVER report "READY"
+            if not is_healthy_tf and (not reason_code or reason_code == "READY"):
+                st_fallback = tf_eval.get("status") if isinstance(tf_eval, dict) else None
+                reason_code = str(st_fallback) if st_fallback and st_fallback != "READY" else "UNCLASSIFIED_RUNTIME_FAILURE"
 
             # Precedence 5: Default READY when healthy
             if not reason_code:

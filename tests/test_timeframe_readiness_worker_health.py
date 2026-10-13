@@ -880,8 +880,19 @@ def test_diagnostic_precedence_runtime_failure_overrides_ready_preflight():
     assert h["timeframes"]["5m"]["execution"] == "UNHEALTHY"
 
 
-def test_diagnostic_precedence_publication_failure_overrides_ready_preflight():
-    """Verify publication failure reason overrides READY preflight status in per-timeframe health diagnostics."""
+@pytest.mark.parametrize("pub_failure_status", [
+    "FAILED",
+    "REJECTED",
+    "AUTH_FAILED",
+    "FORBIDDEN",
+    "UNAVAILABLE",
+    "TIMED_OUT",
+    "INVALID_RESPONSE",
+    "SKIPPED_BLOCKED",
+    "MISCONFIGURED",
+])
+def test_diagnostic_precedence_all_publication_failures_override_ready_preflight(pub_failure_status: str):
+    """Verify ALL publication failure statuses override READY preflight status in per-timeframe health diagnostics."""
     now_dt = datetime.datetime(2026, 10, 9, 12, 0, 0, tzinfo=datetime.timezone.utc)
     runtime = ContinuousLiveRuntime(symbol="XAUUSD", timeframes=["5m"], clock=lambda: now_dt)
     runtime._started_at_utc = now_dt.isoformat()
@@ -890,12 +901,11 @@ def test_diagnostic_precedence_publication_failure_overrides_ready_preflight():
         "5m": {"status": "READY", "candidate_id": "cand_5m", "reason_code": "READY"},
     }
 
-    # Run_once success but publication failed with AUTH_FAILED
     failed_pub = {
-        "status": "AUTH_FAILED",
+        "status": pub_failure_status,
         "published": False,
-        "reason": "HTTP 401 Unauthorized",
-        "error": "HTTP 401 Unauthorized",
+        "reason": f"Simulated publication failure: {pub_failure_status}",
+        "error": f"Error detail for {pub_failure_status}",
     }
     evals = {
         "5m": make_real_run_once_success(publish_result=failed_pub),
@@ -903,6 +913,43 @@ def test_diagnostic_precedence_publication_failure_overrides_ready_preflight():
 
     h = runtime.get_health_status(reference_now=now_dt, current_evaluations=evals)
     assert h["status"] == "WORKER_DEGRADED"
-    assert h["timeframes"]["5m"]["publication_status"] == "AUTH_FAILED"
-    assert h["timeframes"]["5m"]["reason_code"] in ("HTTP 401 Unauthorized", "AUTH_FAILED")
+    assert h["timeframes"]["5m"]["publication_status"] == pub_failure_status
+    assert h["timeframes"]["5m"]["reason_code"] != "READY"
+    assert pub_failure_status in h["timeframes"]["5m"]["reason_code"] or "Simulated" in h["timeframes"]["5m"]["reason_code"] or "Error detail" in h["timeframes"]["5m"]["reason_code"]
     assert h["timeframes"]["5m"]["execution"] == "UNHEALTHY"
+
+
+@pytest.mark.parametrize("malformed_blocked_state", [
+    None,
+    "string_blocked_state",
+    [1, 2, 3],
+    12345,
+    {"reason": "valid_blocked_dict_reason"},
+])
+def test_malformed_blocked_state_handled_safely_without_exception(malformed_blocked_state):
+    """Verify malformed blocked_state values (None, string, list, int) do not raise AttributeError/TypeError in get_health_status."""
+    now_dt = datetime.datetime(2026, 10, 9, 12, 0, 0, tzinfo=datetime.timezone.utc)
+    runtime = ContinuousLiveRuntime(symbol="XAUUSD", timeframes=["5m"], clock=lambda: now_dt)
+    runtime._started_at_utc = now_dt.isoformat()
+    runtime._last_tick_at_utc = now_dt.isoformat()
+    runtime._timeframe_readiness = {
+        "5m": {"status": "READY", "candidate_id": "cand_5m", "reason_code": "READY"},
+    }
+
+    evals = {
+        "5m": {
+            "blocked": True,
+            "status": "BLOCKED",
+            "blocked_state": malformed_blocked_state,
+            "reason": "fallback_blocked_reason",
+        },
+    }
+
+    h = runtime.get_health_status(reference_now=now_dt, current_evaluations=evals)
+    assert h["status"] == "WORKER_DEGRADED"
+    assert h["timeframes"]["5m"]["execution"] == "BLOCKED"
+    assert h["timeframes"]["5m"]["reason_code"] != "READY"
+    if isinstance(malformed_blocked_state, dict) and "reason" in malformed_blocked_state:
+        assert h["timeframes"]["5m"]["reason_code"] == "valid_blocked_dict_reason"
+    else:
+        assert h["timeframes"]["5m"]["reason_code"] in ("fallback_blocked_reason", "BLOCKED")

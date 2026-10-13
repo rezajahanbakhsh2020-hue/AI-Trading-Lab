@@ -485,8 +485,9 @@ class TestP1WorkerReadinessAndPublicationForensics:
         assert res_1m_mismatch["reason_code"] in ("TIMEFRAME_IDENTITY_MISMATCH", "PromotionEligibilityError")
 
     def test_1m_promoted_candidate_resolution_and_publication(self, tmp_path):
-        """Verify that when a genuine 1m candidate artifact exists, 1m evaluates READY and generates valid publication payload."""
-        from tests.test_continuous_live_runtime import persist_momentum_candidate
+        """Verify that when a genuine 1m candidate artifact exists, 1m evaluates READY, executes live decision, and constructs publication payload."""
+        from tests.test_continuous_live_runtime import persist_momentum_candidate, make_tf_market_data
+        from src.evaluation.live_execution_runtime import ProductionRuntimeConfig
 
         cand_id = persist_momentum_candidate(tmp_path, candidate_id="cand_momentum_1m_live", symbol="XAUUSD", timeframe="1m")
 
@@ -499,3 +500,32 @@ class TestP1WorkerReadinessAndPublicationForensics:
         assert readiness["status"] == "READY"
         assert readiness["candidate_id"] == cand_id
         assert readiness["timeframe"] == "1m"
+
+        # Execute run_once with a valid 1m market snapshot
+        now_dt = datetime.datetime.now(datetime.timezone.utc)
+        df_1m = make_tf_market_data("2026-10-09 12:00", "1m")
+
+        prod_cfg = ProductionRuntimeConfig(
+            symbol="XAUUSD",
+            timeframe="1m",
+            candidate_id=cand_id,
+            research_dir=tmp_path,
+        )
+        runtime = LiveExecutionRuntime(
+            symbol="XAUUSD",
+            interval="1m",
+            store_path=tmp_path / "decision_history.json",
+            snapshot_path=tmp_path / "latest_execution.json",
+            research_dir=tmp_path,
+            production_config=prod_cfg,
+        )
+
+        res = runtime.run_once(publish=False, reference_now=now_dt, market_data=df_1m)
+        assert res["blocked"] is False
+        assert res["candidate_id"] == cand_id
+        assert res["interval"] == "1m"
+        assert isinstance(res["publication"], dict)
+        assert res["publication"]["timeframe"] == "1m"
+        assert res["publication"]["candidate_id"] == cand_id
+        assert res["publication"]["provenance"]["provenance_type"] == "live_signal"
+        assert res["publication"]["provenance"]["is_live"] is True
