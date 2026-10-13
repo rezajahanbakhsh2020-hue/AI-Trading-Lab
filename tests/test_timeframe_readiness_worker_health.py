@@ -164,7 +164,7 @@ def test_mismatched_candidate_scope_rejection():
 
 
 def test_render_worker_configuration_truthfulness():
-    """Verify render.yaml worker configuration matches verified READY timeframes without unverified mappings."""
+    """Verify render.yaml worker configuration matches verified canonical seven-timeframe ladder with 1m."""
     render_yaml_path = Path("render.yaml")
     assert render_yaml_path.exists()
     content = render_yaml_path.read_text(encoding="utf-8")
@@ -824,3 +824,159 @@ def test_multi_tick_persistent_publication_failure_remains_degraded():
     assert tick_2["health"]["status"] == "WORKER_DEGRADED"
     assert tick_2["evaluations"]["5m"].get("status") != "SKIPPED_DEDUPLICATED"
     assert tick_2["evaluations"]["5m"]["blocked"] is False
+
+
+def test_structured_per_timeframe_health_diagnostics():
+    """Verify get_health_status includes structured per-timeframe health diagnostics."""
+    now_dt = datetime.datetime(2026, 10, 9, 12, 0, 0, tzinfo=datetime.timezone.utc)
+    runtime = ContinuousLiveRuntime(symbol="XAUUSD", timeframes=["5m", "1m"], clock=lambda: now_dt)
+    runtime._started_at_utc = now_dt.isoformat()
+    runtime._last_tick_at_utc = now_dt.isoformat()
+    runtime._timeframe_readiness = {
+        "5m": {"status": "READY", "candidate_id": "cand_5m", "reason_code": "READY"},
+        "1m": {"status": "BLOCKED", "candidate_id": None, "reason_code": "PromotionUnavailable"},
+    }
+
+    evals = {
+        "5m": make_real_run_once_success(),
+        "1m": {"blocked": True, "status": "BLOCKED", "reason": "PromotionUnavailable"},
+    }
+
+    h = runtime.get_health_status(reference_now=now_dt, current_evaluations=evals)
+    assert h["status"] == "WORKER_HEALTHY"
+    assert "timeframes" in h
+    tf_diag = h["timeframes"]
+
+    assert "5m" in tf_diag
+    assert tf_diag["5m"]["readiness"] == "READY"
+    assert tf_diag["5m"]["candidate_id"] == "cand_5m"
+    assert tf_diag["5m"]["execution"] == "HEALTHY"
+    assert tf_diag["5m"]["publication_status"] == "PUBLISHED"
+
+    assert "1m" in tf_diag
+    assert tf_diag["1m"]["readiness"] == "BLOCKED"
+    assert tf_diag["1m"]["reason_code"] == "PromotionUnavailable"
+    assert tf_diag["1m"]["execution"] == "BLOCKED"
+
+
+def test_diagnostic_precedence_runtime_failure_overrides_ready_preflight():
+    """Verify runtime evaluation error overrides READY preflight status in per-timeframe health diagnostics."""
+    now_dt = datetime.datetime(2026, 10, 9, 12, 0, 0, tzinfo=datetime.timezone.utc)
+    runtime = ContinuousLiveRuntime(symbol="XAUUSD", timeframes=["5m"], clock=lambda: now_dt)
+    runtime._started_at_utc = now_dt.isoformat()
+    runtime._last_tick_at_utc = now_dt.isoformat()
+    runtime._timeframe_readiness = {
+        "5m": {"status": "READY", "candidate_id": "cand_5m", "reason_code": "READY"},
+    }
+
+    # Current evaluation failed with provider error
+    evals = {
+        "5m": {"status": "FAILED_RECOVERABLE", "error": "Provider connection refused"},
+    }
+
+    h = runtime.get_health_status(reference_now=now_dt, current_evaluations=evals)
+    assert h["status"] == "WORKER_DEGRADED"
+    assert h["timeframes"]["5m"]["reason_code"] == "Provider connection refused"
+    assert h["timeframes"]["5m"]["execution"] == "UNHEALTHY"
+
+
+@pytest.mark.parametrize("pub_failure_status", [
+    "FAILED",
+    "REJECTED",
+    "AUTH_FAILED",
+    "FORBIDDEN",
+    "UNAVAILABLE",
+    "TIMED_OUT",
+    "INVALID_RESPONSE",
+    "SKIPPED_BLOCKED",
+    "MISCONFIGURED",
+])
+def test_diagnostic_precedence_all_publication_failures_override_ready_preflight(pub_failure_status: str):
+    """Verify ALL publication failure statuses override READY preflight status in per-timeframe health diagnostics."""
+    now_dt = datetime.datetime(2026, 10, 9, 12, 0, 0, tzinfo=datetime.timezone.utc)
+    runtime = ContinuousLiveRuntime(symbol="XAUUSD", timeframes=["5m"], clock=lambda: now_dt)
+    runtime._started_at_utc = now_dt.isoformat()
+    runtime._last_tick_at_utc = now_dt.isoformat()
+    runtime._timeframe_readiness = {
+        "5m": {"status": "READY", "candidate_id": "cand_5m", "reason_code": "READY"},
+    }
+
+    failed_pub = {
+        "status": pub_failure_status,
+        "published": False,
+        "reason": f"Simulated publication failure: {pub_failure_status}",
+        "error": f"Error detail for {pub_failure_status}",
+    }
+    evals = {
+        "5m": make_real_run_once_success(publish_result=failed_pub),
+    }
+
+    h = runtime.get_health_status(reference_now=now_dt, current_evaluations=evals)
+    assert h["status"] == "WORKER_DEGRADED"
+    assert h["timeframes"]["5m"]["publication_status"] == pub_failure_status
+    assert h["timeframes"]["5m"]["reason_code"] != "READY"
+    assert pub_failure_status in h["timeframes"]["5m"]["reason_code"] or "Simulated" in h["timeframes"]["5m"]["reason_code"] or "Error detail" in h["timeframes"]["5m"]["reason_code"]
+    assert h["timeframes"]["5m"]["execution"] == "UNHEALTHY"
+
+
+@pytest.mark.parametrize("malformed_blocked_state", [
+    None,
+    "string_blocked_state",
+    [1, 2, 3],
+    12345,
+    {"reason": "valid_blocked_dict_reason"},
+])
+def test_malformed_blocked_state_handled_safely_without_exception(malformed_blocked_state):
+    """Verify malformed blocked_state values (None, string, list, int) do not raise AttributeError/TypeError in get_health_status."""
+    now_dt = datetime.datetime(2026, 10, 9, 12, 0, 0, tzinfo=datetime.timezone.utc)
+    runtime = ContinuousLiveRuntime(symbol="XAUUSD", timeframes=["5m"], clock=lambda: now_dt)
+    runtime._started_at_utc = now_dt.isoformat()
+    runtime._last_tick_at_utc = now_dt.isoformat()
+    runtime._timeframe_readiness = {
+        "5m": {"status": "READY", "candidate_id": "cand_5m", "reason_code": "READY"},
+    }
+
+    evals = {
+        "5m": {
+            "blocked": True,
+            "status": "BLOCKED",
+            "blocked_state": malformed_blocked_state,
+            "reason": "fallback_blocked_reason",
+        },
+    }
+
+    h = runtime.get_health_status(reference_now=now_dt, current_evaluations=evals)
+    assert h["status"] == "WORKER_DEGRADED"
+    assert h["timeframes"]["5m"]["execution"] == "BLOCKED"
+    assert h["timeframes"]["5m"]["reason_code"] != "READY"
+    if isinstance(malformed_blocked_state, dict) and "reason" in malformed_blocked_state:
+        assert h["timeframes"]["5m"]["reason_code"] == "valid_blocked_dict_reason"
+    else:
+        assert h["timeframes"]["5m"]["reason_code"] in ("fallback_blocked_reason", "BLOCKED")
+
+
+@pytest.mark.parametrize("tf", ["1m", "5m", "15m", "30m", "1H", "4H", "1D"])
+def test_seven_timeframes_unhealthy_evaluations_never_report_ready(tf: str):
+    """Verify for every canonical timeframe that an unhealthy evaluation never reports reason_code='READY'."""
+    now_dt = datetime.datetime(2026, 10, 9, 12, 0, 0, tzinfo=datetime.timezone.utc)
+    all_tfs = ["1m", "5m", "15m", "30m", "1H", "4H", "1D"]
+    runtime = ContinuousLiveRuntime(symbol="XAUUSD", timeframes=all_tfs, clock=lambda: now_dt)
+    runtime._started_at_utc = now_dt.isoformat()
+    runtime._last_tick_at_utc = now_dt.isoformat()
+    runtime._timeframe_readiness = {
+        key: {"status": "READY", "candidate_id": f"cand_{key}", "reason_code": "READY"}
+        for key in all_tfs
+    }
+
+    # Simulate target timeframe failing with runtime error while other timeframes succeed
+    evals = {
+        key: make_real_run_once_success() if key != tf else {"status": "FAILED", "error": f"Simulated failure for {tf}"}
+        for key in all_tfs
+    }
+
+    h = runtime.get_health_status(reference_now=now_dt, current_evaluations=evals)
+    tf_diag = h["timeframes"][tf]
+
+    assert tf_diag["reason_code"] != "READY"
+    assert "Simulated failure" in tf_diag["reason_code"] or tf_diag["reason_code"] == "FAILED"
+    assert tf_diag["execution"] == "UNHEALTHY"

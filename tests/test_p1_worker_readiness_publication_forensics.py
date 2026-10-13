@@ -449,3 +449,83 @@ class TestP1WorkerReadinessAndPublicationForensics:
         assert valid is True
         assert status is None
         assert reason is None
+
+    def test_1m_canonical_timeframe_parsing_and_isolation(self):
+        """Verify 1m is a canonical timeframe and does not alias or borrow other timeframes."""
+        tf_1m = CanonicalTimeframe.from_str("1m")
+        assert tf_1m == CanonicalTimeframe.ONE_MINUTE
+        assert tf_1m.value == "1m"
+        assert tf_1m.order_rank == 1
+
+        # Verify 1m is part of the canonical ladder
+        ladder = [tf.value for tf in CanonicalTimeframe.canonical_ladder()]
+        assert "1m" in ladder
+        assert ladder[0] == "1m"
+
+    def test_1m_unpromoted_fails_closed_without_candidate_borrowing(self):
+        """Verify 1m fails closed as PromotionUnavailable when unpromoted, without borrowing 5m candidates."""
+        res_1m = verify_timeframe_production_readiness(
+            symbol="XAUUSD",
+            timeframe="1m",
+            candidate_id=None,
+            research_dir=DEFAULT_RESEARCH_DIR,
+        )
+        assert res_1m["timeframe"] == "1m"
+        assert res_1m["status"] == "BLOCKED"
+        assert res_1m["reason_code"] == "PromotionUnavailable"
+
+        # Explicit check that providing a 5m candidate for 1m is rejected
+        res_1m_mismatch = verify_timeframe_production_readiness(
+            symbol="XAUUSD",
+            timeframe="1m",
+            candidate_id="cand_moving_average_5m",
+            research_dir=DEFAULT_RESEARCH_DIR,
+        )
+        assert res_1m_mismatch["status"] == "BLOCKED"
+        assert res_1m_mismatch["reason_code"] in ("TIMEFRAME_IDENTITY_MISMATCH", "PromotionEligibilityError")
+
+    def test_1m_promoted_candidate_resolution_and_publication(self, tmp_path):
+        """Verify that when a genuine 1m candidate artifact exists, 1m evaluates READY, executes live decision, and constructs publication payload locally (testing local execution/publication construction boundary, not deployed remote publication)."""
+        from tests.test_continuous_live_runtime import persist_momentum_candidate, make_tf_market_data
+        from src.evaluation.live_execution_runtime import ProductionRuntimeConfig
+
+        cand_id = persist_momentum_candidate(tmp_path, candidate_id="cand_momentum_1m_live", symbol="XAUUSD", timeframe="1m")
+
+        readiness = verify_timeframe_production_readiness(
+            symbol="XAUUSD",
+            timeframe="1m",
+            candidate_id=cand_id,
+            research_dir=tmp_path,
+        )
+        assert readiness["status"] == "READY"
+        assert readiness["candidate_id"] == cand_id
+        assert readiness["timeframe"] == "1m"
+
+        # Execute run_once with a valid 1m market snapshot
+        now_dt = datetime.datetime.now(datetime.timezone.utc)
+        df_1m = make_tf_market_data("2026-10-09 12:00", "1m")
+
+        prod_cfg = ProductionRuntimeConfig(
+            symbol="XAUUSD",
+            timeframe="1m",
+            candidate_id=cand_id,
+            research_dir=tmp_path,
+        )
+        runtime = LiveExecutionRuntime(
+            symbol="XAUUSD",
+            interval="1m",
+            store_path=tmp_path / "decision_history.json",
+            snapshot_path=tmp_path / "latest_execution.json",
+            research_dir=tmp_path,
+            production_config=prod_cfg,
+        )
+
+        res = runtime.run_once(publish=False, reference_now=now_dt, market_data=df_1m)
+        assert res["blocked"] is False
+        assert res["candidate_id"] == cand_id
+        assert res["interval"] == "1m"
+        assert isinstance(res["publication"], dict)
+        assert res["publication"]["timeframe"] == "1m"
+        assert res["publication"]["candidate_id"] == cand_id
+        assert res["publication"]["provenance"]["provenance_type"] == "live_signal"
+        assert res["publication"]["provenance"]["is_live"] is True
