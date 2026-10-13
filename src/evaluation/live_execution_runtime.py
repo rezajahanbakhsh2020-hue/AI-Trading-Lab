@@ -1518,6 +1518,26 @@ class ContinuousLiveRuntime:
 
         is_healthy = is_heartbeat_healthy and execution_healthy
 
+        # Build structured per-timeframe health diagnostics
+        timeframe_diagnostics: dict[str, dict[str, Any]] = {}
+        for tf in self.timeframes:
+            readiness_info = self._timeframe_readiness.get(tf, {})
+            tf_eval = evals_to_check.get(tf) if isinstance(evals_to_check, dict) else None
+
+            is_healthy_tf = self._is_healthy_evaluation(tf_eval) if tf_eval else False
+
+            tf_diag: dict[str, Any] = {
+                "readiness": readiness_info.get("status", "UNKNOWN"),
+                "reason_code": readiness_info.get("reason_code") or (tf_eval.get("reason") if isinstance(tf_eval, dict) else None),
+                "candidate_id": readiness_info.get("candidate_id") or (tf_eval.get("candidate_id") if isinstance(tf_eval, dict) else None),
+                "execution": "HEALTHY" if is_healthy_tf else ("BLOCKED" if (isinstance(tf_eval, dict) and tf_eval.get("blocked")) or readiness_info.get("status") == "BLOCKED" else "UNHEALTHY"),
+            }
+            if isinstance(tf_eval, dict):
+                pub_res = tf_eval.get("publish_result")
+                if isinstance(pub_res, dict):
+                    tf_diag["publication_status"] = pub_res.get("status")
+            timeframe_diagnostics[tf] = tf_diag
+
         return {
             "status": status,
             "healthy": is_healthy,
@@ -1530,6 +1550,7 @@ class ContinuousLiveRuntime:
             "last_failure_reason": self._last_failure_reason,
             "seconds_since_last_tick": max(0.0, age_seconds),
             "tick_count": self._tick_count,
+            "timeframes": timeframe_diagnostics,
         }
 
     def stop(self) -> None:

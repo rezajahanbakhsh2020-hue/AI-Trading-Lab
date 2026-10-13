@@ -824,3 +824,36 @@ def test_multi_tick_persistent_publication_failure_remains_degraded():
     assert tick_2["health"]["status"] == "WORKER_DEGRADED"
     assert tick_2["evaluations"]["5m"].get("status") != "SKIPPED_DEDUPLICATED"
     assert tick_2["evaluations"]["5m"]["blocked"] is False
+
+
+def test_structured_per_timeframe_health_diagnostics():
+    """Verify get_health_status includes structured per-timeframe health diagnostics."""
+    now_dt = datetime.datetime(2026, 10, 9, 12, 0, 0, tzinfo=datetime.timezone.utc)
+    runtime = ContinuousLiveRuntime(symbol="XAUUSD", timeframes=["5m", "1m"], clock=lambda: now_dt)
+    runtime._started_at_utc = now_dt.isoformat()
+    runtime._last_tick_at_utc = now_dt.isoformat()
+    runtime._timeframe_readiness = {
+        "5m": {"status": "READY", "candidate_id": "cand_5m", "reason_code": "READY"},
+        "1m": {"status": "BLOCKED", "candidate_id": None, "reason_code": "PromotionUnavailable"},
+    }
+
+    evals = {
+        "5m": make_real_run_once_success(),
+        "1m": {"blocked": True, "status": "BLOCKED", "reason": "PromotionUnavailable"},
+    }
+
+    h = runtime.get_health_status(reference_now=now_dt, current_evaluations=evals)
+    assert h["status"] == "WORKER_HEALTHY"
+    assert "timeframes" in h
+    tf_diag = h["timeframes"]
+
+    assert "5m" in tf_diag
+    assert tf_diag["5m"]["readiness"] == "READY"
+    assert tf_diag["5m"]["candidate_id"] == "cand_5m"
+    assert tf_diag["5m"]["execution"] == "HEALTHY"
+    assert tf_diag["5m"]["publication_status"] == "PUBLISHED"
+
+    assert "1m" in tf_diag
+    assert tf_diag["1m"]["readiness"] == "BLOCKED"
+    assert tf_diag["1m"]["reason_code"] == "PromotionUnavailable"
+    assert tf_diag["1m"]["execution"] == "BLOCKED"
