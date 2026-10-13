@@ -953,3 +953,30 @@ def test_malformed_blocked_state_handled_safely_without_exception(malformed_bloc
         assert h["timeframes"]["5m"]["reason_code"] == "valid_blocked_dict_reason"
     else:
         assert h["timeframes"]["5m"]["reason_code"] in ("fallback_blocked_reason", "BLOCKED")
+
+
+@pytest.mark.parametrize("tf", ["1m", "5m", "15m", "30m", "1H", "4H", "1D"])
+def test_seven_timeframes_unhealthy_evaluations_never_report_ready(tf: str):
+    """Verify for every canonical timeframe that an unhealthy evaluation never reports reason_code='READY'."""
+    now_dt = datetime.datetime(2026, 10, 9, 12, 0, 0, tzinfo=datetime.timezone.utc)
+    all_tfs = ["1m", "5m", "15m", "30m", "1H", "4H", "1D"]
+    runtime = ContinuousLiveRuntime(symbol="XAUUSD", timeframes=all_tfs, clock=lambda: now_dt)
+    runtime._started_at_utc = now_dt.isoformat()
+    runtime._last_tick_at_utc = now_dt.isoformat()
+    runtime._timeframe_readiness = {
+        key: {"status": "READY", "candidate_id": f"cand_{key}", "reason_code": "READY"}
+        for key in all_tfs
+    }
+
+    # Simulate target timeframe failing with runtime error while other timeframes succeed
+    evals = {
+        key: make_real_run_once_success() if key != tf else {"status": "FAILED", "error": f"Simulated failure for {tf}"}
+        for key in all_tfs
+    }
+
+    h = runtime.get_health_status(reference_now=now_dt, current_evaluations=evals)
+    tf_diag = h["timeframes"][tf]
+
+    assert tf_diag["reason_code"] != "READY"
+    assert "Simulated failure" in tf_diag["reason_code"] or tf_diag["reason_code"] == "FAILED"
+    assert tf_diag["execution"] == "UNHEALTHY"
