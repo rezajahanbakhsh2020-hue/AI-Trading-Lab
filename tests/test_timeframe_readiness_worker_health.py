@@ -857,3 +857,52 @@ def test_structured_per_timeframe_health_diagnostics():
     assert tf_diag["1m"]["readiness"] == "BLOCKED"
     assert tf_diag["1m"]["reason_code"] == "PromotionUnavailable"
     assert tf_diag["1m"]["execution"] == "BLOCKED"
+
+
+def test_diagnostic_precedence_runtime_failure_overrides_ready_preflight():
+    """Verify runtime evaluation error overrides READY preflight status in per-timeframe health diagnostics."""
+    now_dt = datetime.datetime(2026, 10, 9, 12, 0, 0, tzinfo=datetime.timezone.utc)
+    runtime = ContinuousLiveRuntime(symbol="XAUUSD", timeframes=["5m"], clock=lambda: now_dt)
+    runtime._started_at_utc = now_dt.isoformat()
+    runtime._last_tick_at_utc = now_dt.isoformat()
+    runtime._timeframe_readiness = {
+        "5m": {"status": "READY", "candidate_id": "cand_5m", "reason_code": "READY"},
+    }
+
+    # Current evaluation failed with provider error
+    evals = {
+        "5m": {"status": "FAILED_RECOVERABLE", "error": "Provider connection refused"},
+    }
+
+    h = runtime.get_health_status(reference_now=now_dt, current_evaluations=evals)
+    assert h["status"] == "WORKER_DEGRADED"
+    assert h["timeframes"]["5m"]["reason_code"] == "Provider connection refused"
+    assert h["timeframes"]["5m"]["execution"] == "UNHEALTHY"
+
+
+def test_diagnostic_precedence_publication_failure_overrides_ready_preflight():
+    """Verify publication failure reason overrides READY preflight status in per-timeframe health diagnostics."""
+    now_dt = datetime.datetime(2026, 10, 9, 12, 0, 0, tzinfo=datetime.timezone.utc)
+    runtime = ContinuousLiveRuntime(symbol="XAUUSD", timeframes=["5m"], clock=lambda: now_dt)
+    runtime._started_at_utc = now_dt.isoformat()
+    runtime._last_tick_at_utc = now_dt.isoformat()
+    runtime._timeframe_readiness = {
+        "5m": {"status": "READY", "candidate_id": "cand_5m", "reason_code": "READY"},
+    }
+
+    # Run_once success but publication failed with AUTH_FAILED
+    failed_pub = {
+        "status": "AUTH_FAILED",
+        "published": False,
+        "reason": "HTTP 401 Unauthorized",
+        "error": "HTTP 401 Unauthorized",
+    }
+    evals = {
+        "5m": make_real_run_once_success(publish_result=failed_pub),
+    }
+
+    h = runtime.get_health_status(reference_now=now_dt, current_evaluations=evals)
+    assert h["status"] == "WORKER_DEGRADED"
+    assert h["timeframes"]["5m"]["publication_status"] == "AUTH_FAILED"
+    assert h["timeframes"]["5m"]["reason_code"] in ("HTTP 401 Unauthorized", "AUTH_FAILED")
+    assert h["timeframes"]["5m"]["execution"] == "UNHEALTHY"

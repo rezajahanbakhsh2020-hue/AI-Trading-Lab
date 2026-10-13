@@ -424,7 +424,7 @@ def verify_all_canonical_timeframes_readiness(
     reference_now: datetime.datetime | None = None,
     check_provider_data: bool = False,
 ) -> dict[str, dict[str, Any]]:
-    """Evaluate production readiness independently across all six canonical timeframes."""
+    """Evaluate production readiness independently across all seven canonical timeframes."""
     cand_map = candidate_ids or {}
     results = {}
     for tf in CanonicalTimeframe.canonical_ladder():
@@ -1518,7 +1518,7 @@ class ContinuousLiveRuntime:
 
         is_healthy = is_heartbeat_healthy and execution_healthy
 
-        # Build structured per-timeframe health diagnostics
+        # Build structured per-timeframe health diagnostics with exact precedence
         timeframe_diagnostics: dict[str, dict[str, Any]] = {}
         for tf in self.timeframes:
             readiness_info = self._timeframe_readiness.get(tf, {})
@@ -1526,16 +1526,56 @@ class ContinuousLiveRuntime:
 
             is_healthy_tf = self._is_healthy_evaluation(tf_eval) if tf_eval else False
 
+            # Derive publication status
+            pub_status = "NOT_ATTEMPTED"
+            pub_res = tf_eval.get("publish_result") if isinstance(tf_eval, dict) else None
+            if isinstance(pub_res, dict) and pub_res.get("status"):
+                pub_status = str(pub_res["status"])
+            elif not self.publish or (isinstance(self.publisher, Project2Publisher) and not self.publisher.enabled):
+                pub_status = "SKIPPED_DISABLED"
+
+            # Derive actionable reason code following strict precedence
+            reason_code = None
+
+            # Precedence 1: Explicit evaluation failure/error in current tick
+            if isinstance(tf_eval, dict):
+                if tf_eval.get("error"):
+                    reason_code = str(tf_eval["error"])
+                elif tf_eval.get("exception"):
+                    reason_code = str(tf_eval["exception"])
+                elif tf_eval.get("blocked_state", {}).get("reason"):
+                    reason_code = str(tf_eval["blocked_state"]["reason"])
+
+            # Precedence 2: Publication failure
+            PUB_FAILURES = ("FAILED", "REJECTED", "AUTH_FAILED", "FORBIDDEN", "TIMED_OUT", "INVALID_RESPONSE", "MISCONFIGURED")
+            if not reason_code and pub_status in PUB_FAILURES and isinstance(pub_res, dict):
+                reason_code = str(pub_res.get("reason") or pub_res.get("error") or pub_status)
+
+            # Precedence 3: Evaluation blocked or benign skip reason
+            if not reason_code and isinstance(tf_eval, dict):
+                st = tf_eval.get("status")
+                if st in ("SKIPPED_DEDUPLICATED", "SKIPPED_NO_CLOSED_CANDLE"):
+                    reason_code = str(tf_eval.get("reason") or st)
+                elif tf_eval.get("blocked") or st in ("BLOCKED", "FAILED_RECOVERABLE", "SKIPPED_BLOCKED"):
+                    reason_code = str(tf_eval.get("reason") or tf_eval.get("detail") or st)
+
+            # Precedence 4: Readiness non-ready reason
+            if not reason_code and readiness_info.get("status") != "READY":
+                reason_code = str(readiness_info.get("reason_code") or readiness_info.get("detail") or "BLOCKED")
+
+            # Precedence 5: Default READY when healthy
+            if not reason_code:
+                reason_code = str(readiness_info.get("reason_code") or "READY")
+
+            cand_id = readiness_info.get("candidate_id") or (tf_eval.get("candidate_id") if isinstance(tf_eval, dict) else None)
+
             tf_diag: dict[str, Any] = {
                 "readiness": readiness_info.get("status", "UNKNOWN"),
-                "reason_code": readiness_info.get("reason_code") or (tf_eval.get("reason") if isinstance(tf_eval, dict) else None),
-                "candidate_id": readiness_info.get("candidate_id") or (tf_eval.get("candidate_id") if isinstance(tf_eval, dict) else None),
+                "reason_code": reason_code,
+                "candidate_id": cand_id,
                 "execution": "HEALTHY" if is_healthy_tf else ("BLOCKED" if (isinstance(tf_eval, dict) and tf_eval.get("blocked")) or readiness_info.get("status") == "BLOCKED" else "UNHEALTHY"),
+                "publication_status": pub_status,
             }
-            if isinstance(tf_eval, dict):
-                pub_res = tf_eval.get("publish_result")
-                if isinstance(pub_res, dict):
-                    tf_diag["publication_status"] = pub_res.get("status")
             timeframe_diagnostics[tf] = tf_diag
 
         return {
