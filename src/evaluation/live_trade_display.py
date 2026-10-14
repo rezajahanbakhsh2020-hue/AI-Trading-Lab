@@ -136,18 +136,8 @@ def build_live_trade_display(
     risk_obj = canonical_decision.risk_levels
     receipt = canonical_decision.authorization_receipt
 
-    strat_name = receipt.strategy_name.lower()
-    if strat_name in ("moving_average", "baseline"):
-        fw_raw = dec_obj.parameters.get("fast_window", fast_window)
-        sw_raw = dec_obj.parameters.get("slow_window", slow_window)
-        from src.evaluation.live_production_decision import validate_window_pair
-        fw, sw = validate_window_pair(fw_raw, sw_raw)
-    else:
-        fw = fast_window
-        sw = slow_window
-
     from live_trend import build_live_trend_snapshot
-    trend_snap = build_live_trend_snapshot(data, fast_window=fw, slow_window=sw)
+    trend_snap = build_live_trend_snapshot(data, fast_window=fast_window, slow_window=slow_window)
 
     close_price = float(data["close"].iloc[-1]) if ("close" in data.columns and not data.empty) else None
 
@@ -171,8 +161,8 @@ def build_live_trade_display(
         "stop_loss_pct": stop_loss_pct,
         "take_profit_pct": take_profit_pct,
         "momentum_window": momentum_window,
-        "fast_window": fw,
-        "slow_window": sw,
+        "fast_window": fast_window,
+        "slow_window": slow_window,
         "timestamp": dec_obj.market_timestamp,
         "decision_id": dec_obj.decision_id,
         "canonical_live_decision_fingerprint": canonical_decision.canonical_live_decision_fingerprint,
