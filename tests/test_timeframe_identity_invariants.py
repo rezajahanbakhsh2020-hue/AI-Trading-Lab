@@ -803,6 +803,52 @@ def test_cross_timeframe_isolation_mixed_outcomes(tmp_path: Path) -> None:
         assert evals["5m"]["reason"] == "PromotionUnavailable"
 
 
+def test_moving_average_integration_conflict_uninhibited_by_momentum_signal(tmp_path: Path) -> None:
+    """Integration test proving moving_average candidate returns BUY through LiveExecutionRuntime.run_once even when momentum signal is 0."""
+    save_research_candidate(
+        candidate_id="cand_ma_conflict_5m",
+        evidence=_make_ma_test_evidence("5m"),
+        operational_stability_score=0.80,
+        base_dir=tmp_path,
+    )
+
+    config = ProductionRuntimeConfig(
+        symbol="XAUUSD", timeframe="5m", candidate_id="cand_ma_conflict_5m", research_dir=tmp_path
+    )
+    runtime = LiveExecutionRuntime(
+        symbol="XAUUSD", interval="5m", research_dir=tmp_path, production_config=config
+    )
+
+    rows = 80
+    now_dt = datetime.now(timezone.utc)
+    dates = [now_dt - timedelta(minutes=5 * i) for i in range(rows)]
+    dates.reverse()
+
+    closes = [100.0 + idx * 0.5 for idx in range(rows)]
+    closes[-1] = closes[-11] - 0.1
+
+    df_market = pd.DataFrame({
+        "timestamp": [d.isoformat() for d in dates],
+        "open": closes,
+        "high": [c + 1.0 for c in closes],
+        "low": [c - 1.0 for c in closes],
+        "close": closes,
+    })
+
+    res = runtime.run_once(
+        market_data=df_market,
+        reference_now=dates[-1] + timedelta(minutes=5),
+        publish=False,
+        persist=False,
+    )
+
+    assert res["blocked"] is False
+    assert res["decision"] == "BUY"
+    assert res["strategy"] == "moving_average"
+    assert res["record"]["signal_label"] == "BUY"
+    assert res["record"]["signal"] == 1
+
+
 def test_no_candidate_borrowing_across_timeframes(tmp_path: Path) -> None:
     """E: No candidate borrowing - supplying 5m candidate for 1m evaluation is rejected."""
     save_research_candidate(

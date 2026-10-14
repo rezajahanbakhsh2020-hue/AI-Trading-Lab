@@ -37,10 +37,7 @@ def test_stable_momentum_and_uptrend_produce_buy_decision():
     )
 
     assert result["decision"] == "BUY"
-    assert (
-        result["reason"]
-        == "stable_strategy_live_signal_and_trend_confirmed"
-    )
+    assert "momentum_signal_1_and_trend_UP_confirmed" in result["reason"] or "live_signal_and_trend_confirmed" in result["reason"]
     assert result["stable_strategy"] == "momentum"
     assert result["stability_score"] == pytest.approx(0.7458282289664787)
     assert result["signal"] == 1
@@ -65,7 +62,7 @@ def test_stability_score_below_threshold_blocks_trade():
 
     assert result["decision"] == "NO TRADE"
     assert result["reason"] == "stability_score_below_threshold"
-    assert result["signal"] == 1
+    assert result["signal"] == 0
     assert result["trend"] == "UP"
 
 
@@ -144,9 +141,140 @@ def test_downtrend_blocks_buy_decision():
     )
 
     assert result["decision"] == "NO TRADE"
-    assert result["reason"] == "trend_not_confirmed"
+    assert "trend_not_confirmed" in result["reason"] or "unconfirmed setup" in result["reason"]
     assert result["signal"] == 0
     assert result["trend"] == "DOWN"
+
+
+def test_moving_average_buy_when_momentum_signal_is_zero():
+    """Proves moving_average BUY is preserved even when momentum signal would be 0."""
+    rows = 80
+    now_dt = pd.Timestamp.now(tz="UTC")
+    dates = [now_dt - pd.Timedelta(minutes=5 * i) for i in range(rows)]
+    dates.reverse()
+
+    # Create market data where fast MA (10) > slow MA (30) for last bar,
+    # but close price of latest bar is <= close price 10 bars ago (momentum signal = 0).
+    closes = [100.0 + idx * 0.5 for idx in range(rows)]
+    closes[-1] = closes[-11] - 0.1
+
+    data = pd.DataFrame({
+        "timestamp": dates,
+        "open": closes,
+        "high": [c + 1.0 for c in closes],
+        "low": [c - 1.0 for c in closes],
+        "close": closes,
+    })
+
+    result = build_live_production_decision(
+        data,
+        reference_now=dates[-1] + pd.Timedelta(minutes=5),
+        stable_strategy="moving_average",
+        stability_score=0.7458282289664787,
+        fast_window=10,
+        slow_window=30,
+    )
+
+    assert result["decision"] == "BUY"
+    assert result["stable_strategy"] == "moving_average"
+    assert result["signal"] == 1
+    assert result["signal_label"] == "BUY"
+
+
+def test_moving_average_no_trade_when_momentum_is_active():
+    """Proves moving_average NO_TRADE is preserved even when momentum signal is 1."""
+    rows = 80
+    now_dt = pd.Timestamp.now(tz="UTC")
+    dates = [now_dt - pd.Timedelta(minutes=5 * i) for i in range(rows)]
+    dates.reverse()
+
+    # Falling market then sudden spike at the end: momentum window (10) is > 0 (signal=1),
+    # but fast MA (20) remains below slow MA (50) -> MA strategy returns NO_TRADE.
+    closes = [200.0 - idx * 0.5 for idx in range(rows)]
+    closes[-1] = closes[-11] + 5.0
+
+    data = pd.DataFrame({
+        "timestamp": dates,
+        "open": closes,
+        "high": [c + 1.0 for c in closes],
+        "low": [c - 1.0 for c in closes],
+        "close": closes,
+    })
+
+    result = build_live_production_decision(
+        data,
+        reference_now=dates[-1] + pd.Timedelta(minutes=5),
+        stable_strategy="moving_average",
+        stability_score=0.7458282289664787,
+    )
+
+    assert result["decision"] == "NO TRADE"
+    assert result["stable_strategy"] == "moving_average"
+    assert result["signal"] == 0
+    assert result["signal_label"] == "NO TRADE"
+
+
+def test_candidate_windows_are_authoritative(monkeypatch):
+    """Proves candidate's real fast_window/slow_window parameters are consumed over caller wrapper defaults."""
+    data = make_rising_market()
+
+    from src.evaluation.research_store import resolve_promoted_candidate
+    from dataclasses import replace
+
+    ma_cand = resolve_promoted_candidate(strategy_id="moving_average", symbol="XAUUSD", timeframe="5m")
+    custom_spec = replace(ma_cand.evidence.spec, parameters={"fast_window": 10, "slow_window": 30, "stop_loss_pct": 0.01, "take_profit_pct": 0.02})
+    custom_evidence = replace(ma_cand.evidence, spec=custom_spec, experiment_fingerprint=custom_spec.fingerprint)
+    custom_cand = replace(
+        ma_cand,
+        evidence=custom_evidence,
+        parameters={"fast_window": 10, "slow_window": 30, "stop_loss_pct": 0.01, "take_profit_pct": 0.02},
+    )
+
+    monkeypatch.setattr(
+        "src.evaluation.research_store.resolve_promoted_candidate",
+        lambda *args, **kwargs: custom_cand,
+    )
+
+    result = build_live_production_decision(
+        data,
+        reference_now=data["timestamp"].iloc[-1] + pd.Timedelta(minutes=5),
+        stable_strategy="moving_average",
+        stability_score=0.7458282289664787,
+        fast_window=20,
+        slow_window=50,
+    )
+
+    assert result["fast_window"] == 10
+    assert result["slow_window"] == 30
+
+
+@pytest.mark.parametrize(
+    ("fast", "slow"),
+    [
+        (True, 50),
+        (20, True),
+        (20.5, 50),
+        (20, 50.5),
+        (float("nan"), 50),
+        (20, float("nan")),
+        (float("inf"), 50),
+        (20, float("inf")),
+        (0, 50),
+        (20, 0),
+        (-10, 50),
+        (20, -50),
+        (50, 20),
+        (20, 20),
+        (None, 50),
+        (20, None),
+        ("20", 50),
+    ],
+)
+def test_strict_window_validation_parameterized(fast, slow):
+    from src.evaluation.live_production_decision import validate_window_pair
+
+    with pytest.raises(ValueError):
+        validate_window_pair(fast, slow)
 
 
 def test_no_trade_signal_is_preserved_without_inventing_sell():

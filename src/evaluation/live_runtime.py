@@ -32,6 +32,7 @@ from src.evaluation.live_production_decision import (
     authorize_production_runtime,
     calculate_production_risk_levels,
     evaluate_production_decision,
+    validate_window_pair,
 )
 from src.evaluation.live_publication_store import (
     publish_canonical_live_decision,
@@ -152,23 +153,14 @@ def evaluate_authorized_live_runtime(
             trend_snap = build_live_trend_snapshot(data)
             trend_val = trend_snap["trend"]
         elif strat_lower in ("moving_average", "baseline"):
-            fast_win = resolved_candidate.parameters.get("fast_window")
-            slow_win = resolved_candidate.parameters.get("slow_window")
-            if fast_win is None or slow_win is None:
+            fast_win_raw = resolved_candidate.parameters.get("fast_window")
+            slow_win_raw = resolved_candidate.parameters.get("slow_window")
+            if fast_win_raw is None or slow_win_raw is None:
                 raise ValueError(
                     f"Candidate '{resolved_candidate.candidate_id}' parameters missing required "
                     f"'fast_window' or 'slow_window' parameter for moving_average strategy."
                 )
-            if (
-                isinstance(fast_win, bool)
-                or isinstance(slow_win, bool)
-                or not isinstance(fast_win, (int, float))
-                or not isinstance(slow_win, (int, float))
-            ):
-                raise ValueError("fast_window and slow_window must be numeric integers.")
-            fast_win, slow_win = int(fast_win), int(slow_win)
-            if fast_win <= 0 or slow_win <= 0 or fast_win >= slow_win:
-                raise ValueError("fast_window and slow_window must be positive integers with fast_window < slow_window.")
+            fast_win, slow_win = validate_window_pair(fast_win_raw, slow_win_raw)
 
             sig_df = baseline_signal(data, fast_window=fast_win, slow_window=slow_win)
             sig_val = int(sig_df["signal"].iloc[-1])
