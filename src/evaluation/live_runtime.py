@@ -128,13 +128,31 @@ def evaluate_authorized_live_runtime(
     except Exception:
         ref_now = None
 
-    eff_window = resolved_candidate.parameters.get(
-        "momentum_window",
-        resolved_candidate.parameters.get("window", 10),
-    )
+    strat_lower = stable_strategy.lower()
+    if strat_lower == "momentum":
+        eff_momentum_window = resolved_candidate.parameters.get(
+            "momentum_window",
+            resolved_candidate.parameters.get("window", 10),
+        )
+        fast_win = 20
+        slow_win = 50
+    elif strat_lower in ("moving_average", "baseline"):
+        eff_momentum_window = None
+        fast_win_raw = resolved_candidate.parameters.get("fast_window")
+        slow_win_raw = resolved_candidate.parameters.get("slow_window")
+        if fast_win_raw is None or slow_win_raw is None:
+            raise ValueError(
+                f"Candidate '{resolved_candidate.candidate_id}' parameters missing required "
+                f"'fast_window' or 'slow_window' parameter for moving_average strategy."
+            )
+        fast_win, slow_win = validate_window_pair(fast_win_raw, slow_win_raw)
+    else:
+        eff_momentum_window = None
+        fast_win = 20
+        slow_win = 50
 
     if evaluation.fresh:
-        # FRESH DATA PATH: Evaluate strategy decision & signal
+        # FRESH DATA PATH: Evaluate strategy decision strictly through evaluate_production_decision
         decision_obj = evaluate_production_decision(
             candidate=resolved_candidate,
             data=data,
@@ -142,35 +160,11 @@ def evaluate_authorized_live_runtime(
             max_age_seconds=300.0,
         )
 
-        from live_signal import generate_live_signal
         from live_trend import build_live_trend_snapshot
-        from src.strategies.baseline import baseline_signal
+        trend_snap = build_live_trend_snapshot(data, fast_window=fast_win, slow_window=slow_win)
+        trend_val = trend_snap["trend"]
 
-        strat_lower = stable_strategy.lower()
-        if strat_lower == "momentum":
-            sig_df = generate_live_signal(data, window=int(eff_window))
-            sig_val = int(sig_df["signal"].iloc[-1])
-            trend_snap = build_live_trend_snapshot(data)
-            trend_val = trend_snap["trend"]
-        elif strat_lower in ("moving_average", "baseline"):
-            fast_win_raw = resolved_candidate.parameters.get("fast_window")
-            slow_win_raw = resolved_candidate.parameters.get("slow_window")
-            if fast_win_raw is None or slow_win_raw is None:
-                raise ValueError(
-                    f"Candidate '{resolved_candidate.candidate_id}' parameters missing required "
-                    f"'fast_window' or 'slow_window' parameter for moving_average strategy."
-                )
-            fast_win, slow_win = validate_window_pair(fast_win_raw, slow_win_raw)
-
-            sig_df = baseline_signal(data, fast_window=fast_win, slow_window=slow_win)
-            sig_val = int(sig_df["signal"].iloc[-1])
-            trend_snap = build_live_trend_snapshot(data, fast_window=fast_win, slow_window=slow_win)
-            trend_val = trend_snap["trend"]
-        else:
-            sig_val = 0
-            trend_val = "NEUTRAL"
-
-        # Operational gating criteria
+        # Apply independent operational vetoes ONLY (do not recalculate or override strategy decision)
         if effective_stability_score < min_stability_score:
             reason = "stability_score_below_threshold"
             final_direction = Direction.NO_TRADE
@@ -180,15 +174,9 @@ def evaluate_authorized_live_runtime(
         elif decision_obj.direction == Direction.NO_TRADE:
             reason = decision_obj.reason
             final_direction = Direction.NO_TRADE
-        elif trend_val != "UP":
-            reason = "trend_not_confirmed"
-            final_direction = Direction.NO_TRADE
-        elif sig_val != 1:
-            reason = "live_signal_not_active"
-            final_direction = Direction.NO_TRADE
         else:
-            reason = "stable_strategy_live_signal_and_trend_confirmed"
-            final_direction = Direction.BUY
+            reason = decision_obj.reason
+            final_direction = decision_obj.direction
 
         now_ts = decision_obj.decision_timestamp
         market_ts = decision_obj.market_timestamp
@@ -204,20 +192,15 @@ def evaluate_authorized_live_runtime(
             market_timestamp=market_ts,
             direction=final_direction,
             reason=reason,
-            entry_price=close_price if final_direction == Direction.BUY else None,
-            invalidation_condition="Close below stop_loss or trend turns DOWN" if final_direction == Direction.BUY else None,
+            entry_price=close_price if final_direction != Direction.NO_TRADE else None,
+            invalidation_condition=decision_obj.invalidation_condition if final_direction != Direction.NO_TRADE else None,
             confidence=effective_stability_score,
             parameters=resolved_candidate.parameters,
         )
     else:
-        # STALE/UNSAFE DATA PATH: Create NO_TRADE decision with evaluation's authoritative reason without fabricating market timestamp
-        sig_val = 0
+        # STALE/UNSAFE DATA PATH: Create NO_TRADE decision with evaluation's authoritative reason
         trend_val = "NEUTRAL"
-        eff_window = resolved_candidate.parameters.get(
-            "momentum_window",
-            resolved_candidate.parameters.get("window", 10),
-        )
-
+        final_direction = Direction.NO_TRADE
         final_decision_obj = ProductionDecision(
             candidate_id=resolved_candidate.candidate_id,
             evidence_id=resolved_candidate.evidence.evidence_id,
@@ -284,6 +267,9 @@ def evaluate_authorized_live_runtime(
                 stable_strategy=stable_strategy,
                 stability_score=effective_stability_score,
                 min_stability_score=min_stability_score,
+                fast_window=fast_win,
+                slow_window=slow_win,
+                momentum_window=eff_momentum_window or 10,
                 symbol=symbol,
                 interval=interval,
             )
@@ -297,7 +283,7 @@ def evaluate_authorized_live_runtime(
                 "reason": evaluation.freshness_reason,
                 "stable_strategy": str(stable_strategy),
                 "stability_score": effective_stability_score,
-                "strategy_supported": str(stable_strategy).lower() in ("momentum", "moving_average", "baseline"),
+                "strategy_supported": strat_lower in ("momentum", "moving_average", "baseline"),
                 "signal": 0,
                 "signal_label": "NO TRADE",
                 "trend": "NEUTRAL",
@@ -318,9 +304,9 @@ def evaluate_authorized_live_runtime(
                 "tp1_multiplier": None,
                 "tp2_multiplier": None,
                 "tp3_multiplier": None,
-                "momentum_window": None,
-                "fast_window": None,
-                "slow_window": None,
+                "momentum_window": eff_momentum_window,
+                "fast_window": fast_win,
+                "slow_window": slow_win,
                 "timestamp": evaluation.candle_timestamp_utc,
                 "quote_stale": True,
                 "quote_age_seconds": evaluation.age_seconds,
@@ -333,8 +319,8 @@ def evaluate_authorized_live_runtime(
             "reason": final_decision_obj.reason,
             "stable_strategy": str(stable_strategy),
             "stability_score": effective_stability_score,
-            "strategy_supported": str(stable_strategy).lower() in ("momentum", "moving_average", "baseline"),
-            "signal": sig_val if (evaluation.fresh and stable_strategy.lower() in ("momentum", "moving_average", "baseline") and final_direction == Direction.BUY) else 0,
+            "strategy_supported": strat_lower in ("momentum", "moving_average", "baseline"),
+            "signal": 1 if (evaluation.fresh and final_direction == Direction.BUY) else 0,
             "signal_label": final_decision_obj.direction.value,
             "trend": str(trend_val),
             "momentum": float(data["close"].iloc[-1]) if (evaluation.fresh and "close" in data.columns) else None,
@@ -344,9 +330,9 @@ def evaluate_authorized_live_runtime(
             "risk_reward_ratio": risk_obj.risk_reward_ratio,
             "stop_loss_pct": resolved_candidate.parameters.get("stop_loss_pct"),
             "take_profit_pct": resolved_candidate.parameters.get("take_profit_pct"),
-            "momentum_window": eff_window,
-            "fast_window": 20,
-            "slow_window": 50,
+            "momentum_window": eff_momentum_window,
+            "fast_window": fast_win,
+            "slow_window": slow_win,
             "timestamp": final_decision_obj.market_timestamp,
             "quote_stale": not evaluation.fresh,
             "quote_age_seconds": evaluation.age_seconds,
@@ -360,9 +346,9 @@ def evaluate_authorized_live_runtime(
         "stable_strategy": stable_strategy,
         "stability_score": effective_stability_score,
         "min_stability_score": min_stability_score,
-        "strategy_supported": stable_strategy.lower() in ("momentum", "moving_average", "baseline"),
-        "signal": sig_val if (evaluation.fresh and stable_strategy.lower() in ("momentum", "moving_average", "baseline") and final_direction == Direction.BUY) else 0,
-        "signal_label": "BUY" if (evaluation.fresh and sig_val == 1 and stable_strategy.lower() in ("momentum", "moving_average", "baseline") and final_direction == Direction.BUY) else "NO TRADE",
+        "strategy_supported": strat_lower in ("momentum", "moving_average", "baseline"),
+        "signal": 1 if (evaluation.fresh and final_direction == Direction.BUY) else 0,
+        "signal_label": final_direction.value,
         "trend": str(trend_val),
         "momentum": float(data["close"].iloc[-1]) if (evaluation.fresh and "close" in data.columns) else None,
         "entry_price": risk_obj.entry_price,
@@ -371,9 +357,9 @@ def evaluate_authorized_live_runtime(
         "risk_reward_ratio": risk_obj.risk_reward_ratio,
         "stop_loss_pct": resolved_candidate.parameters.get("stop_loss_pct"),
         "take_profit_pct": resolved_candidate.parameters.get("take_profit_pct"),
-        "momentum_window": eff_window,
-        "fast_window": 20,
-        "slow_window": 50,
+        "momentum_window": eff_momentum_window,
+        "fast_window": fast_win,
+        "slow_window": slow_win,
         "timestamp": final_decision_obj.market_timestamp,
         "quote_stale": not evaluation.fresh,
         "quote_age_seconds": evaluation.age_seconds,

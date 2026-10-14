@@ -93,6 +93,200 @@ def test_live_runtime_rejects_non_dataframe():
         )
 
 
+def test_custom_moving_average_windows_retained_through_runtime_and_display(tmp_path, monkeypatch):
+    from src.evaluation.research_store import resolve_promoted_candidate
+    from dataclasses import replace
+
+    ma_cand = resolve_promoted_candidate(strategy_id="moving_average", symbol="XAUUSD", timeframe="5m")
+    custom_spec = replace(ma_cand.evidence.spec, parameters={"fast_window": 10, "slow_window": 30, "stop_loss_pct": 0.01, "take_profit_pct": 0.02})
+    custom_evidence = replace(ma_cand.evidence, spec=custom_spec, experiment_fingerprint=custom_spec.fingerprint)
+    custom_cand = replace(
+        ma_cand,
+        evidence=custom_evidence,
+        parameters={"fast_window": 10, "slow_window": 30, "stop_loss_pct": 0.01, "take_profit_pct": 0.02},
+    )
+
+    monkeypatch.setattr(
+        "src.evaluation.live_runtime.resolve_promoted_candidate",
+        lambda *args, **kwargs: custom_cand,
+    )
+    monkeypatch.setattr(
+        "src.evaluation.research_store.resolve_promoted_candidate",
+        lambda *args, **kwargs: custom_cand,
+    )
+
+    df = _data()
+    ref_now = pd.to_datetime(df["timestamp"], utc=True).iloc[-1].to_pydatetime() + pd.Timedelta(minutes=5)
+    result = build_live_runtime(
+        data=df,
+        stable_strategy="moving_average",
+        stability_score=None,
+        symbol="XAUUSD",
+        interval="5m",
+        reference_now=ref_now,
+        store_path=tmp_path / "store.json",
+    )
+
+    assert result.decision["fast_window"] == 10
+    assert result.decision["slow_window"] == 30
+    assert result.display["fast_window"] == 10
+    assert result.display["slow_window"] == 30
+
+
+def test_display_trend_follows_candidate_windows_not_default_20_50(tmp_path, monkeypatch):
+    from src.evaluation.research_store import resolve_promoted_candidate
+    from dataclasses import replace
+
+    ma_cand = resolve_promoted_candidate(strategy_id="moving_average", symbol="XAUUSD", timeframe="5m")
+    custom_spec = replace(ma_cand.evidence.spec, parameters={"fast_window": 10, "slow_window": 30, "stop_loss_pct": 0.01, "take_profit_pct": 0.02})
+    custom_evidence = replace(ma_cand.evidence, spec=custom_spec, experiment_fingerprint=custom_spec.fingerprint)
+    custom_cand = replace(
+        ma_cand,
+        evidence=custom_evidence,
+        parameters={"fast_window": 10, "slow_window": 30, "stop_loss_pct": 0.01, "take_profit_pct": 0.02},
+    )
+
+    monkeypatch.setattr(
+        "src.evaluation.live_runtime.resolve_promoted_candidate",
+        lambda *args, **kwargs: custom_cand,
+    )
+    monkeypatch.setattr(
+        "src.evaluation.research_store.resolve_promoted_candidate",
+        lambda *args, **kwargs: custom_cand,
+    )
+
+    rows = 80
+    dates = pd.date_range("2026-01-01", periods=rows, freq="5min", tz="UTC")
+    # Construct prices where 10 MA > 30 MA (UP trend for 10/30)
+    # but 20 MA < 50 MA (DOWN trend for 20/50).
+    closes = [100.0] * rows
+    for i in range(50, 70):
+        closes[i] = 50.0  # dip in middle pulls down 50 MA
+    for i in range(70, rows):
+        closes[i] = 120.0  # recent spike pushes up 10 MA above 30 MA
+
+    df = pd.DataFrame({
+        "timestamp": dates,
+        "isOpen": False,
+        "open": closes,
+        "high": [c + 1.0 for c in closes],
+        "low": [c - 1.0 for c in closes],
+        "close": closes,
+    })
+
+    ref_now = dates[-1].to_pydatetime() + pd.Timedelta(minutes=5)
+    result = build_live_runtime(
+        data=df,
+        stable_strategy="moving_average",
+        stability_score=None,
+        symbol="XAUUSD",
+        interval="5m",
+        reference_now=ref_now,
+        store_path=tmp_path / "store.json",
+    )
+
+    assert result.display["fast_window"] == 10
+    assert result.display["slow_window"] == 30
+    assert result.display["trend"] == "UP"
+
+
+def test_live_runtime_preserves_moving_average_buy_when_momentum_inactive(tmp_path):
+    rows = 80
+    dates = pd.date_range("2026-01-01", periods=rows, freq="5min", tz="UTC")
+    closes = [100.0 + i * 0.5 for i in range(rows)]
+    closes[-1] = closes[-11] - 0.1  # momentum signal is 0
+
+    df = pd.DataFrame({
+        "timestamp": dates,
+        "isOpen": False,
+        "open": closes,
+        "high": [c + 1.0 for c in closes],
+        "low": [c - 1.0 for c in closes],
+        "close": closes,
+    })
+
+    ref_now = dates[-1].to_pydatetime() + pd.Timedelta(minutes=5)
+    result = build_live_runtime(
+        data=df,
+        stable_strategy="moving_average",
+        stability_score=None,
+        symbol="XAUUSD",
+        interval="5m",
+        reference_now=ref_now,
+        store_path=tmp_path / "store.json",
+    )
+
+    assert result.decision["decision"] == "BUY"
+    assert result.decision["signal"] == 1
+    assert result.display["decision"] == "BUY"
+
+
+def test_live_runtime_preserves_moving_average_no_trade_when_momentum_active(tmp_path):
+    rows = 80
+    dates = pd.date_range("2026-01-01", periods=rows, freq="5min", tz="UTC")
+    closes = [200.0 - i * 0.5 for i in range(rows)]
+    closes[-1] = closes[-11] + 5.0  # momentum signal is 1, but fast MA < slow MA
+
+    df = pd.DataFrame({
+        "timestamp": dates,
+        "isOpen": False,
+        "open": closes,
+        "high": [c + 1.0 for c in closes],
+        "low": [c - 1.0 for c in closes],
+        "close": closes,
+    })
+
+    ref_now = dates[-1].to_pydatetime() + pd.Timedelta(minutes=5)
+    result = build_live_runtime(
+        data=df,
+        stable_strategy="moving_average",
+        stability_score=None,
+        symbol="XAUUSD",
+        interval="5m",
+        reference_now=ref_now,
+        store_path=tmp_path / "store.json",
+    )
+
+    assert result.decision["decision"] == "NO TRADE"
+    assert result.decision["signal"] == 0
+    assert result.display["decision"] == "NO TRADE"
+
+
+def test_live_runtime_operational_veto_blocks_execution(tmp_path, monkeypatch):
+    df = _data()
+    ref_now = pd.to_datetime(df["timestamp"], utc=True).iloc[-1].to_pydatetime() + pd.Timedelta(minutes=5)
+
+    from src.evaluation.research_store import resolve_promoted_candidate
+    from dataclasses import replace
+
+    ma_cand = resolve_promoted_candidate(strategy_id="moving_average", symbol="XAUUSD", timeframe="5m")
+    custom_cand = replace(ma_cand, operational_stability_score=0.40)
+
+    monkeypatch.setattr(
+        "src.evaluation.live_runtime.resolve_promoted_candidate",
+        lambda *args, **kwargs: custom_cand,
+    )
+    monkeypatch.setattr(
+        "src.evaluation.research_store.resolve_promoted_candidate",
+        lambda *args, **kwargs: custom_cand,
+    )
+
+    result = build_live_runtime(
+        data=df,
+        stable_strategy="moving_average",
+        stability_score=0.40,
+        min_stability_score=0.50,
+        symbol="XAUUSD",
+        interval="5m",
+        reference_now=ref_now,
+        store_path=tmp_path / "store.json",
+    )
+
+    assert result.decision["decision"] == "NO TRADE"
+    assert result.decision["reason"] == "stability_score_below_threshold"
+    assert result.display["decision"] == "NO TRADE"
+
+
 from unittest.mock import MagicMock, patch
 
 def test_evaluate_authorized_live_runtime_publication_exception_handled(tmp_path):
