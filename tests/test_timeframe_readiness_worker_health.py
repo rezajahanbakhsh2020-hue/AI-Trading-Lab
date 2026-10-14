@@ -1264,3 +1264,51 @@ def test_readiness_distinguished_from_live_evaluation_and_publication(tmp_path: 
         mock_create_eval.assert_not_called()
         mock_eval_runtime.assert_not_called()
         pub_mock.publish.assert_not_called()
+
+
+def test_seven_frame_parity_distinguished_from_single_frame_liveness():
+    """Verify seven_frame_parity is False when only 1 of 7 timeframes is evaluated healthy."""
+    now_dt = datetime.datetime(2026, 10, 9, 12, 0, 0, tzinfo=datetime.timezone.utc)
+    all_tfs = ["1m", "5m", "15m", "30m", "1H", "4H", "1D"]
+    runtime = ContinuousLiveRuntime(
+        symbol="XAUUSD",
+        timeframes=all_tfs,
+        candidate_ids={"5m": "cand_moving_average_5m"},
+        clock=lambda: now_dt,
+    )
+    runtime._started_at_utc = now_dt.isoformat()
+    runtime._last_tick_at_utc = now_dt.isoformat()
+
+    evals = {
+        "5m": make_real_run_once_success(candidate_id="cand_moving_average_5m", timeframe="5m"),
+        "1m": {"blocked": True, "status": "BLOCKED", "reason": "PromotionUnavailable"},
+    }
+
+    h = runtime.get_health_status(reference_now=now_dt, current_evaluations=evals)
+    assert h["status"] == "WORKER_HEALTHY"
+    assert h["execution_healthy"] is True
+    assert h["seven_frame_parity"] is False
+
+
+def test_conflicting_configured_and_readiness_candidates_fail_closed():
+    """Verify that a conflict between configured candidate_id and readiness candidate_id fails closed."""
+    now_dt = datetime.datetime(2026, 10, 9, 12, 0, 0, tzinfo=datetime.timezone.utc)
+    runtime = ContinuousLiveRuntime(
+        symbol="XAUUSD",
+        timeframes=["5m"],
+        candidate_ids={"5m": "cand_configured_5m"},
+        clock=lambda: now_dt,
+    )
+    runtime._started_at_utc = now_dt.isoformat()
+    runtime._last_tick_at_utc = now_dt.isoformat()
+    runtime._timeframe_readiness = {
+        "5m": {"status": "READY", "candidate_id": "cand_readiness_5m", "reason_code": "READY"},
+    }
+
+    evals = {
+        "5m": make_real_run_once_success(candidate_id="cand_configured_5m", timeframe="5m"),
+    }
+
+    h = runtime.get_health_status(reference_now=now_dt, current_evaluations=evals)
+    assert h["status"] == "WORKER_DEGRADED"
+    assert h["execution_healthy"] is False

@@ -924,13 +924,24 @@ def test_scope_validation_and_contradictory_identity_rejection() -> None:
     }
     assert runtime._is_healthy_evaluation(res_record_sym_mismatch, expected_timeframe="15m", expected_symbol="XAUUSD", expected_candidate_id="cand_15m") is False
 
-    # 5. Correct matching scope is accepted
+    # 5. Unmapped timeframe (expected_candidate_id is None) rejects self-supplied candidate_id
+    res_unmapped_self_auth = {
+        "blocked": False,
+        "symbol": "XAUUSD",
+        "interval": "15m",
+        "candidate_id": "cand_unauthorized_self_auth",
+        "status": "PERSISTED",
+        "record": {"decision_id": "d5"},
+    }
+    assert runtime._is_healthy_evaluation(res_unmapped_self_auth, expected_timeframe="15m", expected_symbol="XAUUSD", expected_candidate_id=None) is False
+
+    # 6. Correct matching scope is accepted
     res_correct = {
         "blocked": False,
         "symbol": "XAUUSD",
         "interval": "15m",
         "candidate_id": "cand_15m",
         "status": "PERSISTED",
-        "record": {"decision_id": "d5", "symbol": "XAUUSD", "interval": "15m", "candidate_id": "cand_15m"},
+        "record": {"decision_id": "d6", "symbol": "XAUUSD", "interval": "15m", "candidate_id": "cand_15m"},
     }
     assert runtime._is_healthy_evaluation(res_correct, expected_timeframe="15m", expected_symbol="XAUUSD", expected_candidate_id="cand_15m") is True
