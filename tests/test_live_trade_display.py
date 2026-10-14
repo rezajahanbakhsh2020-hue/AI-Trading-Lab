@@ -377,3 +377,17 @@ def test_no_trade_and_invalid_risk_data_remain_safe():
     assert display["tp2"] is None
     assert display["tp3"] is None
     assert display["risk_reward_ratio"] is None
+
+
+@pytest.mark.parametrize("missing_field", ["tp1", "tp2", "tp3", "risk_reward_ratio"])
+def test_missing_canonical_risk_field_fails_closed(missing_field):
+    from dataclasses import replace
+    data = _rising_data()
+    cld = _get_canonical_decision(data, strategy="momentum", score=None)
+
+    incomplete_risk = replace(cld.risk_levels, **{missing_field: None})
+    custom_cld = replace(cld, risk_levels=incomplete_risk)
+
+    expected_match = "tp1, tp2, and tp3" if "tp" in missing_field else "risk_reward_ratio"
+    with pytest.raises(ValueError, match=expected_match):
+        build_live_trade_display(data, canonical_decision=custom_cld)

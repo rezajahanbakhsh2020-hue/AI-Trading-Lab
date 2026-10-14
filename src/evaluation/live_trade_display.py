@@ -211,6 +211,12 @@ def build_live_trade_display(
         if risk_obj is None or risk_obj.entry_price is None or risk_obj.stop_loss is None:
             raise ValueError("BUY decision requires valid canonical risk_levels with entry_price and stop_loss.")
 
+        if risk_obj.tp1 is None or risk_obj.tp2 is None or risk_obj.tp3 is None:
+            raise ValueError("BUY decision requires valid canonical risk_levels with tp1, tp2, and tp3.")
+
+        if risk_obj.risk_reward_ratio is None:
+            raise ValueError("BUY decision requires valid canonical risk_levels with risk_reward_ratio.")
+
         entry_price = float(risk_obj.entry_price)
         stop_loss = float(risk_obj.stop_loss)
         risk_distance = entry_price - stop_loss
@@ -218,13 +224,13 @@ def build_live_trade_display(
         if risk_distance <= 0:
             raise ValueError("BUY risk distance must be greater than zero.")
 
-        tp1 = float(risk_obj.tp1) if risk_obj.tp1 is not None else (entry_price + (risk_distance * tp1_multiplier))
-        tp2 = float(risk_obj.tp2) if risk_obj.tp2 is not None else (entry_price + (risk_distance * tp2_multiplier))
-        tp3 = float(risk_obj.tp3) if risk_obj.tp3 is not None else (entry_price + (risk_distance * tp3_multiplier))
+        tp1 = float(risk_obj.tp1)
+        tp2 = float(risk_obj.tp2)
+        tp3 = float(risk_obj.tp3)
         trailing_stop = float(risk_obj.trailing_stop) if risk_obj.trailing_stop is not None else None
 
-        take_profit = float(risk_obj.tp2) if risk_obj.tp2 is not None else (float(risk_obj.tp1) if risk_obj.tp1 is not None else (entry_price + (risk_distance * tp2_multiplier)))
-        risk_reward_ratio = float(risk_obj.risk_reward_ratio) if risk_obj.risk_reward_ratio is not None else ((take_profit - entry_price) / risk_distance if risk_distance > 0 else None)
+        take_profit = tp2 if tp2 is not None else tp1
+        risk_reward_ratio = float(risk_obj.risk_reward_ratio)
 
         risk_reward_tp1 = (tp1 - entry_price) / risk_distance
         risk_reward_tp2 = (tp2 - entry_price) / risk_distance
