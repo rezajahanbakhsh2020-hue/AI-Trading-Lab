@@ -82,6 +82,15 @@ def build_live_trade_display(
     if data.empty:
         raise ValueError("data must not be empty.")
 
+    if canonical_decision is not None and isinstance(canonical_decision, CanonicalLiveDecision):
+        dec_params = canonical_decision.decision.parameters or {}
+        if tp1_multiplier == DEFAULT_TP1_MULTIPLIER and "tp1_multiplier" in dec_params:
+            tp1_multiplier = dec_params["tp1_multiplier"]
+        if tp2_multiplier == DEFAULT_TP2_MULTIPLIER and "tp2_multiplier" in dec_params:
+            tp2_multiplier = dec_params["tp2_multiplier"]
+        if tp3_multiplier == DEFAULT_TP3_MULTIPLIER and "tp3_multiplier" in dec_params:
+            tp3_multiplier = dec_params["tp3_multiplier"]
+
     tp1_multiplier = _validate_multiplier("tp1_multiplier", tp1_multiplier)
     tp2_multiplier = _validate_multiplier("tp2_multiplier", tp2_multiplier)
     tp3_multiplier = _validate_multiplier("tp3_multiplier", tp3_multiplier)
@@ -105,7 +114,7 @@ def build_live_trade_display(
             "reason": "missing_canonical_live_decision",
             "stable_strategy": str(stable_strategy),
             "stability_score": float(stability_score) if stability_score is not None else 0.0,
-            "strategy_supported": str(stable_strategy).lower() == "momentum",
+            "strategy_supported": str(stable_strategy).lower() in ("momentum", "moving_average", "baseline"),
             "signal": 0,
             "signal_label": "BLOCKED",
             "trend": "NEUTRAL",
@@ -136,8 +145,20 @@ def build_live_trade_display(
     risk_obj = canonical_decision.risk_levels
     receipt = canonical_decision.authorization_receipt
 
+    strat_name = receipt.strategy_name.lower()
+    if strat_name in ("moving_average", "baseline"):
+        fw_raw = dec_obj.parameters.get("fast_window", fast_window)
+        sw_raw = dec_obj.parameters.get("slow_window", slow_window)
+        from src.evaluation.live_production_decision import validate_window_pair
+        fw, sw = validate_window_pair(fw_raw, sw_raw)
+        eff_momentum_window = None
+    else:
+        fw = fast_window
+        sw = slow_window
+        eff_momentum_window = dec_obj.parameters.get("momentum_window", dec_obj.parameters.get("window", momentum_window))
+
     from live_trend import build_live_trend_snapshot
-    trend_snap = build_live_trend_snapshot(data, fast_window=fast_window, slow_window=slow_window)
+    trend_snap = build_live_trend_snapshot(data, fast_window=fw, slow_window=sw)
 
     close_price = float(data["close"].iloc[-1]) if ("close" in data.columns and not data.empty) else None
 
@@ -149,7 +170,7 @@ def build_live_trade_display(
         "stable_strategy": receipt.strategy_name,
         "stability_score": dec_obj.confidence if dec_obj.confidence is not None else stability_score,
         "min_stability_score": min_stability_score,
-        "strategy_supported": receipt.strategy_name.lower() == "momentum",
+        "strategy_supported": receipt.strategy_name.lower() in ("momentum", "moving_average", "baseline"),
         "signal": 1 if dec_obj.direction == Direction.BUY else 0,
         "signal_label": dec_obj.direction.value,
         "trend": str(trend_snap.get("trend", "NEUTRAL")),
@@ -160,9 +181,9 @@ def build_live_trade_display(
         "risk_reward_ratio": risk_obj.risk_reward_ratio,
         "stop_loss_pct": stop_loss_pct,
         "take_profit_pct": take_profit_pct,
-        "momentum_window": momentum_window,
-        "fast_window": fast_window,
-        "slow_window": slow_window,
+        "momentum_window": eff_momentum_window,
+        "fast_window": fw,
+        "slow_window": sw,
         "timestamp": dec_obj.market_timestamp,
         "decision_id": dec_obj.decision_id,
         "canonical_live_decision_fingerprint": canonical_decision.canonical_live_decision_fingerprint,
@@ -180,29 +201,36 @@ def build_live_trade_display(
         tp1 = None
         tp2 = None
         tp3 = None
+        trailing_stop = None
         risk_distance = None
         risk_reward_ratio = None
         risk_reward_tp1 = None
         risk_reward_tp2 = None
         risk_reward_tp3 = None
     else:
-        if decision["entry_price"] is None or decision["stop_loss"] is None:
-            raise ValueError("BUY decision must contain entry_price and stop_loss.")
+        if risk_obj is None or risk_obj.entry_price is None or risk_obj.stop_loss is None:
+            raise ValueError("BUY decision requires valid canonical risk_levels with entry_price and stop_loss.")
 
-        entry_price = float(decision["entry_price"])
-        stop_loss = float(decision["stop_loss"])
+        if risk_obj.tp1 is None or risk_obj.tp2 is None or risk_obj.tp3 is None:
+            raise ValueError("BUY decision requires valid canonical risk_levels with tp1, tp2, and tp3.")
+
+        if risk_obj.risk_reward_ratio is None:
+            raise ValueError("BUY decision requires valid canonical risk_levels with risk_reward_ratio.")
+
+        entry_price = float(risk_obj.entry_price)
+        stop_loss = float(risk_obj.stop_loss)
         risk_distance = entry_price - stop_loss
 
         if risk_distance <= 0:
             raise ValueError("BUY risk distance must be greater than zero.")
 
-        tp1 = entry_price + (risk_distance * tp1_multiplier)
-        tp2 = entry_price + (risk_distance * tp2_multiplier)
-        tp3 = entry_price + (risk_distance * tp3_multiplier)
+        tp1 = float(risk_obj.tp1)
+        tp2 = float(risk_obj.tp2)
+        tp3 = float(risk_obj.tp3)
+        trailing_stop = float(risk_obj.trailing_stop) if risk_obj.trailing_stop is not None else None
 
-        take_profit = float(decision["take_profit"]) if decision.get("take_profit") is not None else tp2
-        reward_distance = take_profit - entry_price
-        risk_reward_ratio = reward_distance / risk_distance if risk_distance > 0 else None
+        take_profit = tp2 if tp2 is not None else tp1
+        risk_reward_ratio = float(risk_obj.risk_reward_ratio)
 
         risk_reward_tp1 = (tp1 - entry_price) / risk_distance
         risk_reward_tp2 = (tp2 - entry_price) / risk_distance
@@ -226,6 +254,7 @@ def build_live_trade_display(
         "tp2": tp2,
         "tp3": tp3,
         "take_profit": take_profit,
+        "trailing_stop": trailing_stop,
         "risk_distance": risk_distance,
         "risk_reward_ratio": risk_reward_ratio,
         "risk_reward_tp1": risk_reward_tp1,
