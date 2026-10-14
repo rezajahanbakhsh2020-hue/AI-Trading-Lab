@@ -120,7 +120,53 @@ def test_no_trade_has_no_trade_levels():
     assert result["risk_distance"] is None
 
 
-def test_unsupported_strategy_has_no_trade_levels():
+def test_unsupported_strategy_has_no_trade_levels(monkeypatch):
+    data = _rising_data()
+
+    from unittest.mock import MagicMock
+    from src.evaluation.research_store import resolve_promoted_candidate
+    mom_cand = resolve_promoted_candidate(strategy_id="momentum", symbol="XAUUSD", timeframe="5m")
+
+    mock_cand = MagicMock(spec=mom_cand)
+    mock_cand.candidate_id = "cand_unsupported_5m"
+    mock_cand.strategy_name = "unsupported_strategy"
+    mock_cand.strategy_version = "1.0"
+    mock_cand.symbol = "XAUUSD"
+    mock_cand.timeframe = "5m"
+    mock_cand.evidence = mom_cand.evidence
+    mock_cand.policy = mom_cand.policy
+    mock_cand.governance_decision = None
+    mock_cand.parameters = mom_cand.parameters
+    mock_cand.operational_stability_score = 0.7458282289664787
+    mock_cand.governance_decision_fingerprint = "gov_dec_unsupported"
+    mock_cand.artifact_fingerprint = "art_unsupported"
+    mock_cand.campaign_selection_decision_fingerprint = None
+
+    monkeypatch.setattr(
+        "src.evaluation.live_runtime.resolve_promoted_candidate",
+        lambda *args, **kwargs: mock_cand,
+    )
+    monkeypatch.setattr(
+        "src.evaluation.research_store.resolve_promoted_candidate",
+        lambda *args, **kwargs: mock_cand,
+    )
+
+    cld = _get_canonical_decision(data, strategy="unsupported_strategy", score=None)
+    result = build_live_trade_display(
+        data,
+        canonical_decision=cld,
+        stable_strategy="unsupported_strategy",
+        stability_score=None,
+    )
+
+    assert result["decision"] == "NO TRADE"
+    assert result["strategy_supported"] is False
+    assert result["tp1"] is None
+    assert result["tp2"] is None
+    assert result["tp3"] is None
+
+
+def test_moving_average_strategy_supported_in_display():
     data = _rising_data()
     cld = _get_canonical_decision(data, strategy="moving_average", score=None)
     result = build_live_trade_display(
@@ -130,11 +176,11 @@ def test_unsupported_strategy_has_no_trade_levels():
         stability_score=None,
     )
 
-    assert result["decision"] == "NO TRADE"
-    assert result["strategy_supported"] is False
-    assert result["tp1"] is None
-    assert result["tp2"] is None
-    assert result["tp3"] is None
+    assert result["decision"] == "BUY"
+    assert result["strategy_supported"] is True
+    assert result["tp1"] is not None
+    assert result["tp2"] is not None
+    assert result["tp3"] is not None
 
 
 def test_tp_multipliers_must_be_strictly_increasing():

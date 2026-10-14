@@ -69,13 +69,37 @@ def test_stability_score_below_threshold_blocks_trade():
     assert result["trend"] == "UP"
 
 
-def test_unsupported_stable_strategy_blocks_trade():
+def test_unsupported_stable_strategy_blocks_trade(monkeypatch):
     data = make_rising_market()
+
+    from unittest.mock import MagicMock
+    from src.evaluation.research_store import resolve_promoted_candidate
+    mom_cand = resolve_promoted_candidate(strategy_id="momentum", symbol="XAUUSD", timeframe="5m")
+
+    mock_cand = MagicMock(spec=mom_cand)
+    mock_cand.candidate_id = "cand_unsupported_5m"
+    mock_cand.strategy_name = "unsupported_strategy"
+    mock_cand.strategy_version = "1.0"
+    mock_cand.symbol = "XAUUSD"
+    mock_cand.timeframe = "5m"
+    mock_cand.evidence = mom_cand.evidence
+    mock_cand.policy = mom_cand.policy
+    mock_cand.governance_decision = None
+    mock_cand.parameters = mom_cand.parameters
+    mock_cand.operational_stability_score = 0.7458282289664787
+    mock_cand.governance_decision_fingerprint = "gov_dec_unsupported"
+    mock_cand.artifact_fingerprint = "art_unsupported"
+    mock_cand.campaign_selection_decision_fingerprint = None
+
+    monkeypatch.setattr(
+        "src.evaluation.research_store.resolve_promoted_candidate",
+        lambda *args, **kwargs: mock_cand,
+    )
 
     result = build_live_production_decision(
         data,
         reference_now=data["timestamp"].iloc[-1] + pd.Timedelta(minutes=5),
-        stable_strategy="moving_average",
+        stable_strategy="unsupported_strategy",
         stability_score=0.7458282289664787,
     )
 
@@ -85,6 +109,23 @@ def test_unsupported_stable_strategy_blocks_trade():
         == "stable_strategy_not_supported_by_live_signal"
     )
     assert result["strategy_supported"] is False
+
+
+def test_moving_average_supported_and_produces_buy_decision():
+    data = make_rising_market()
+
+    result = build_live_production_decision(
+        data,
+        reference_now=data["timestamp"].iloc[-1] + pd.Timedelta(minutes=5),
+        stable_strategy="moving_average",
+        stability_score=0.7458282289664787,
+    )
+
+    assert result["decision"] == "BUY"
+    assert result["stable_strategy"] == "moving_average"
+    assert result["strategy_supported"] is True
+    assert result["signal"] == 1
+    assert result["trend"] == "UP"
 
 
 def test_downtrend_blocks_buy_decision():

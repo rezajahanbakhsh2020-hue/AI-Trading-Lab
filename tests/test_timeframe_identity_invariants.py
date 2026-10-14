@@ -467,3 +467,359 @@ def test_project2_publisher_preserves_authoritative_payload() -> None:
         assert sent_dict["mtf"]["star_representation"] == "⭐"
         assert sent_dict["provenance"]["provenance_type"] == "live_signal"
         assert sent_dict["provenance"]["is_live"] is True
+
+
+def _make_ma_test_evidence(timeframe: str) -> ResearchEvidence:
+    """Helper to construct a valid promotable ResearchEvidence for a moving_average candidate."""
+    ds = DatasetScope(
+        dataset_id=f"ds_inv_ma_{timeframe}",
+        symbol="XAUUSD",
+        timeframe=timeframe,
+        start_date="2025-01-01",
+        end_date="2025-01-10",
+    )
+    ea = ExecutionAssumptions(transaction_cost=0.001, slippage=0.001, latency_ms=10.0)
+    cp = CodeProvenance(commit_sha="a1b2c3d4e5f60718293041526374859607182930")
+    spec = ResearchExperimentSpec(
+        hypothesis=f"MA Hypothesis {timeframe}",
+        methodology_version="1.0",
+        strategy_name="moving_average",
+        strategy_version="1.0",
+        dataset_scope=ds,
+        execution_assumptions=ea,
+        code_provenance=cp,
+        benchmark_reference="buy_and_hold",
+        parameters={"fast_window": 20, "slow_window": 50, "stop_loss_pct": 0.01, "take_profit_pct": 0.02},
+    )
+    part_is = EvidencePartition(
+        role=EvidencePartitionRole.IN_SAMPLE,
+        start_date="2025-01-01",
+        end_date="2025-01-02",
+        total_return=0.20,
+        max_drawdown=0.05,
+        sharpe_ratio=2.0,
+        observations=50,
+        start_timestamp_utc="2025-01-01T00:00:00+00:00",
+        end_timestamp_utc="2025-01-02T00:00:00+00:00",
+    )
+    part_oos = EvidencePartition(
+        role=EvidencePartitionRole.OUT_OF_SAMPLE,
+        start_date="2025-01-03",
+        end_date="2025-01-05",
+        total_return=0.15,
+        max_drawdown=0.05,
+        sharpe_ratio=1.8,
+        observations=30,
+        start_timestamp_utc="2025-01-03T00:00:00+00:00",
+        end_timestamp_utc="2025-01-05T00:00:00+00:00",
+    )
+    part_wf = EvidencePartition(
+        role=EvidencePartitionRole.WALK_FORWARD,
+        start_date="2025-01-01",
+        end_date="2025-01-05",
+        total_return=0.10,
+        max_drawdown=0.05,
+        sharpe_ratio=1.5,
+        observations=30,
+        start_timestamp_utc="2025-01-01T00:00:00+00:00",
+        end_timestamp_utc="2025-01-05T00:00:00+00:00",
+    )
+    return ResearchEvidence(
+        experiment_fingerprint=spec.fingerprint,
+        spec=spec,
+        partitions=(part_is, part_oos, part_wf),
+        robustness_verdict={
+            "passed": True,
+            "parameter_sensitivity": {"passed": True},
+            "subsample_stability": {"passed": True},
+            "execution_cost_stress": {"passed": True},
+            "statistical_validation": {"passed": True},
+            "anti_overfitting": {"passed": True},
+        },
+        promotion_status=PromotionStatus.PROMOTABLE,
+        rejection_reasons=(),
+    )
+
+
+def test_canonical_ladder_exact_order_and_runtime_representation() -> None:
+    """A: Canonical ladder exact order and runtime representation."""
+    assert tuple(tf.value for tf in CanonicalTimeframe.canonical_ladder()) == (
+        "1m", "5m", "15m", "30m", "1H", "4H", "1D"
+    )
+    cont = ContinuousLiveRuntime(
+        symbol="XAUUSD",
+        timeframes=["1m", "5m", "15m", "30m", "1H", "4H", "1D"],
+    )
+    assert cont.timeframes == ("1m", "5m", "15m", "30m", "1H", "4H", "1D")
+
+
+def test_moving_average_candidate_execution_parity(tmp_path: Path) -> None:
+    """B: Strategy parity for promoted moving_average candidate."""
+    save_research_candidate(
+        candidate_id="cand_ma_5m",
+        evidence=_make_ma_test_evidence("5m"),
+        operational_stability_score=0.80,
+        base_dir=tmp_path,
+    )
+
+    config = ProductionRuntimeConfig(
+        symbol="XAUUSD", timeframe="5m", candidate_id="cand_ma_5m", research_dir=tmp_path
+    )
+    runtime = LiveExecutionRuntime(
+        symbol="XAUUSD", interval="5m", research_dir=tmp_path, production_config=config
+    )
+
+    now_dt = datetime.now(timezone.utc)
+    dates = [now_dt - timedelta(minutes=5 * i) for i in range(80)]
+    dates.reverse()
+    closes = [100.0 + idx for idx in range(80)]
+    df_rising = pd.DataFrame({
+        "timestamp": [d.isoformat() for d in dates],
+        "open": closes,
+        "high": [c + 1.0 for c in closes],
+        "low": [c - 1.0 for c in closes],
+        "close": closes,
+    })
+
+    res = runtime.run_once(
+        market_data=df_rising,
+        reference_now=dates[-1] + timedelta(minutes=5),
+        publish=False,
+        persist=False,
+    )
+    assert res["blocked"] is False
+    assert res["decision"] == "BUY"
+    assert res["candidate_id"] == "cand_ma_5m"
+    assert res["strategy"] == "moving_average"
+    rec = res["record"]
+    assert rec["signal_label"] == "BUY"
+    assert rec["signal"] == 1
+    assert rec["trend"] == "UP"
+    assert rec["entry_price"] > 0
+    assert rec["stop_loss"] < rec["entry_price"]
+
+
+def test_moving_average_missing_or_invalid_parameters_fail_closed(tmp_path: Path) -> None:
+    """F: Fail closed on missing or malformed moving_average parameters."""
+    ds = DatasetScope(
+        dataset_id="ds_inv_ma_bad_5m",
+        symbol="XAUUSD",
+        timeframe="5m",
+        start_date="2025-01-01",
+        end_date="2025-01-10",
+    )
+    ea = ExecutionAssumptions(transaction_cost=0.001, slippage=0.001, latency_ms=10.0)
+    cp = CodeProvenance(commit_sha="a1b2c3d4e5f60718293041526374859607182930")
+    spec_bad = ResearchExperimentSpec(
+        hypothesis="MA Bad Hypothesis 5m",
+        methodology_version="1.0",
+        strategy_name="moving_average",
+        strategy_version="1.0",
+        dataset_scope=ds,
+        execution_assumptions=ea,
+        code_provenance=cp,
+        benchmark_reference="buy_and_hold",
+        parameters={"fast_window": 50, "slow_window": 20, "stop_loss_pct": 0.01, "take_profit_pct": 0.02},
+    )
+    part_is = EvidencePartition(
+        role=EvidencePartitionRole.IN_SAMPLE,
+        start_date="2025-01-01",
+        end_date="2025-01-02",
+        total_return=0.20,
+        max_drawdown=0.05,
+        sharpe_ratio=2.0,
+        observations=50,
+        start_timestamp_utc="2025-01-01T00:00:00+00:00",
+        end_timestamp_utc="2025-01-02T00:00:00+00:00",
+    )
+    part_oos = EvidencePartition(
+        role=EvidencePartitionRole.OUT_OF_SAMPLE,
+        start_date="2025-01-03",
+        end_date="2025-01-05",
+        total_return=0.15,
+        max_drawdown=0.05,
+        sharpe_ratio=1.8,
+        observations=30,
+        start_timestamp_utc="2025-01-03T00:00:00+00:00",
+        end_timestamp_utc="2025-01-05T00:00:00+00:00",
+    )
+    part_wf = EvidencePartition(
+        role=EvidencePartitionRole.WALK_FORWARD,
+        start_date="2025-01-01",
+        end_date="2025-01-05",
+        total_return=0.10,
+        max_drawdown=0.05,
+        sharpe_ratio=1.5,
+        observations=30,
+        start_timestamp_utc="2025-01-01T00:00:00+00:00",
+        end_timestamp_utc="2025-01-05T00:00:00+00:00",
+    )
+    ev_bad = ResearchEvidence(
+        experiment_fingerprint=spec_bad.fingerprint,
+        spec=spec_bad,
+        partitions=(part_is, part_oos, part_wf),
+        robustness_verdict={
+            "passed": True,
+            "parameter_sensitivity": {"passed": True},
+            "subsample_stability": {"passed": True},
+            "execution_cost_stress": {"passed": True},
+            "statistical_validation": {"passed": True},
+            "anti_overfitting": {"passed": True},
+        },
+        promotion_status=PromotionStatus.PROMOTABLE,
+        rejection_reasons=(),
+    )
+
+    save_research_candidate(
+        candidate_id="cand_ma_bad",
+        evidence=ev_bad,
+        operational_stability_score=0.80,
+        base_dir=tmp_path,
+    )
+
+    config = ProductionRuntimeConfig(
+        symbol="XAUUSD", timeframe="5m", candidate_id="cand_ma_bad", research_dir=tmp_path
+    )
+    runtime = LiveExecutionRuntime(
+        symbol="XAUUSD", interval="5m", research_dir=tmp_path, production_config=config
+    )
+
+    now_dt = datetime.now(timezone.utc)
+    dates = [now_dt - timedelta(minutes=5 * i) for i in range(80)]
+    dates.reverse()
+    df_rising = pd.DataFrame({
+        "timestamp": [d.isoformat() for d in dates],
+        "open": [100.0] * 80,
+        "high": [101.0] * 80,
+        "low": [99.0] * 80,
+        "close": [100.0] * 80,
+    })
+
+    res = runtime.run_once(
+        market_data=df_rising,
+        reference_now=dates[-1] + timedelta(minutes=5),
+        publish=False,
+        persist=False,
+    )
+    assert res["blocked"] is True
+    assert "LIVE_RUNTIME_EVALUATION_FAILED" in res["reason"] or "fast_window" in res["detail"]
+
+
+@pytest.mark.parametrize(
+    "timeframe",
+    ("1m", "5m", "15m", "30m", "1H", "4H", "1D"),
+)
+def test_strategy_execution_preserves_timeframe_identity_across_ladder(timeframe: str, tmp_path: Path) -> None:
+    """C: Timeframe independence across all 7 canonical timeframes."""
+    cand_id = f"cand_ma_{timeframe}"
+    save_research_candidate(
+        candidate_id=cand_id,
+        evidence=_make_ma_test_evidence(timeframe),
+        operational_stability_score=0.80,
+        base_dir=tmp_path,
+    )
+
+    config = ProductionRuntimeConfig(
+        symbol="XAUUSD", timeframe=timeframe, candidate_id=cand_id, research_dir=tmp_path
+    )
+    runtime = LiveExecutionRuntime(
+        symbol="XAUUSD", interval=timeframe, research_dir=tmp_path, production_config=config
+    )
+
+    now_dt = datetime.now(timezone.utc)
+    dur_map = {
+        "1m": timedelta(minutes=1),
+        "5m": timedelta(minutes=5),
+        "15m": timedelta(minutes=15),
+        "30m": timedelta(minutes=30),
+        "1H": timedelta(hours=1),
+        "4H": timedelta(hours=4),
+        "1D": timedelta(days=1),
+    }
+    dur = dur_map[timeframe]
+    dates = [now_dt - dur * i for i in range(80)]
+    dates.reverse()
+    closes = [100.0 + idx for idx in range(80)]
+    df_market = pd.DataFrame({
+        "timestamp": [d.isoformat() for d in dates],
+        "open": closes,
+        "high": [c + 1.0 for c in closes],
+        "low": [c - 1.0 for c in closes],
+        "close": closes,
+    })
+
+    res = runtime.run_once(
+        market_data=df_market,
+        reference_now=dates[-1] + dur,
+        publish=False,
+        persist=False,
+    )
+    assert res["blocked"] is False
+    assert res["interval"] == timeframe
+    assert res["candidate_id"] == cand_id
+    assert res["record"]["interval"] == timeframe
+
+
+def test_cross_timeframe_isolation_mixed_outcomes(tmp_path: Path) -> None:
+    """D: Mixed outcomes where one timeframe succeeds and another fails."""
+    save_research_candidate(
+        candidate_id="cand_1m",
+        evidence=_make_test_evidence("1m"),
+        operational_stability_score=0.85,
+        base_dir=tmp_path,
+    )
+
+    now_dt = datetime.now(timezone.utc)
+    dates_1m = [now_dt - timedelta(minutes=1 * i) for i in range(20)]
+    dates_1m.reverse()
+    df_1m = pd.DataFrame({
+        "openTime": [d.isoformat() for d in dates_1m],
+        "open": [100.0] * 20,
+        "high": [101.0] * 20,
+        "low": [99.0] * 20,
+        "close": [100.0] * 20,
+    })
+
+    cont_runtime = ContinuousLiveRuntime(
+        symbol="XAUUSD",
+        timeframes=["1m", "5m"],
+        research_dir=tmp_path,
+        candidate_ids={"1m": "cand_1m"},  # 5m candidate omitted -> blocked
+    )
+
+    def mock_acquire(tf: str):
+        return df_1m if tf == "1m" else df_1m
+
+    with patch.object(cont_runtime, "_acquire_market_data", side_effect=mock_acquire):
+        tick_res = cont_runtime.tick(reference_now=now_dt)
+        evals = tick_res["evaluations"]
+
+        # 1m is healthy / evaluated
+        assert evals["1m"]["blocked"] is False
+        assert evals["1m"]["interval"] == "1m"
+
+        # 5m is blocked
+        assert evals["5m"]["blocked"] is True
+        assert evals["5m"]["reason"] == "PromotionUnavailable"
+
+
+def test_no_candidate_borrowing_across_timeframes(tmp_path: Path) -> None:
+    """E: No candidate borrowing - supplying 5m candidate for 1m evaluation is rejected."""
+    save_research_candidate(
+        candidate_id="cand_5m_only",
+        evidence=_make_test_evidence("5m"),
+        operational_stability_score=0.85,
+        base_dir=tmp_path,
+    )
+
+    config_1m = ProductionRuntimeConfig(
+        symbol="XAUUSD", timeframe="1m", candidate_id="cand_5m_only", research_dir=tmp_path
+    )
+    runtime_1m = LiveExecutionRuntime(
+        symbol="XAUUSD", interval="1m", research_dir=tmp_path, production_config=config_1m
+    )
+    res = runtime_1m.run_once(publish=False, persist=False)
+
+    assert res["blocked"] is True
+    assert res["reason"] == "PromotionEligibilityError"
+    assert "timeframe" in res["detail"]

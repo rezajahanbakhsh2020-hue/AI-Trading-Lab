@@ -127,6 +127,11 @@ def evaluate_authorized_live_runtime(
     except Exception:
         ref_now = None
 
+    eff_window = resolved_candidate.parameters.get(
+        "momentum_window",
+        resolved_candidate.parameters.get("window", 10),
+    )
+
     if evaluation.fresh:
         # FRESH DATA PATH: Evaluate strategy decision & signal
         decision_obj = evaluate_production_decision(
@@ -138,23 +143,50 @@ def evaluate_authorized_live_runtime(
 
         from live_signal import generate_live_signal
         from live_trend import build_live_trend_snapshot
+        from src.strategies.baseline import baseline_signal
 
-        eff_window = resolved_candidate.parameters.get(
-            "momentum_window",
-            resolved_candidate.parameters.get("window", 10),
-        )
-        sig_df = generate_live_signal(data, window=int(eff_window))
-        sig_val = int(sig_df["signal"].iloc[-1])
+        strat_lower = stable_strategy.lower()
+        if strat_lower == "momentum":
+            sig_df = generate_live_signal(data, window=int(eff_window))
+            sig_val = int(sig_df["signal"].iloc[-1])
+            trend_snap = build_live_trend_snapshot(data)
+            trend_val = trend_snap["trend"]
+        elif strat_lower in ("moving_average", "baseline"):
+            fast_win = resolved_candidate.parameters.get("fast_window")
+            slow_win = resolved_candidate.parameters.get("slow_window")
+            if fast_win is None or slow_win is None:
+                raise ValueError(
+                    f"Candidate '{resolved_candidate.candidate_id}' parameters missing required "
+                    f"'fast_window' or 'slow_window' parameter for moving_average strategy."
+                )
+            if (
+                isinstance(fast_win, bool)
+                or isinstance(slow_win, bool)
+                or not isinstance(fast_win, (int, float))
+                or not isinstance(slow_win, (int, float))
+            ):
+                raise ValueError("fast_window and slow_window must be numeric integers.")
+            fast_win, slow_win = int(fast_win), int(slow_win)
+            if fast_win <= 0 or slow_win <= 0 or fast_win >= slow_win:
+                raise ValueError("fast_window and slow_window must be positive integers with fast_window < slow_window.")
 
-        trend_snap = build_live_trend_snapshot(data)
-        trend_val = trend_snap["trend"]
+            sig_df = baseline_signal(data, fast_window=fast_win, slow_window=slow_win)
+            sig_val = int(sig_df["signal"].iloc[-1])
+            trend_snap = build_live_trend_snapshot(data, fast_window=fast_win, slow_window=slow_win)
+            trend_val = trend_snap["trend"]
+        else:
+            sig_val = 0
+            trend_val = "NEUTRAL"
 
         # Operational gating criteria
         if effective_stability_score < min_stability_score:
             reason = "stability_score_below_threshold"
             final_direction = Direction.NO_TRADE
-        elif stable_strategy != "momentum":
+        elif strat_lower not in ("momentum", "moving_average", "baseline"):
             reason = "stable_strategy_not_supported_by_live_signal"
+            final_direction = Direction.NO_TRADE
+        elif decision_obj.direction == Direction.NO_TRADE:
+            reason = decision_obj.reason
             final_direction = Direction.NO_TRADE
         elif trend_val != "UP":
             reason = "trend_not_confirmed"
@@ -273,7 +305,7 @@ def evaluate_authorized_live_runtime(
                 "reason": evaluation.freshness_reason,
                 "stable_strategy": str(stable_strategy),
                 "stability_score": effective_stability_score,
-                "strategy_supported": str(stable_strategy) == "momentum",
+                "strategy_supported": str(stable_strategy).lower() in ("momentum", "moving_average", "baseline"),
                 "signal": 0,
                 "signal_label": "NO TRADE",
                 "trend": "NEUTRAL",
@@ -309,8 +341,8 @@ def evaluate_authorized_live_runtime(
             "reason": final_decision_obj.reason,
             "stable_strategy": str(stable_strategy),
             "stability_score": effective_stability_score,
-            "strategy_supported": str(stable_strategy) == "momentum",
-            "signal": sig_val if (evaluation.fresh and stable_strategy == "momentum") else 0,
+            "strategy_supported": str(stable_strategy).lower() in ("momentum", "moving_average", "baseline"),
+            "signal": sig_val if (evaluation.fresh and stable_strategy.lower() in ("momentum", "moving_average", "baseline") and final_direction == Direction.BUY) else 0,
             "signal_label": final_decision_obj.direction.value,
             "trend": str(trend_val),
             "momentum": float(data["close"].iloc[-1]) if (evaluation.fresh and "close" in data.columns) else None,
@@ -336,9 +368,9 @@ def evaluate_authorized_live_runtime(
         "stable_strategy": stable_strategy,
         "stability_score": effective_stability_score,
         "min_stability_score": min_stability_score,
-        "strategy_supported": stable_strategy == "momentum",
-        "signal": sig_val if (evaluation.fresh and stable_strategy == "momentum") else 0,
-        "signal_label": "BUY" if (evaluation.fresh and sig_val == 1 and stable_strategy == "momentum") else "NO TRADE",
+        "strategy_supported": stable_strategy.lower() in ("momentum", "moving_average", "baseline"),
+        "signal": sig_val if (evaluation.fresh and stable_strategy.lower() in ("momentum", "moving_average", "baseline") and final_direction == Direction.BUY) else 0,
+        "signal_label": "BUY" if (evaluation.fresh and sig_val == 1 and stable_strategy.lower() in ("momentum", "moving_average", "baseline") and final_direction == Direction.BUY) else "NO TRADE",
         "trend": str(trend_val),
         "momentum": float(data["close"].iloc[-1]) if (evaluation.fresh and "close" in data.columns) else None,
         "entry_price": risk_obj.entry_price,

@@ -844,6 +844,59 @@ def evaluate_production_decision(
             parameters=candidate.parameters,
         )
 
+    elif strat_name in ("moving_average", "baseline"):
+        from src.strategies.baseline import baseline_signal
+        from live_trend import build_live_trend_snapshot
+
+        fast_win = candidate.parameters.get("fast_window")
+        slow_win = candidate.parameters.get("slow_window")
+        if fast_win is None or slow_win is None:
+            raise ValueError(
+                f"Candidate '{candidate.candidate_id}' parameters missing required "
+                f"'fast_window' or 'slow_window' parameter for moving_average strategy."
+            )
+        if (
+            isinstance(fast_win, bool)
+            or isinstance(slow_win, bool)
+            or not isinstance(fast_win, (int, float))
+            or not isinstance(slow_win, (int, float))
+        ):
+            raise ValueError("fast_window and slow_window must be numeric integers.")
+        fast_win, slow_win = int(fast_win), int(slow_win)
+        if fast_win <= 0 or slow_win <= 0 or fast_win >= slow_win:
+            raise ValueError("fast_window and slow_window must be positive integers with fast_window < slow_window.")
+
+        sig_df = baseline_signal(data, fast_window=fast_win, slow_window=slow_win)
+        sig_val = int(sig_df["signal"].iloc[-1])
+
+        trend_snap = build_live_trend_snapshot(data, fast_window=fast_win, slow_window=slow_win)
+        trend_val = trend_snap["trend"]
+
+        if sig_val == 1 and trend_val == "UP":
+            direction = Direction.BUY
+            reason = "moving_average_signal_1_and_trend_UP_confirmed"
+            invalidation = "Close below stop_loss or trend turns DOWN"
+        else:
+            direction = Direction.NO_TRADE
+            reason = f"signal={sig_val}, trend={trend_val} (unconfirmed setup)"
+            invalidation = None
+
+        return ProductionDecision(
+            candidate_id=candidate.candidate_id,
+            evidence_id=candidate.evidence.evidence_id,
+            experiment_fingerprint=candidate.evidence.experiment_fingerprint,
+            symbol=candidate.symbol,
+            timeframe=candidate.timeframe,
+            decision_timestamp=now_ts,
+            market_timestamp=market_ts,
+            direction=direction,
+            reason=reason,
+            entry_price=close_price if direction != Direction.NO_TRADE else None,
+            invalidation_condition=invalidation,
+            confidence=None,
+            parameters=candidate.parameters,
+        )
+
     else:
         # Unsupported strategy returns NO_TRADE
         return ProductionDecision(
@@ -1634,7 +1687,7 @@ def build_live_production_decision(
     if stability_score < min_stability_score:
         reason = "stability_score_below_threshold"
         final_direction = Direction.NO_TRADE
-    elif stable_strategy != "momentum":
+    elif stable_strategy.lower() not in ("momentum", "moving_average", "baseline"):
         reason = "stable_strategy_not_supported_by_live_signal"
         final_direction = Direction.NO_TRADE
     elif trend_snapshot["trend"] != "UP":
@@ -1689,9 +1742,9 @@ def build_live_production_decision(
         "stable_strategy": stable_strategy,
         "stability_score": stability_score,
         "min_stability_score": min_stability_score,
-        "strategy_supported": stable_strategy == "momentum",
-        "signal": sig_val if stable_strategy == "momentum" else 0,
-        "signal_label": "BUY" if (sig_val == 1 and stable_strategy == "momentum") else "NO TRADE",
+        "strategy_supported": stable_strategy.lower() in ("momentum", "moving_average", "baseline"),
+        "signal": sig_val if stable_strategy.lower() in ("momentum", "moving_average", "baseline") else 0,
+        "signal_label": "BUY" if (sig_val == 1 and stable_strategy.lower() in ("momentum", "moving_average", "baseline") and final_direction == Direction.BUY) else "NO TRADE",
         "trend": str(trend_snapshot["trend"]),
         "momentum": float(data["close"].iloc[-1]),
         "entry_price": risk_obj.entry_price,
