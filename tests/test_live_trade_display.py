@@ -265,3 +265,71 @@ def test_valid_canonical_decision_preserves_identities_without_runtime_calls(mon
     assert result["decision_id"] == cld.decision.decision_id
     assert result["canonical_live_decision_fingerprint"] == cld.canonical_live_decision_fingerprint
     assert result["authorization_fingerprint"] == cld.authorization_receipt.authorization_fingerprint
+
+
+def test_end_to_end_candidate_tp_multipliers_propagate_to_display(monkeypatch):
+    from src.evaluation.research_store import resolve_promoted_candidate
+    from dataclasses import replace
+
+    mom_cand = resolve_promoted_candidate(strategy_id="momentum", symbol="XAUUSD", timeframe="5m")
+    custom_params = {
+        "momentum_window": 10,
+        "stop_loss_pct": 0.01,
+        "take_profit_pct": 0.02,
+        "tp1_multiplier": 0.5,
+        "tp2_multiplier": 1.5,
+        "tp3_multiplier": 2.5,
+    }
+    custom_spec = replace(mom_cand.evidence.spec, parameters=custom_params)
+    custom_evidence = replace(mom_cand.evidence, spec=custom_spec, experiment_fingerprint=custom_spec.fingerprint)
+    custom_cand = replace(
+        mom_cand,
+        evidence=custom_evidence,
+        parameters=custom_params,
+    )
+
+    monkeypatch.setattr("src.evaluation.live_runtime.resolve_promoted_candidate", lambda *a, **k: custom_cand)
+    monkeypatch.setattr("src.evaluation.research_store.resolve_promoted_candidate", lambda *a, **k: custom_cand)
+
+    data = _rising_data()
+    res = build_live_runtime(data, stable_strategy="momentum", stability_score=None, persist=False)
+    cld = res.canonical_decision
+
+    display = build_live_trade_display(data, canonical_decision=cld)
+
+    assert display["tp1_multiplier"] == 0.5
+    assert display["tp2_multiplier"] == 1.5
+    assert display["tp3_multiplier"] == 2.5
+    assert display["tp1"] == cld.risk_levels.tp1
+    assert display["tp2"] == cld.risk_levels.tp2
+    assert display["tp3"] == cld.risk_levels.tp3
+    assert display["risk_reward_tp1"] == pytest.approx(0.5)
+    assert display["risk_reward_tp2"] == pytest.approx(1.5)
+    assert display["risk_reward_tp3"] == pytest.approx(2.5)
+
+
+def test_canonical_risk_levels_are_authoritative_for_display():
+    data = _rising_data()
+    cld = _get_canonical_decision(data, strategy="momentum", score=None)
+    display = build_live_trade_display(data, canonical_decision=cld)
+
+    assert display["entry_price"] == cld.risk_levels.entry_price
+    assert display["stop_loss"] == cld.risk_levels.stop_loss
+    assert display["tp1"] == cld.risk_levels.tp1
+    assert display["tp2"] == cld.risk_levels.tp2
+    assert display["tp3"] == cld.risk_levels.tp3
+    assert display["risk_reward_ratio"] == cld.risk_levels.risk_reward_ratio
+
+
+def test_no_trade_and_invalid_risk_data_remain_safe():
+    data = _rising_data()
+    cld = _get_canonical_decision(data, strategy="momentum", score=None, min_score=0.99)
+    display = build_live_trade_display(data, canonical_decision=cld)
+
+    assert display["decision"] == "NO TRADE"
+    assert display["entry_price"] is None
+    assert display["stop_loss"] is None
+    assert display["tp1"] is None
+    assert display["tp2"] is None
+    assert display["tp3"] is None
+    assert display["risk_reward_ratio"] is None

@@ -82,6 +82,15 @@ def build_live_trade_display(
     if data.empty:
         raise ValueError("data must not be empty.")
 
+    if canonical_decision is not None and isinstance(canonical_decision, CanonicalLiveDecision):
+        dec_params = canonical_decision.decision.parameters or {}
+        if tp1_multiplier == DEFAULT_TP1_MULTIPLIER and "tp1_multiplier" in dec_params:
+            tp1_multiplier = dec_params["tp1_multiplier"]
+        if tp2_multiplier == DEFAULT_TP2_MULTIPLIER and "tp2_multiplier" in dec_params:
+            tp2_multiplier = dec_params["tp2_multiplier"]
+        if tp3_multiplier == DEFAULT_TP3_MULTIPLIER and "tp3_multiplier" in dec_params:
+            tp3_multiplier = dec_params["tp3_multiplier"]
+
     tp1_multiplier = _validate_multiplier("tp1_multiplier", tp1_multiplier)
     tp2_multiplier = _validate_multiplier("tp2_multiplier", tp2_multiplier)
     tp3_multiplier = _validate_multiplier("tp3_multiplier", tp3_multiplier)
