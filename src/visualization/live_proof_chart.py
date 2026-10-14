@@ -44,13 +44,11 @@ def build_live_proof_chart(
         )
     )
 
-    fast_window = int(
-        snapshot.get("fast_window", 20)
-    )
+    raw_fast = snapshot.get("fast_window")
+    fast_window = int(raw_fast) if raw_fast is not None else 20
 
-    slow_window = int(
-        snapshot.get("slow_window", 50)
-    )
+    raw_slow = snapshot.get("slow_window")
+    slow_window = int(raw_slow) if raw_slow is not None else 50
 
     fast_ma = data["close"].rolling(
         fast_window
