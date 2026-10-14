@@ -84,11 +84,27 @@ def test_default_targets_have_one_two_three_risk_structure():
 
 
 def test_custom_target_multipliers_are_applied():
+    from dataclasses import replace
+    from src.evaluation.research_store import resolve_promoted_candidate
+    from src.evaluation.live_production_decision import calculate_production_risk_levels
+
     data = _rising_data()
     cld = _get_canonical_decision(data, strategy="momentum", score=None)
+    cand = resolve_promoted_candidate(strategy_id="momentum", symbol="XAUUSD", timeframe="5m")
+
+    # Re-calculate canonical risk levels with custom multipliers to test canonical projection
+    custom_risk = calculate_production_risk_levels(
+        decision=cld.decision,
+        candidate=cand,
+        tp1_multiplier=0.5,
+        tp2_multiplier=1.5,
+        tp3_multiplier=2.5,
+    )
+    custom_cld = replace(cld, risk_levels=custom_risk)
+
     result = build_live_trade_display(
         data,
-        canonical_decision=cld,
+        canonical_decision=custom_cld,
         stable_strategy="momentum",
         stability_score=None,
         tp1_multiplier=0.5,
@@ -96,6 +112,9 @@ def test_custom_target_multipliers_are_applied():
         tp3_multiplier=2.5,
     )
 
+    assert result["tp1"] == custom_cld.risk_levels.tp1
+    assert result["tp2"] == custom_cld.risk_levels.tp2
+    assert result["tp3"] == custom_cld.risk_levels.tp3
     assert result["risk_reward_tp1"] == pytest.approx(0.5)
     assert result["risk_reward_tp2"] == pytest.approx(1.5)
     assert result["risk_reward_tp3"] == pytest.approx(2.5)
@@ -309,16 +328,41 @@ def test_end_to_end_candidate_tp_multipliers_propagate_to_display(monkeypatch):
 
 
 def test_canonical_risk_levels_are_authoritative_for_display():
+    from dataclasses import replace
+    from src.evaluation.live_production_decision import ProductionRiskLevels, Direction
+
     data = _rising_data()
     cld = _get_canonical_decision(data, strategy="momentum", score=None)
-    display = build_live_trade_display(data, canonical_decision=cld)
 
-    assert display["entry_price"] == cld.risk_levels.entry_price
-    assert display["stop_loss"] == cld.risk_levels.stop_loss
-    assert display["tp1"] == cld.risk_levels.tp1
-    assert display["tp2"] == cld.risk_levels.tp2
-    assert display["tp3"] == cld.risk_levels.tp3
-    assert display["risk_reward_ratio"] == cld.risk_levels.risk_reward_ratio
+    # Construct discriminating custom risk levels artifact distinct from default formula
+    # Default formula for entry=2079, sl=2058.21 would be tp1=2099.79, tp2=2120.58, tp3=2141.37
+    discriminated_risk = ProductionRiskLevels(
+        decision_id=cld.decision.decision_id,
+        candidate_id=cld.decision.candidate_id,
+        evidence_id=cld.decision.evidence_id,
+        symbol=cld.decision.symbol,
+        timeframe=cld.decision.timeframe,
+        direction=Direction.BUY,
+        entry_price=2079.0,
+        stop_loss=2050.0,
+        tp1=2100.0,
+        tp2=2150.0,
+        tp3=2200.0,
+        trailing_stop=2040.0,
+        risk_reward_ratio=2.448275862,
+    )
+    custom_cld = replace(cld, risk_levels=discriminated_risk)
+
+    display = build_live_trade_display(data, canonical_decision=custom_cld)
+
+    assert display["entry_price"] == 2079.0
+    assert display["stop_loss"] == 2050.0
+    assert display["tp1"] == 2100.0
+    assert display["tp2"] == 2150.0
+    assert display["tp3"] == 2200.0
+    assert display["take_profit"] == 2150.0
+    assert display["trailing_stop"] == 2040.0
+    assert display["risk_reward_ratio"] == 2.448275862
 
 
 def test_no_trade_and_invalid_risk_data_remain_safe():
