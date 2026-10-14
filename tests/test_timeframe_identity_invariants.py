@@ -869,3 +869,68 @@ def test_no_candidate_borrowing_across_timeframes(tmp_path: Path) -> None:
     assert res["blocked"] is True
     assert res["reason"] == "PromotionEligibilityError"
     assert "timeframe" in res["detail"]
+
+
+def test_scope_validation_and_contradictory_identity_rejection() -> None:
+    """Forensic test proving rejection of contradictory or missing identity shapes in health classifier."""
+    runtime = ContinuousLiveRuntime(
+        symbol="XAUUSD",
+        timeframes=["15m"],
+        candidate_ids={"15m": "cand_15m"},
+    )
+
+    # 1. Contradictory interval vs timeframe
+    res_contradictory_tf = {
+        "blocked": False,
+        "symbol": "XAUUSD",
+        "interval": "5m",
+        "timeframe": "15m",
+        "candidate_id": "cand_15m",
+        "status": "PERSISTED",
+        "record": {"decision_id": "d1"},
+    }
+    assert runtime._is_healthy_evaluation(res_contradictory_tf, expected_timeframe="15m", expected_symbol="XAUUSD", expected_candidate_id="cand_15m") is False
+
+    # 2. Result stored under key 15m but evaluation payload contains interval 5m
+    res_wrong_interval = {
+        "blocked": False,
+        "symbol": "XAUUSD",
+        "interval": "5m",
+        "candidate_id": "cand_moving_average_5m",
+        "status": "PERSISTED",
+        "record": {"decision_id": "d2"},
+    }
+    assert runtime._is_healthy_evaluation(res_wrong_interval, expected_timeframe="15m", expected_symbol="XAUUSD", expected_candidate_id="cand_15m") is False
+
+    # 3. Candidate ID mismatch vs readiness candidate
+    res_wrong_candidate = {
+        "blocked": False,
+        "symbol": "XAUUSD",
+        "interval": "15m",
+        "candidate_id": "cand_other",
+        "status": "PERSISTED",
+        "record": {"decision_id": "d3"},
+    }
+    assert runtime._is_healthy_evaluation(res_wrong_candidate, expected_timeframe="15m", expected_symbol="XAUUSD", expected_candidate_id="cand_15m") is False
+
+    # 4. Nested record symbol mismatch vs expected symbol
+    res_record_sym_mismatch = {
+        "blocked": False,
+        "symbol": "XAUUSD",
+        "interval": "15m",
+        "candidate_id": "cand_15m",
+        "status": "PERSISTED",
+        "record": {"decision_id": "d4", "symbol": "EURUSD"},
+    }
+    assert runtime._is_healthy_evaluation(res_record_sym_mismatch, expected_timeframe="15m", expected_symbol="XAUUSD", expected_candidate_id="cand_15m") is False
+
+    # 5. Correct matching scope is accepted
+    res_correct = {
+        "blocked": False,
+        "symbol": "XAUUSD",
+        "interval": "15m",
+        "candidate_id": "cand_15m",
+        "status": "PERSISTED",
+        "record": {"decision_id": "d5", "symbol": "XAUUSD", "interval": "15m", "candidate_id": "cand_15m"},
+    }
+    assert runtime._is_healthy_evaluation(res_correct, expected_timeframe="15m", expected_symbol="XAUUSD", expected_candidate_id="cand_15m") is True

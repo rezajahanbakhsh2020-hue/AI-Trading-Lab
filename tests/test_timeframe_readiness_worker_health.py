@@ -18,7 +18,7 @@ from src.evaluation.mtf_intelligence import CanonicalTimeframe
 
 
 # Producer-grounded fixtures
-def make_real_run_once_success(*, decision: str = "BUY", publish_result: dict[str, Any] | None = None) -> dict[str, Any]:
+def make_real_run_once_success(*, decision: str = "BUY", publish_result: dict[str, Any] | None = None, candidate_id: str = "cand_moving_average_5m", timeframe: str = "5m") -> dict[str, Any]:
     """Construct a complete, real run_once success dictionary matching producer guarantees."""
     if publish_result is None:
         publish_result = {
@@ -33,11 +33,12 @@ def make_real_run_once_success(*, decision: str = "BUY", publish_result: dict[st
     return {
         "blocked": False,
         "symbol": "XAUUSD",
-        "interval": "5m",
+        "interval": timeframe,
+        "timeframe": timeframe,
         "decision": decision,
         "strategy": "cand_moving_average_5m",
         "stability_score": 0.85,
-        "candidate_id": "cand_moving_average_5m",
+        "candidate_id": candidate_id,
         "evidence_id": "ev_123",
         "research_fingerprint": "fp_123",
         "strategy_version": "1.0.0",
@@ -838,7 +839,7 @@ def test_structured_per_timeframe_health_diagnostics():
     }
 
     evals = {
-        "5m": make_real_run_once_success(),
+        "5m": make_real_run_once_success(candidate_id="cand_5m", timeframe="5m"),
         "1m": {"blocked": True, "status": "BLOCKED", "reason": "PromotionUnavailable"},
     }
 
