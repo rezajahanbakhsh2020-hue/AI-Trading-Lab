@@ -945,3 +945,36 @@ def test_scope_validation_and_contradictory_identity_rejection() -> None:
         "record": {"decision_id": "d6", "symbol": "XAUUSD", "interval": "15m", "candidate_id": "cand_15m"},
     }
     assert runtime._is_healthy_evaluation(res_correct, expected_timeframe="15m", expected_symbol="XAUUSD", expected_candidate_id="cand_15m") is True
+
+
+def test_missing_mandatory_producer_identity_fields_fail_closed() -> None:
+    """Forensic test proving missing mandatory top-level identity fields (symbol, interval, candidate_id) fail closed."""
+    runtime = ContinuousLiveRuntime(
+        symbol="XAUUSD",
+        timeframes=["5m"],
+        candidate_ids={"5m": "cand_5m"},
+    )
+
+    base = {
+        "blocked": False,
+        "symbol": "XAUUSD",
+        "interval": "5m",
+        "candidate_id": "cand_5m",
+        "status": "PERSISTED",
+        "record": {"decision_id": "d1"},
+    }
+
+    # Missing symbol
+    bad_sym = dict(base)
+    del bad_sym["symbol"]
+    assert runtime._is_healthy_evaluation(bad_sym, expected_timeframe="5m", expected_symbol="XAUUSD", expected_candidate_id="cand_5m") is False
+
+    # Missing interval
+    bad_int = dict(base)
+    del bad_int["interval"]
+    assert runtime._is_healthy_evaluation(bad_int, expected_timeframe="5m", expected_symbol="XAUUSD", expected_candidate_id="cand_5m") is False
+
+    # Missing candidate_id
+    bad_cand = dict(base)
+    del bad_cand["candidate_id"]
+    assert runtime._is_healthy_evaluation(bad_cand, expected_timeframe="5m", expected_symbol="XAUUSD", expected_candidate_id="cand_5m") is False

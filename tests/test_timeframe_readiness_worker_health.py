@@ -202,7 +202,12 @@ def test_exact_real_skipped_deduplicated_shape_is_accepted():
 def test_exact_real_skipped_no_closed_candle_shape_is_accepted():
     """2. Exact real SKIPPED_NO_CLOSED_CANDLE shape is accepted."""
     now_dt = datetime.datetime(2026, 10, 9, 12, 0, 0, tzinfo=datetime.timezone.utc)
-    runtime = ContinuousLiveRuntime(symbol="XAUUSD", timeframes=["5m"], clock=lambda: now_dt)
+    runtime = ContinuousLiveRuntime(
+        symbol="XAUUSD",
+        timeframes=["5m"],
+        candidate_ids={"5m": "cand_moving_average_5m"},
+        clock=lambda: now_dt,
+    )
     runtime._started_at_utc = now_dt.isoformat()
     runtime._last_tick_at_utc = now_dt.isoformat()
 

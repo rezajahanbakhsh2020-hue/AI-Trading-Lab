@@ -1457,7 +1457,7 @@ class ContinuousLiveRuntime:
             if exp_sym is not None and res_sym != exp_sym:
                 return False
 
-        # Check candidate_id field in res against expected candidate scope
+        # Check candidate_id field in res if present against expected candidate scope
         if "candidate_id" in res and res["candidate_id"] is not None:
             if not isinstance(res["candidate_id"], str) or not res["candidate_id"].strip():
                 return False
@@ -1465,8 +1465,6 @@ class ContinuousLiveRuntime:
             if exp_cand is not _UNSPECIFIED:
                 if exp_cand is None or res_cand != exp_cand:
                     return False
-        elif exp_cand is not _UNSPECIFIED and exp_cand is not None:
-            return False
 
         # 1. Recognized benign worker operational skips (exact match of status + reason)
         if st == "SKIPPED_DEDUPLICATED":
@@ -1519,16 +1517,47 @@ class ContinuousLiveRuntime:
             if st is not None and st not in VALID_EXECUTION_STATUSES:
                 return False
 
-            # Require candidate_id to match explicit expected candidate scope when specified.
-            # An unmapped candidate (exp_cand is None) cannot self-authorize.
-            res_cand_id = res.get("candidate_id")
+            # Require mandatory top-level producer identity fields: symbol, interval, candidate_id
+            raw_sym = res.get("symbol")
+            if not isinstance(raw_sym, str) or not raw_sym.strip():
+                return False
+
+            raw_int = res.get("interval")
+            if not isinstance(raw_int, str) or not raw_int.strip():
+                return False
+
+            raw_cand = res.get("candidate_id")
+            if not isinstance(raw_cand, str) or not raw_cand.strip():
+                return False
+
+            try:
+                res_tf_val = CanonicalTimeframe.from_str(raw_int).value
+            except (ValueError, TypeError):
+                return False
+
+            # If optional top-level timeframe alias is present, require agreement with interval
+            if "timeframe" in res and res["timeframe"] is not None:
+                if not isinstance(res["timeframe"], str) or not res["timeframe"].strip():
+                    return False
+                try:
+                    tf_alias_val = CanonicalTimeframe.from_str(res["timeframe"]).value
+                    if tf_alias_val != res_tf_val:
+                        return False
+                except (ValueError, TypeError):
+                    return False
+
+            # Validate res symbol against expected symbol
+            if exp_sym is not None and raw_sym.strip().upper() != exp_sym:
+                return False
+
+            # Validate res timeframe against expected timeframe
+            if exp_tf is not None and res_tf_val != exp_tf:
+                return False
+
+            # Validate res candidate_id against expected candidate_id
+            # An unmapped frame (exp_cand is None) cannot self-authorize
             if exp_cand is not _UNSPECIFIED:
-                if exp_cand is None:
-                    return False
-                if not res_cand_id or not isinstance(res_cand_id, str) or res_cand_id.strip() != exp_cand:
-                    return False
-            else:
-                if not res_cand_id or not isinstance(res_cand_id, str) or not res_cand_id.strip():
+                if exp_cand is None or raw_cand.strip() != exp_cand:
                     return False
 
             # Require positive evaluation evidence (value shape validation, not presence alone)
