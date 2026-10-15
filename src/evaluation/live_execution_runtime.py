@@ -73,6 +73,8 @@ PUB_FAILURE_STATUSES: tuple[str, ...] = (
     "MISCONFIGURED",
 )
 
+_UNSPECIFIED = object()
+
 
 @dataclass(frozen=True)
 class ProductionRuntimeConfig:
@@ -1335,8 +1337,57 @@ class ContinuousLiveRuntime:
     def is_running(self) -> bool:
         return not self._stop_event.is_set()
 
-    def _is_healthy_evaluation(self, res: Any) -> bool:
-        """Classify a single timeframe evaluation result using explicit conservative rules."""
+    def _resolve_expected_scope(self, timeframe: str) -> dict[str, Any]:
+        """Resolve unified, authoritative expected scope for a canonical timeframe.
+
+        Fails closed on conflicting configured candidate_id vs readiness candidate_id.
+        """
+        try:
+            canonical_tf = CanonicalTimeframe.from_str(timeframe).value
+        except (ValueError, TypeError):
+            return {
+                "expected_timeframe": str(timeframe),
+                "expected_symbol": self.symbol,
+                "expected_candidate_id": None,
+                "has_conflict": True,
+            }
+
+        configured_cand = self.candidate_ids.get(canonical_tf)
+        readiness_info = self._timeframe_readiness.get(canonical_tf, {})
+        readiness_cand = readiness_info.get("candidate_id")
+
+        if configured_cand is not None:
+            configured_cand = str(configured_cand).strip() or None
+        if readiness_cand is not None:
+            readiness_cand = str(readiness_cand).strip() or None
+
+        has_conflict = False
+        if configured_cand is not None and readiness_cand is not None and configured_cand != readiness_cand:
+            has_conflict = True
+            expected_cand = None
+        elif configured_cand is not None or readiness_cand is not None:
+            expected_cand = configured_cand or readiness_cand
+        elif self.candidate_ids or self._timeframe_readiness:
+            expected_cand = None
+        else:
+            expected_cand = _UNSPECIFIED
+
+        return {
+            "expected_timeframe": canonical_tf,
+            "expected_symbol": self.symbol,
+            "expected_candidate_id": expected_cand,
+            "has_conflict": has_conflict,
+        }
+
+    def _is_healthy_evaluation(
+        self,
+        res: Any,
+        *,
+        expected_timeframe: str | None = None,
+        expected_symbol: str | None = None,
+        expected_candidate_id: Any = _UNSPECIFIED,
+    ) -> bool:
+        """Classify a single timeframe evaluation result using explicit conservative rules and strict scope validation."""
         if not isinstance(res, dict) or not res:
             return False
 
@@ -1355,22 +1406,76 @@ class ContinuousLiveRuntime:
 
         st = res.get("status")
 
+        # Scope identity validation helper
+        exp_tf = None
+        if expected_timeframe is not None:
+            try:
+                exp_tf = CanonicalTimeframe.from_str(expected_timeframe).value
+            except (ValueError, TypeError):
+                return False
+
+        exp_sym = str(expected_symbol).strip().upper() if expected_symbol is not None else None
+        if expected_candidate_id is _UNSPECIFIED:
+            exp_cand = _UNSPECIFIED
+        elif expected_candidate_id is not None:
+            exp_cand = str(expected_candidate_id).strip()
+        else:
+            exp_cand = None
+
+        # Check timeframe fields in res for conflicts or expected scope mismatches
+        res_tf_val = None
+        has_interval = "interval" in res and res["interval"] is not None
+        has_timeframe = "timeframe" in res and res["timeframe"] is not None
+
+        if has_interval:
+            if not isinstance(res["interval"], str) or not res["interval"].strip():
+                return False
+            try:
+                res_tf_val = CanonicalTimeframe.from_str(res["interval"]).value
+            except (ValueError, TypeError):
+                return False
+
+        if has_timeframe:
+            if not isinstance(res["timeframe"], str) or not res["timeframe"].strip():
+                return False
+            try:
+                tf_val2 = CanonicalTimeframe.from_str(res["timeframe"]).value
+                if res_tf_val is not None and res_tf_val != tf_val2:
+                    return False
+                res_tf_val = tf_val2
+            except (ValueError, TypeError):
+                return False
+
+        if exp_tf is not None and res_tf_val is not None and res_tf_val != exp_tf:
+            return False
+
+        # Check symbol field in res
+        if "symbol" in res and res["symbol"] is not None:
+            if not isinstance(res["symbol"], str) or not res["symbol"].strip():
+                return False
+            res_sym = str(res["symbol"]).strip().upper()
+            if exp_sym is not None and res_sym != exp_sym:
+                return False
+
+        # Check candidate_id field in res if present against expected candidate scope
+        if "candidate_id" in res and res["candidate_id"] is not None:
+            if not isinstance(res["candidate_id"], str) or not res["candidate_id"].strip():
+                return False
+            res_cand = str(res["candidate_id"]).strip()
+            if exp_cand is not _UNSPECIFIED:
+                if exp_cand is None or res_cand != exp_cand:
+                    return False
+
         # 1. Recognized benign worker operational skips (exact match of status + reason)
         if st == "SKIPPED_DEDUPLICATED":
             if res.get("reason") != "candle_already_evaluated":
                 return False
             if "candle_timestamp" in res and not isinstance(res["candle_timestamp"], str):
                 return False
-            if "timeframe" in res and not isinstance(res["timeframe"], str):
-                return False
             return True
 
         if st == "SKIPPED_NO_CLOSED_CANDLE":
             if res.get("reason") != "latest_candle_is_open_or_unavailable":
-                return False
-            if "symbol" in res and not isinstance(res["symbol"], str):
-                return False
-            if "timeframe" in res and not isinstance(res["timeframe"], str):
                 return False
             return True
 
@@ -1412,6 +1517,49 @@ class ContinuousLiveRuntime:
             if st is not None and st not in VALID_EXECUTION_STATUSES:
                 return False
 
+            # Require mandatory top-level producer identity fields: symbol, interval, candidate_id
+            raw_sym = res.get("symbol")
+            if not isinstance(raw_sym, str) or not raw_sym.strip():
+                return False
+
+            raw_int = res.get("interval")
+            if not isinstance(raw_int, str) or not raw_int.strip():
+                return False
+
+            raw_cand = res.get("candidate_id")
+            if not isinstance(raw_cand, str) or not raw_cand.strip():
+                return False
+
+            try:
+                res_tf_val = CanonicalTimeframe.from_str(raw_int).value
+            except (ValueError, TypeError):
+                return False
+
+            # If optional top-level timeframe alias is present, require agreement with interval
+            if "timeframe" in res and res["timeframe"] is not None:
+                if not isinstance(res["timeframe"], str) or not res["timeframe"].strip():
+                    return False
+                try:
+                    tf_alias_val = CanonicalTimeframe.from_str(res["timeframe"]).value
+                    if tf_alias_val != res_tf_val:
+                        return False
+                except (ValueError, TypeError):
+                    return False
+
+            # Validate res symbol against expected symbol
+            if exp_sym is not None and raw_sym.strip().upper() != exp_sym:
+                return False
+
+            # Validate res timeframe against expected timeframe
+            if exp_tf is not None and res_tf_val != exp_tf:
+                return False
+
+            # Validate res candidate_id against expected candidate_id
+            # An unmapped frame (exp_cand is None) cannot self-authorize
+            if exp_cand is not _UNSPECIFIED:
+                if exp_cand is None or raw_cand.strip() != exp_cand:
+                    return False
+
             # Require positive evaluation evidence (value shape validation, not presence alone)
             has_record = isinstance(res.get("record"), dict) and len(res["record"]) > 0
             has_publication = isinstance(res.get("publication"), dict) and len(res["publication"]) > 0
@@ -1431,6 +1579,52 @@ class ContinuousLiveRuntime:
 
             if not has_positive_evidence:
                 return False
+
+            # Verify consistency across nested record object if present
+            rec = res.get("record")
+            if isinstance(rec, dict):
+                rec_sym = rec.get("symbol")
+                if rec_sym is not None:
+                    if not isinstance(rec_sym, str) or not rec_sym.strip():
+                        return False
+                    if exp_sym is not None and rec_sym.strip().upper() != exp_sym:
+                        return False
+
+                # Validate nested record timeframe aliases without unsafe fallback concealing contradictions
+                rec_has_interval = "interval" in rec and rec["interval"] is not None
+                rec_has_timeframe = "timeframe" in rec and rec["timeframe"] is not None
+                rec_tf_val = None
+
+                if rec_has_interval:
+                    if not isinstance(rec["interval"], str) or not rec["interval"].strip():
+                        return False
+                    try:
+                        rec_tf_val = CanonicalTimeframe.from_str(rec["interval"]).value
+                    except (ValueError, TypeError):
+                        return False
+
+                if rec_has_timeframe:
+                    if not isinstance(rec["timeframe"], str) or not rec["timeframe"].strip():
+                        return False
+                    try:
+                        rec_tf_val2 = CanonicalTimeframe.from_str(rec["timeframe"]).value
+                        if rec_tf_val is not None and rec_tf_val != rec_tf_val2:
+                            return False
+                        rec_tf_val = rec_tf_val2
+                    except (ValueError, TypeError):
+                        return False
+
+                if exp_tf is not None and rec_tf_val is not None and rec_tf_val != exp_tf:
+                    return False
+
+                rec_cand = rec.get("candidate_id")
+                if rec_cand is not None:
+                    if not isinstance(rec_cand, str) or not rec_cand.strip():
+                        return False
+                    if rec_cand.strip() != raw_cand.strip():
+                        return False
+                    if exp_cand is not _UNSPECIFIED and exp_cand is not None and rec_cand.strip() != exp_cand:
+                        return False
 
             # Validate publication outcome if publish_result is present
             pub_res = res.get("publish_result")
@@ -1506,13 +1700,18 @@ class ContinuousLiveRuntime:
             evals_to_check = self._execution_history[-1].get("evaluations")
 
         execution_healthy = False
+        healthy_tf_count = 0
         if isinstance(evals_to_check, dict) and evals_to_check:
-            has_healthy_tf = False
             for tf, res in evals_to_check.items():
-                if self._is_healthy_evaluation(res):
-                    has_healthy_tf = True
-                    break
-            if has_healthy_tf:
+                scope = self._resolve_expected_scope(tf)
+                if not scope["has_conflict"] and self._is_healthy_evaluation(
+                    res,
+                    expected_timeframe=scope["expected_timeframe"],
+                    expected_symbol=scope["expected_symbol"],
+                    expected_candidate_id=scope["expected_candidate_id"],
+                ):
+                    healthy_tf_count += 1
+            if healthy_tf_count > 0:
                 execution_healthy = True
 
         if not is_heartbeat_healthy:
@@ -1526,11 +1725,25 @@ class ContinuousLiveRuntime:
 
         # Build structured per-timeframe health diagnostics with exact precedence
         timeframe_diagnostics: dict[str, dict[str, Any]] = {}
+        all_canonical_tfs = tuple(tf.value for tf in CanonicalTimeframe.canonical_ladder())
+        healthy_canonical_count = 0
+
         for tf in self.timeframes:
             readiness_info = self._timeframe_readiness.get(tf, {})
             tf_eval = evals_to_check.get(tf) if isinstance(evals_to_check, dict) else None
+            scope = self._resolve_expected_scope(tf)
 
-            is_healthy_tf = self._is_healthy_evaluation(tf_eval) if tf_eval else False
+            is_healthy_tf = False
+            if tf_eval and not scope["has_conflict"]:
+                is_healthy_tf = self._is_healthy_evaluation(
+                    tf_eval,
+                    expected_timeframe=scope["expected_timeframe"],
+                    expected_symbol=scope["expected_symbol"],
+                    expected_candidate_id=scope["expected_candidate_id"],
+                )
+
+            if is_healthy_tf:
+                healthy_canonical_count += 1
 
             # Derive publication status
             pub_status = "NOT_ATTEMPTED"
@@ -1590,11 +1803,48 @@ class ContinuousLiveRuntime:
             }
             timeframe_diagnostics[tf] = tf_diag
 
+        is_seven_configured = set(self.timeframes) == set(all_canonical_tfs)
+        seven_frame_parity = False
+        if is_seven_configured:
+            parity_qualifying = True
+            for c_tf in all_canonical_tfs:
+                readiness_status = self._timeframe_readiness.get(c_tf, {}).get("status")
+                if readiness_status != "READY":
+                    parity_qualifying = False
+                    break
+
+                c_eval = evals_to_check.get(c_tf) if isinstance(evals_to_check, dict) else None
+                if not c_eval:
+                    parity_qualifying = False
+                    break
+
+                scope = self._resolve_expected_scope(c_tf)
+                if scope["has_conflict"]:
+                    parity_qualifying = False
+                    break
+
+                if not self._is_healthy_evaluation(
+                    c_eval,
+                    expected_timeframe=scope["expected_timeframe"],
+                    expected_symbol=scope["expected_symbol"],
+                    expected_candidate_id=scope["expected_candidate_id"],
+                ):
+                    parity_qualifying = False
+                    break
+
+                c_st = c_eval.get("status")
+                if c_st == "SKIPPED_NO_CLOSED_CANDLE":
+                    parity_qualifying = False
+                    break
+
+            seven_frame_parity = parity_qualifying
+
         return {
             "status": status,
             "healthy": is_healthy,
             "heartbeat_healthy": is_heartbeat_healthy,
             "execution_healthy": execution_healthy,
+            "seven_frame_parity": seven_frame_parity,
             "started_at_utc": self._started_at_utc,
             "last_tick_at_utc": self._last_tick_at_utc,
             "last_successful_evaluation_at_utc": self._last_successful_evaluation_at_utc,
@@ -1786,7 +2036,12 @@ class ContinuousLiveRuntime:
                     tick_evaluations[canonical_tf] = result
 
                     # 7. Add to deduplication set ONLY AFTER healthy evaluation execution
-                    if self._is_healthy_evaluation(result):
+                    if self._is_healthy_evaluation(
+                        result,
+                        expected_timeframe=canonical_tf,
+                        expected_symbol=self.symbol,
+                        expected_candidate_id=cand_id,
+                    ):
                         self._evaluated_candles.add(dedup_key)
                         self._last_successful_evaluation_at_utc = ref_now.isoformat()
                         pub_res = result.get("publish_result")

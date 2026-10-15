@@ -18,7 +18,7 @@ from src.evaluation.mtf_intelligence import CanonicalTimeframe
 
 
 # Producer-grounded fixtures
-def make_real_run_once_success(*, decision: str = "BUY", publish_result: dict[str, Any] | None = None) -> dict[str, Any]:
+def make_real_run_once_success(*, decision: str = "BUY", publish_result: dict[str, Any] | None = None, candidate_id: str = "cand_moving_average_5m", timeframe: str = "5m") -> dict[str, Any]:
     """Construct a complete, real run_once success dictionary matching producer guarantees."""
     if publish_result is None:
         publish_result = {
@@ -33,11 +33,12 @@ def make_real_run_once_success(*, decision: str = "BUY", publish_result: dict[st
     return {
         "blocked": False,
         "symbol": "XAUUSD",
-        "interval": "5m",
+        "interval": timeframe,
+        "timeframe": timeframe,
         "decision": decision,
         "strategy": "cand_moving_average_5m",
         "stability_score": 0.85,
-        "candidate_id": "cand_moving_average_5m",
+        "candidate_id": candidate_id,
         "evidence_id": "ev_123",
         "research_fingerprint": "fp_123",
         "strategy_version": "1.0.0",
@@ -47,7 +48,8 @@ def make_real_run_once_success(*, decision: str = "BUY", publish_result: dict[st
             "signal_id": "sig_123",
             "decision": decision,
             "symbol": "XAUUSD",
-            "interval": "5m",
+            "interval": timeframe,
+            "candidate_id": candidate_id,
         },
         "publication": {
             "contract_version": "1.0",
@@ -201,7 +203,12 @@ def test_exact_real_skipped_deduplicated_shape_is_accepted():
 def test_exact_real_skipped_no_closed_candle_shape_is_accepted():
     """2. Exact real SKIPPED_NO_CLOSED_CANDLE shape is accepted."""
     now_dt = datetime.datetime(2026, 10, 9, 12, 0, 0, tzinfo=datetime.timezone.utc)
-    runtime = ContinuousLiveRuntime(symbol="XAUUSD", timeframes=["5m"], clock=lambda: now_dt)
+    runtime = ContinuousLiveRuntime(
+        symbol="XAUUSD",
+        timeframes=["5m"],
+        candidate_ids={"5m": "cand_moving_average_5m"},
+        clock=lambda: now_dt,
+    )
     runtime._started_at_utc = now_dt.isoformat()
     runtime._last_tick_at_utc = now_dt.isoformat()
 
@@ -838,7 +845,7 @@ def test_structured_per_timeframe_health_diagnostics():
     }
 
     evals = {
-        "5m": make_real_run_once_success(),
+        "5m": make_real_run_once_success(candidate_id="cand_5m", timeframe="5m"),
         "1m": {"blocked": True, "status": "BLOCKED", "reason": "PromotionUnavailable"},
     }
 
@@ -1263,3 +1270,135 @@ def test_readiness_distinguished_from_live_evaluation_and_publication(tmp_path: 
         mock_create_eval.assert_not_called()
         mock_eval_runtime.assert_not_called()
         pub_mock.publish.assert_not_called()
+
+
+def test_seven_frame_parity_distinguished_from_single_frame_liveness():
+    """Verify seven_frame_parity is False when only 1 of 7 timeframes is evaluated healthy."""
+    now_dt = datetime.datetime(2026, 10, 9, 12, 0, 0, tzinfo=datetime.timezone.utc)
+    all_tfs = ["1m", "5m", "15m", "30m", "1H", "4H", "1D"]
+    runtime = ContinuousLiveRuntime(
+        symbol="XAUUSD",
+        timeframes=all_tfs,
+        candidate_ids={"5m": "cand_moving_average_5m"},
+        clock=lambda: now_dt,
+    )
+    runtime._started_at_utc = now_dt.isoformat()
+    runtime._last_tick_at_utc = now_dt.isoformat()
+
+    evals = {
+        "5m": make_real_run_once_success(candidate_id="cand_moving_average_5m", timeframe="5m"),
+        "1m": {"blocked": True, "status": "BLOCKED", "reason": "PromotionUnavailable"},
+    }
+
+    h = runtime.get_health_status(reference_now=now_dt, current_evaluations=evals)
+    assert h["status"] == "WORKER_HEALTHY"
+    assert h["execution_healthy"] is True
+    assert h["seven_frame_parity"] is False
+
+
+def test_conflicting_configured_and_readiness_candidates_fail_closed():
+    """Verify that a conflict between configured candidate_id and readiness candidate_id fails closed."""
+    now_dt = datetime.datetime(2026, 10, 9, 12, 0, 0, tzinfo=datetime.timezone.utc)
+    runtime = ContinuousLiveRuntime(
+        symbol="XAUUSD",
+        timeframes=["5m"],
+        candidate_ids={"5m": "cand_configured_5m"},
+        clock=lambda: now_dt,
+    )
+    runtime._started_at_utc = now_dt.isoformat()
+    runtime._last_tick_at_utc = now_dt.isoformat()
+    runtime._timeframe_readiness = {
+        "5m": {"status": "READY", "candidate_id": "cand_readiness_5m", "reason_code": "READY"},
+    }
+
+    evals = {
+        "5m": make_real_run_once_success(candidate_id="cand_configured_5m", timeframe="5m"),
+    }
+
+    h = runtime.get_health_status(reference_now=now_dt, current_evaluations=evals)
+    assert h["status"] == "WORKER_DEGRADED"
+    assert h["execution_healthy"] is False
+
+
+def test_seven_timeframes_all_skips_without_ready_yields_parity_false():
+    """1. All seven timeframes return benign skips while readiness is BLOCKED or unknown => seven_frame_parity is False."""
+    now_dt = datetime.datetime(2026, 10, 9, 12, 0, 0, tzinfo=datetime.timezone.utc)
+    all_tfs = ["1m", "5m", "15m", "30m", "1H", "4H", "1D"]
+    runtime = ContinuousLiveRuntime(symbol="XAUUSD", timeframes=all_tfs, clock=lambda: now_dt)
+    runtime._started_at_utc = now_dt.isoformat()
+    runtime._last_tick_at_utc = now_dt.isoformat()
+
+    # readiness is BLOCKED for all frames
+    runtime._timeframe_readiness = {
+        tf: {"status": "BLOCKED", "reason_code": "PromotionUnavailable"} for tf in all_tfs
+    }
+
+    # All 7 frames return SKIPPED_NO_CLOSED_CANDLE
+    evals = {
+        tf: {
+            "status": "SKIPPED_NO_CLOSED_CANDLE",
+            "reason": "latest_candle_is_open_or_unavailable",
+            "symbol": "XAUUSD",
+            "timeframe": tf,
+        }
+        for tf in all_tfs
+    }
+
+    h = runtime.get_health_status(reference_now=now_dt, current_evaluations=evals)
+    assert h["seven_frame_parity"] is False
+
+
+def test_six_ready_plus_one_blocked_yields_parity_false():
+    """2. Six frames are READY and healthy, but one frame is BLOCKED => seven_frame_parity is False."""
+    now_dt = datetime.datetime(2026, 10, 9, 12, 0, 0, tzinfo=datetime.timezone.utc)
+    all_tfs = ["1m", "5m", "15m", "30m", "1H", "4H", "1D"]
+    runtime = ContinuousLiveRuntime(
+        symbol="XAUUSD",
+        timeframes=all_tfs,
+        candidate_ids={tf: f"cand_{tf}" for tf in all_tfs},
+        clock=lambda: now_dt,
+    )
+    runtime._started_at_utc = now_dt.isoformat()
+    runtime._last_tick_at_utc = now_dt.isoformat()
+
+    # 1m is BLOCKED, other 6 are READY
+    runtime._timeframe_readiness = {
+        tf: {"status": "READY" if tf != "1m" else "BLOCKED", "candidate_id": f"cand_{tf}", "reason_code": "READY" if tf != "1m" else "PromotionUnavailable"}
+        for tf in all_tfs
+    }
+
+    evals = {
+        tf: make_real_run_once_success(candidate_id=f"cand_{tf}", timeframe=tf) if tf != "1m" else {"blocked": True, "status": "BLOCKED", "reason": "PromotionUnavailable"}
+        for tf in all_tfs
+    }
+
+    h = runtime.get_health_status(reference_now=now_dt, current_evaluations=evals)
+    assert h["seven_frame_parity"] is False
+
+
+def test_all_seven_ready_and_healthy_yields_parity_true():
+    """7. All seven frames have READY readiness, matching canonical identities, and qualifying evidence => seven_frame_parity is True."""
+    now_dt = datetime.datetime(2026, 10, 9, 12, 0, 0, tzinfo=datetime.timezone.utc)
+    all_tfs = ["1m", "5m", "15m", "30m", "1H", "4H", "1D"]
+    runtime = ContinuousLiveRuntime(
+        symbol="XAUUSD",
+        timeframes=all_tfs,
+        candidate_ids={tf: f"cand_{tf}" for tf in all_tfs},
+        clock=lambda: now_dt,
+    )
+    runtime._started_at_utc = now_dt.isoformat()
+    runtime._last_tick_at_utc = now_dt.isoformat()
+
+    runtime._timeframe_readiness = {
+        tf: {"status": "READY", "candidate_id": f"cand_{tf}", "reason_code": "READY"}
+        for tf in all_tfs
+    }
+
+    evals = {
+        tf: make_real_run_once_success(candidate_id=f"cand_{tf}", timeframe=tf)
+        for tf in all_tfs
+    }
+
+    h = runtime.get_health_status(reference_now=now_dt, current_evaluations=evals)
+    assert h["seven_frame_parity"] is True
+    assert h["status"] == "WORKER_HEALTHY"
