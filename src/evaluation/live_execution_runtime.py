@@ -1621,7 +1621,9 @@ class ContinuousLiveRuntime:
                 if rec_cand is not None:
                     if not isinstance(rec_cand, str) or not rec_cand.strip():
                         return False
-                    if exp_cand is not None and rec_cand.strip() != exp_cand:
+                    if rec_cand.strip() != raw_cand.strip():
+                        return False
+                    if exp_cand is not _UNSPECIFIED and exp_cand is not None and rec_cand.strip() != exp_cand:
                         return False
 
             # Validate publication outcome if publish_result is present
@@ -1801,10 +1803,41 @@ class ContinuousLiveRuntime:
             }
             timeframe_diagnostics[tf] = tf_diag
 
-        seven_frame_parity = (
-            healthy_canonical_count == 7
-            and set(self.timeframes) == set(all_canonical_tfs)
-        )
+        is_seven_configured = set(self.timeframes) == set(all_canonical_tfs)
+        seven_frame_parity = False
+        if is_seven_configured:
+            parity_qualifying = True
+            for c_tf in all_canonical_tfs:
+                readiness_status = self._timeframe_readiness.get(c_tf, {}).get("status")
+                if readiness_status != "READY":
+                    parity_qualifying = False
+                    break
+
+                c_eval = evals_to_check.get(c_tf) if isinstance(evals_to_check, dict) else None
+                if not c_eval:
+                    parity_qualifying = False
+                    break
+
+                scope = self._resolve_expected_scope(c_tf)
+                if scope["has_conflict"]:
+                    parity_qualifying = False
+                    break
+
+                if not self._is_healthy_evaluation(
+                    c_eval,
+                    expected_timeframe=scope["expected_timeframe"],
+                    expected_symbol=scope["expected_symbol"],
+                    expected_candidate_id=scope["expected_candidate_id"],
+                ):
+                    parity_qualifying = False
+                    break
+
+                c_st = c_eval.get("status")
+                if c_st == "SKIPPED_NO_CLOSED_CANDLE":
+                    parity_qualifying = False
+                    break
+
+            seven_frame_parity = parity_qualifying
 
         return {
             "status": status,
