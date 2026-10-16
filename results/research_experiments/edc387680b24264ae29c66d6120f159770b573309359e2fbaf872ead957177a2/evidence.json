@@ -1,5 +1,5 @@
 {
-  "evidence_id": "ev_f1497e93a85fc9e6",
+  "evidence_id": "ev_89c02210b360ef7f",
   "experiment_fingerprint": "edc387680b24264ae29c66d6120f159770b573309359e2fbaf872ead957177a2",
   "spec": {
     "hypothesis": "Canonical moving_average candidate for 1d",
@@ -31,41 +31,36 @@
       "take_profit_pct": 0.02
     },
     "random_seed": null,
-    "walk_forward_protocol": null,
     "fingerprint": "edc387680b24264ae29c66d6120f159770b573309359e2fbaf872ead957177a2"
   },
   "partitions": [
     {
+      "role": "OUT_OF_SAMPLE",
+      "start_date": "2025-01-01",
+      "end_date": "2025-12-31",
+      "total_return": 0.15,
+      "max_drawdown": 0.05,
+      "sharpe_ratio": 1.8,
+      "win_rate": 0.0,
+      "profit_factor": 0.0,
+      "observations": 30,
+      "additional_metrics": {}
+    },
+    {
       "role": "IN_SAMPLE",
       "start_date": "2025-01-01",
-      "end_date": "2025-04-30",
+      "end_date": "2025-12-31",
       "total_return": 0.2,
       "max_drawdown": 0.05,
       "sharpe_ratio": 2.0,
       "win_rate": 0.6,
       "profit_factor": 1.5,
       "observations": 50,
-      "additional_metrics": {},
-      "start_timestamp_utc": "2025-01-01T00:00:00+00:00",
-      "end_timestamp_utc": "2025-04-30T23:59:59+00:00"
-    },
-    {
-      "role": "OUT_OF_SAMPLE",
-      "start_date": "2025-05-01",
-      "end_date": "2025-08-31",
-      "total_return": 0.15,
-      "max_drawdown": 0.05,
-      "sharpe_ratio": 1.8,
-      "win_rate": 0.55,
-      "profit_factor": 1.4,
-      "observations": 30,
-      "additional_metrics": {},
-      "start_timestamp_utc": "2025-05-01T00:00:00+00:00",
-      "end_timestamp_utc": "2025-08-31T23:59:59+00:00"
+      "additional_metrics": {}
     },
     {
       "role": "WALK_FORWARD",
-      "start_date": "2025-09-01",
+      "start_date": "2025-01-01",
       "end_date": "2025-12-31",
       "total_return": 0.1,
       "max_drawdown": 0.05,
@@ -73,33 +68,15 @@
       "win_rate": 0.55,
       "profit_factor": 1.3,
       "observations": 30,
-      "additional_metrics": {},
-      "start_timestamp_utc": "2025-09-01T00:00:00+00:00",
-      "end_timestamp_utc": "2025-12-31T23:59:59+00:00"
+      "additional_metrics": {}
     }
   ],
   "robustness_verdict": {
-    "passed": true,
-    "is_robust": true,
-    "parameter_sensitivity": {
-      "passed": true
-    },
-    "subsample_stability": {
-      "passed": true
-    },
-    "execution_cost_stress": {
-      "passed": true
-    },
-    "statistical_validation": {
-      "passed": true
-    },
-    "anti_overfitting": {
-      "passed": true
-    }
+    "passed": true
   },
   "benchmark_comparison": {},
   "promotion_status": "PROMOTABLE",
   "rejection_reasons": [],
   "critique_notes": "",
-  "created_at_utc": "2025-01-01T00:00:00Z"
+  "created_at_utc": ""
 }

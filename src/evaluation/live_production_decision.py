@@ -584,21 +584,29 @@ def validate_promotion_eligibility(
         raise TypeError("evidence must be a ResearchEvidence instance.")
 
     if governance_decision is not None:
-        if not getattr(governance_decision, "qualified", False):
+        from src.evaluation.research_qualification import ResearchQualificationResult
+        if not isinstance(governance_decision, ResearchQualificationResult):
+            raise ValueError(
+                f"Evidence '{evidence.evidence_id}' supplied governance decision is not a ResearchQualificationResult instance."
+            )
+        if not governance_decision.qualified:
             raise ValueError(
                 f"Evidence '{evidence.evidence_id}' supplied governance decision is rejected."
             )
         gov_exp_fp = getattr(governance_decision, "experiment_fingerprint", None)
-        if gov_exp_fp is not None and gov_exp_fp != evidence.experiment_fingerprint:
+        if not gov_exp_fp or not isinstance(gov_exp_fp, str) or not gov_exp_fp.strip():
+            raise ValueError(
+                f"Governance decision missing valid non-empty experiment_fingerprint."
+            )
+        if gov_exp_fp.strip() != evidence.experiment_fingerprint:
             raise ValueError(
                 f"Governance decision experiment fingerprint '{gov_exp_fp}' "
                 f"does not match evidence fingerprint '{evidence.experiment_fingerprint}'."
             )
         if governance_decision_fingerprint is not None:
-            dec_fp = getattr(governance_decision, "decision_fingerprint", None)
-            if dec_fp != governance_decision_fingerprint:
+            if governance_decision.decision_fingerprint != governance_decision_fingerprint:
                 raise ValueError(
-                    f"Governance decision fingerprint '{dec_fp}' does not match "
+                    f"Governance decision fingerprint '{governance_decision.decision_fingerprint}' does not match "
                     f"expected fingerprint '{governance_decision_fingerprint}'."
                 )
 

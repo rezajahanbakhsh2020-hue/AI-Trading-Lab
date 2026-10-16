@@ -427,33 +427,45 @@ def persist_promoted_candidate_binding(
         )
 
     if governance_decision is not None:
-        if getattr(governance_decision, "qualified", None) != qualification.qualified:
+        from src.evaluation.research_qualification import ResearchQualificationResult
+        if not isinstance(governance_decision, ResearchQualificationResult):
+            raise PromotionIntegrityError(
+                f"Cannot bind candidate '{candidate_id}': governance_decision must be a ResearchQualificationResult instance, "
+                f"got {type(governance_decision).__name__}."
+            )
+
+        if governance_decision.qualified != qualification.qualified:
             reasons = [r.value if isinstance(r, Enum) else str(r) for r in getattr(governance_decision, "rejection_reasons", ())]
             raise PromotionEligibilityError(
                 f"Cannot bind candidate '{candidate_id}': governance decision qualification status "
-                f"({getattr(governance_decision, 'qualified', None)}) does not match canonical qualification status ({qualification.qualified}). "
+                f"({governance_decision.qualified}) does not match canonical qualification status ({qualification.qualified}). "
                 f"Rejection reasons: {reasons}"
             )
+
         gov_exp_fp = getattr(governance_decision, "experiment_fingerprint", None)
-        if gov_exp_fp is not None and gov_exp_fp != evidence.experiment_fingerprint:
+        if not gov_exp_fp or not isinstance(gov_exp_fp, str) or not gov_exp_fp.strip():
+            raise PromotionIntegrityError(
+                f"Cannot bind candidate '{candidate_id}': governance decision missing valid non-empty experiment_fingerprint."
+            )
+        gov_exp_fp = gov_exp_fp.strip()
+        if gov_exp_fp != evidence.experiment_fingerprint:
             raise PromotionIntegrityError(
                 f"Cannot bind candidate '{candidate_id}': governance decision experiment fingerprint "
                 f"'{gov_exp_fp}' does not match evidence experiment fingerprint '{evidence.experiment_fingerprint}'."
             )
+
         gov_fp = getattr(governance_decision, "decision_fingerprint", None)
         if not isinstance(gov_fp, str) or not gov_fp.strip():
             raise PromotionIntegrityError(
                 f"Cannot bind candidate '{candidate_id}': governance decision missing valid decision_fingerprint."
             )
         gov_fp = gov_fp.strip()
-        from src.evaluation.research_qualification import ResearchQualificationResult
-        if isinstance(governance_decision, ResearchQualificationResult):
-            if governance_decision.decision_fingerprint != qualification.decision_fingerprint:
-                raise PromotionIntegrityError(
-                    f"Cannot bind candidate '{candidate_id}': governance decision fingerprint "
-                    f"'{governance_decision.decision_fingerprint}' does not match canonical qualification decision_fingerprint "
-                    f"'{qualification.decision_fingerprint}'."
-                )
+        if gov_fp != qualification.decision_fingerprint:
+            raise PromotionIntegrityError(
+                f"Cannot bind candidate '{candidate_id}': governance decision fingerprint "
+                f"'{gov_fp}' does not match canonical qualification decision_fingerprint "
+                f"'{qualification.decision_fingerprint}'."
+            )
     else:
         gov_fp = qualification.decision_fingerprint
 

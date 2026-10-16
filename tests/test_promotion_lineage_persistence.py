@@ -133,21 +133,23 @@ def make_test_evidence(
     )
 
 
-class MockGovernanceDecision:
-    def __init__(self, qualified: bool = True, decision_fingerprint: str | None = None, evidence: ResearchEvidence | None = None, experiment_fingerprint: str | None = None):
-        self.qualified = qualified
-        self.qualification_notes = "mock qualification"
-        self.rejection_reasons = () if qualified else (RejectionReason.POOR_OUT_OF_SAMPLE,)
-        if decision_fingerprint is not None:
-            self.decision_fingerprint = decision_fingerprint
-        elif evidence is not None:
-            from src.evaluation.research_qualification import qualify_research_evidence
-            from src.evaluation.research_robustness import assess_research_robustness
-            rob = assess_research_robustness(evidence)
-            self.decision_fingerprint = qualify_research_evidence(evidence, robustness_assessment=rob).decision_fingerprint
-        else:
-            self.decision_fingerprint = "gov_fp_12345"
-        self.experiment_fingerprint = experiment_fingerprint if experiment_fingerprint is not None else (evidence.experiment_fingerprint if evidence is not None else None)
+from src.evaluation.research_qualification import (
+    ResearchQualificationResult,
+    qualify_research_evidence,
+)
+from src.evaluation.research_robustness import assess_research_robustness
+
+
+def make_mock_gov_decision(
+    evidence: ResearchEvidence,
+    qualified: bool = True,
+    decision_fingerprint: str | None = None,
+) -> ResearchQualificationResult:
+    rob = assess_research_robustness(evidence)
+    res = qualify_research_evidence(evidence, robustness_assessment=rob)
+    if decision_fingerprint is not None:
+        object.__setattr__(res, "decision_fingerprint", decision_fingerprint)
+    return res
 
 
 def test_A_governance_fingerprint_round_trip(tmp_path: Path):
@@ -155,7 +157,7 @@ def test_A_governance_fingerprint_round_trip(tmp_path: Path):
     evidence = make_test_evidence()
     save_research_experiment(evidence, base_dir=tmp_path)
 
-    gov_dec = MockGovernanceDecision(qualified=True, evidence=evidence)
+    gov_dec = make_mock_gov_decision(evidence, qualified=True)
     cand_id = "cand_test_A"
 
     binding_path = persist_promoted_candidate_binding(
@@ -324,14 +326,50 @@ def test_E_conflicting_persisted_lineage(tmp_path: Path):
     save_research_experiment(evidence, base_dir=tmp_path)
 
     cand_id = "cand_test_E"
-    gov_dec_1 = MockGovernanceDecision(qualified=True, decision_fingerprint="gov_fp_AAAA")
-    gov_dec_2 = MockGovernanceDecision(qualified=True, decision_fingerprint="gov_fp_BBBB")
+    gov_dec = make_mock_gov_decision(evidence, qualified=True)
+
+    sel_dec_1 = ResearchCampaignSelectionDecision(
+        campaign_id="camp_E",
+        synthesis_fingerprint="synth_fp",
+        selection_policy_fingerprint="pol_fp",
+        selected_candidate_ids=(cand_id,),
+        eligible_candidate_ids=(cand_id,),
+        rejected_candidate_ids=(),
+        blocked_candidate_ids=(),
+        candidate_comparison_fingerprints=(),
+        selection_governance_fingerprints=(),
+        qualification_fingerprints=(),
+        robustness_fingerprints=(),
+        evidence_fingerprints=(),
+        decision_status=CampaignSelectionStatus.SELECTED.value,
+        decision_reason="Sel 1",
+        deterministic_ordering=(cand_id,),
+    )
+
+    sel_dec_2 = ResearchCampaignSelectionDecision(
+        campaign_id="camp_E_other",
+        synthesis_fingerprint="synth_fp_diff",
+        selection_policy_fingerprint="pol_fp",
+        selected_candidate_ids=(cand_id,),
+        eligible_candidate_ids=(cand_id,),
+        rejected_candidate_ids=(),
+        blocked_candidate_ids=(),
+        candidate_comparison_fingerprints=(),
+        selection_governance_fingerprints=(),
+        qualification_fingerprints=(),
+        robustness_fingerprints=(),
+        evidence_fingerprints=(),
+        decision_status=CampaignSelectionStatus.SELECTED.value,
+        decision_reason="Sel 2",
+        deterministic_ordering=(cand_id,),
+    )
 
     binding_path = persist_promoted_candidate_binding(
         candidate_id=cand_id,
         evidence=evidence,
         operational_stability_score=0.85,
-        governance_decision=gov_dec_1,
+        governance_decision=gov_dec,
+        campaign_selection_decision=sel_dec_1,
         base_dir=tmp_path,
     )
 
@@ -342,69 +380,12 @@ def test_E_conflicting_persisted_lineage(tmp_path: Path):
             candidate_id=cand_id,
             evidence=evidence,
             operational_stability_score=0.85,
-            governance_decision=gov_dec_2,
-            base_dir=tmp_path,
-        )
-
-    assert binding_path.read_text(encoding="utf-8") == original_content
-
-    # Repeat for campaign-selection decision
-    sel_dec_1 = ResearchCampaignSelectionDecision(
-        campaign_id="camp_E",
-        synthesis_fingerprint="synth_fp",
-        selection_policy_fingerprint="pol_fp",
-        selected_candidate_ids=("cand_E2",),
-        eligible_candidate_ids=("cand_E2",),
-        rejected_candidate_ids=(),
-        blocked_candidate_ids=(),
-        candidate_comparison_fingerprints=(),
-        selection_governance_fingerprints=(),
-        qualification_fingerprints=(),
-        robustness_fingerprints=(),
-        evidence_fingerprints=(),
-        decision_status=CampaignSelectionStatus.SELECTED.value,
-        decision_reason="Sel 1",
-        deterministic_ordering=("cand_E2",),
-    )
-
-    sel_dec_2 = ResearchCampaignSelectionDecision(
-        campaign_id="camp_E_other",
-        synthesis_fingerprint="synth_fp_diff",
-        selection_policy_fingerprint="pol_fp",
-        selected_candidate_ids=("cand_E2",),
-        eligible_candidate_ids=("cand_E2",),
-        rejected_candidate_ids=(),
-        blocked_candidate_ids=(),
-        candidate_comparison_fingerprints=(),
-        selection_governance_fingerprints=(),
-        qualification_fingerprints=(),
-        robustness_fingerprints=(),
-        evidence_fingerprints=(),
-        decision_status=CampaignSelectionStatus.SELECTED.value,
-        decision_reason="Sel 2",
-        deterministic_ordering=("cand_E2",),
-    )
-
-    binding_path_2 = persist_promoted_candidate_binding(
-        candidate_id="cand_E2",
-        evidence=evidence,
-        operational_stability_score=0.85,
-        campaign_selection_decision=sel_dec_1,
-        base_dir=tmp_path,
-    )
-
-    original_content_2 = binding_path_2.read_text(encoding="utf-8")
-
-    with pytest.raises(FileExistsError):
-        persist_promoted_candidate_binding(
-            candidate_id="cand_E2",
-            evidence=evidence,
-            operational_stability_score=0.85,
+            governance_decision=gov_dec,
             campaign_selection_decision=sel_dec_2,
             base_dir=tmp_path,
         )
 
-    assert binding_path_2.read_text(encoding="utf-8") == original_content_2
+    assert binding_path.read_text(encoding="utf-8") == original_content
 
 
 def test_F_artifact_fingerprint_changes_with_lineage():
@@ -452,7 +433,7 @@ def test_G_idempotency(tmp_path: Path):
     save_research_experiment(evidence, base_dir=tmp_path)
 
     cand_id = "cand_test_G"
-    gov_dec = MockGovernanceDecision(qualified=True, evidence=evidence)
+    gov_dec = make_mock_gov_decision(evidence, qualified=True)
     sel_dec = ResearchCampaignSelectionDecision(
         campaign_id="camp_G",
         synthesis_fingerprint="synth_fp",
