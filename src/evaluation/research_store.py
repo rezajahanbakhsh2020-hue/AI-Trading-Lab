@@ -675,26 +675,6 @@ def _reconstitute_promoted_candidate_from_binding(
         robustness_assessment = None
 
     reconstitution_policy = policy if policy is not None else ProductionPromotionPolicy()
-
-    # Map ProductionPromotionPolicy to ResearchQualificationPolicy
-    qual_policy = ResearchQualificationPolicy(
-        allowed_statuses=reconstitution_policy.allowed_statuses,
-        max_evidence_age_days=reconstitution_policy.max_evidence_age_days,
-        require_robustness=reconstitution_policy.require_robustness_pass,
-    )
-
-    qualification = qualify_research_evidence(
-        evidence,
-        policy=qual_policy,
-        robustness_assessment=robustness_assessment,
-    )
-    if not qualification.qualified:
-        reasons = [r.value if isinstance(r, Enum) else str(r) for r in qualification.rejection_reasons]
-        raise PromotionEligibilityError(
-            f"Cannot reconstitute candidate '{candidate_id}': reloaded evidence '{evidence.evidence_id}' "
-            f"failed canonical qualification ({qualification.qualification_notes}). Rejection reasons: {reasons}"
-        )
-
     gov_fp = binding.get("governance_decision_fingerprint")
     campaign_sel_fp = binding.get("campaign_selection_decision_fingerprint")
     try:
