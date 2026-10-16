@@ -588,9 +588,10 @@ def validate_promotion_eligibility(
             raise ValueError(
                 f"Evidence '{evidence.evidence_id}' supplied governance decision is rejected."
             )
-        if getattr(governance_decision, "experiment_fingerprint", "") != evidence.experiment_fingerprint:
+        gov_exp_fp = getattr(governance_decision, "experiment_fingerprint", None)
+        if gov_exp_fp is not None and gov_exp_fp != evidence.experiment_fingerprint:
             raise ValueError(
-                f"Governance decision experiment fingerprint '{getattr(governance_decision, 'experiment_fingerprint', '')}' "
+                f"Governance decision experiment fingerprint '{gov_exp_fp}' "
                 f"does not match evidence fingerprint '{evidence.experiment_fingerprint}'."
             )
         if governance_decision_fingerprint is not None:
@@ -619,6 +620,29 @@ def validate_promotion_eligibility(
             raise ValueError(
                 f"Evidence '{evidence.evidence_id}' robustness verdict explicitly failed."
             )
+        try:
+            from src.evaluation.research_robustness import assess_research_robustness
+            rob_assessment = assess_research_robustness(evidence)
+            if rob_assessment.experiment_fingerprint != evidence.experiment_fingerprint:
+                raise ValueError(
+                    f"Robustness assessment experiment_fingerprint '{rob_assessment.experiment_fingerprint}' "
+                    f"does not match evidence experiment_fingerprint '{evidence.experiment_fingerprint}'."
+                )
+            if rob_assessment.evidence_fingerprint != evidence.evidence_id:
+                raise ValueError(
+                    f"Robustness assessment evidence_fingerprint '{rob_assessment.evidence_fingerprint}' "
+                    f"does not match evidence_id '{evidence.evidence_id}'."
+                )
+            if not rob_assessment.is_robust:
+                raise ValueError(
+                    f"Evidence '{evidence.evidence_id}' canonical robustness assessment failed (is_robust=False)."
+                )
+        except ValueError:
+            raise
+        except Exception as exc:
+            raise ValueError(
+                f"Failed to produce or validate canonical robustness assessment for evidence '{evidence.evidence_id}': {exc}"
+            ) from exc
 
     if policy.max_evidence_age_days is not None and evidence.created_at_utc:
         try:

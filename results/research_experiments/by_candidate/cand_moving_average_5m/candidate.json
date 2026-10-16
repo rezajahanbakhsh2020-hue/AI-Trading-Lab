@@ -3,7 +3,7 @@
   "strategy_name": "moving_average",
   "strategy_version": "1.0",
   "experiment_fingerprint": "28a07a98d292a4328261b3eacf338f778217047b7b9824b745fdf2b13d138838",
-  "evidence_id": "ev_54367916b4d216bc",
+  "evidence_id": "ev_42294f112d2cc23f",
   "symbol": "XAUUSD",
   "timeframe": "5m",
   "parameters": {
@@ -12,6 +12,6 @@
     "stop_loss_pct": 0.01,
     "take_profit_pct": 0.02
   },
-  "governance_decision_fingerprint": "gov_dec_cand_moving_average_5m_v1",
+  "governance_decision_fingerprint": "3154a3b131bedd06e634ed7f76f3b80f21492b626deb67cefbd8cdee866ac7d3",
   "operational_stability_score": 0.7458282289664787
 }

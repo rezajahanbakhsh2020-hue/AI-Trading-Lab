@@ -662,8 +662,46 @@ def _reconstitute_promoted_candidate_from_binding(
             f"Candidate '{candidate_id}' operational_stability_score must be finite (got {raw_stab})."
         )
 
+    from src.evaluation.research_qualification import (
+        ResearchQualificationPolicy,
+        qualify_research_evidence,
+    )
+    try:
+        from src.evaluation.research_robustness import (
+            assess_research_robustness,
+        )
+        robustness_assessment = assess_research_robustness(evidence)
+    except Exception:
+        robustness_assessment = None
+
     reconstitution_policy = policy if policy is not None else ProductionPromotionPolicy()
+
+    qual_policy = ResearchQualificationPolicy(
+        allowed_statuses=reconstitution_policy.allowed_statuses,
+        max_evidence_age_days=reconstitution_policy.max_evidence_age_days,
+        require_robustness=reconstitution_policy.require_robustness_pass,
+    )
+
+    qualification = qualify_research_evidence(
+        evidence,
+        policy=qual_policy,
+        robustness_assessment=robustness_assessment,
+    )
+    if not qualification.qualified:
+        reasons = [r.value if isinstance(r, Enum) else str(r) for r in qualification.rejection_reasons]
+        raise PromotionEligibilityError(
+            f"Cannot reconstitute candidate '{candidate_id}': reloaded evidence '{evidence.evidence_id}' "
+            f"failed canonical qualification ({qualification.qualification_notes}). Rejection reasons: {reasons}"
+        )
+
     gov_fp = binding.get("governance_decision_fingerprint")
+    if gov_fp and gov_fp != qualification.decision_fingerprint:
+        raise PromotionIntegrityError(
+            f"Cannot reconstitute candidate '{candidate_id}': stored governance_decision_fingerprint "
+            f"'{gov_fp}' does not match canonical qualification decision_fingerprint "
+            f"'{qualification.decision_fingerprint}'."
+        )
+
     campaign_sel_fp = binding.get("campaign_selection_decision_fingerprint")
     try:
         validate_promotion_eligibility(evidence, policy=reconstitution_policy, governance_decision_fingerprint=gov_fp)

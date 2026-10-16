@@ -134,11 +134,20 @@ def make_test_evidence(
 
 
 class MockGovernanceDecision:
-    def __init__(self, qualified: bool = True, decision_fingerprint: str = "gov_fp_12345"):
+    def __init__(self, qualified: bool = True, decision_fingerprint: str | None = None, evidence: ResearchEvidence | None = None, experiment_fingerprint: str | None = None):
         self.qualified = qualified
-        self.decision_fingerprint = decision_fingerprint
         self.qualification_notes = "mock qualification"
         self.rejection_reasons = () if qualified else (RejectionReason.POOR_OUT_OF_SAMPLE,)
+        if decision_fingerprint is not None:
+            self.decision_fingerprint = decision_fingerprint
+        elif evidence is not None:
+            from src.evaluation.research_qualification import qualify_research_evidence
+            from src.evaluation.research_robustness import assess_research_robustness
+            rob = assess_research_robustness(evidence)
+            self.decision_fingerprint = qualify_research_evidence(evidence, robustness_assessment=rob).decision_fingerprint
+        else:
+            self.decision_fingerprint = "gov_fp_12345"
+        self.experiment_fingerprint = experiment_fingerprint if experiment_fingerprint is not None else (evidence.experiment_fingerprint if evidence is not None else None)
 
 
 def test_A_governance_fingerprint_round_trip(tmp_path: Path):
@@ -146,7 +155,7 @@ def test_A_governance_fingerprint_round_trip(tmp_path: Path):
     evidence = make_test_evidence()
     save_research_experiment(evidence, base_dir=tmp_path)
 
-    gov_dec = MockGovernanceDecision(qualified=True, decision_fingerprint="gov_fp_test_999")
+    gov_dec = MockGovernanceDecision(qualified=True, evidence=evidence)
     cand_id = "cand_test_A"
 
     binding_path = persist_promoted_candidate_binding(
@@ -158,11 +167,11 @@ def test_A_governance_fingerprint_round_trip(tmp_path: Path):
     )
 
     binding_data = load_candidate_binding(cand_id, base_dir=tmp_path)
-    assert binding_data["governance_decision_fingerprint"] == "gov_fp_test_999"
+    assert binding_data["governance_decision_fingerprint"] == gov_dec.decision_fingerprint
 
     artifact = resolve_promoted_candidate(candidate_id=cand_id, base_dir=tmp_path)
     assert artifact is not None
-    assert artifact.governance_decision_fingerprint == "gov_fp_test_999"
+    assert artifact.governance_decision_fingerprint == gov_dec.decision_fingerprint
 
 
 def test_B_campaign_selection_fingerprint_round_trip(tmp_path: Path):
@@ -443,7 +452,7 @@ def test_G_idempotency(tmp_path: Path):
     save_research_experiment(evidence, base_dir=tmp_path)
 
     cand_id = "cand_test_G"
-    gov_dec = MockGovernanceDecision(qualified=True, decision_fingerprint="gov_idempotent")
+    gov_dec = MockGovernanceDecision(qualified=True, evidence=evidence)
     sel_dec = ResearchCampaignSelectionDecision(
         campaign_id="camp_G",
         synthesis_fingerprint="synth_fp",

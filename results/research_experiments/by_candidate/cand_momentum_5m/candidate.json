@@ -3,7 +3,7 @@
   "strategy_name": "momentum",
   "strategy_version": "1.0",
   "experiment_fingerprint": "e6b8a768fd1b98a7a0c914fdebf863f88923870eedcab35bb54d7acedb270c0b",
-  "evidence_id": "ev_dd81bc440136adb0",
+  "evidence_id": "ev_598e6448e23a8bce",
   "symbol": "XAUUSD",
   "timeframe": "5m",
   "parameters": {
@@ -11,6 +11,6 @@
     "stop_loss_pct": 0.01,
     "take_profit_pct": 0.02
   },
-  "governance_decision_fingerprint": "gov_dec_cand_momentum_5m_v1",
+  "governance_decision_fingerprint": "bf0ecd6ac5f35c5dbdce5282a66752f019a1481755c57694296344e63e53f92e",
   "operational_stability_score": 0.7458282289664787
 }

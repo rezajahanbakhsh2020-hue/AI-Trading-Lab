@@ -275,7 +275,13 @@ def test_missing_mandatory_receipt_field_fails_closed():
 
 
 def test_runtime_persistence_contains_complete_lineage(tmp_path):
+    from src.evaluation.research_qualification import qualify_research_evidence
+    from src.evaluation.research_robustness import assess_research_robustness
+
     ev = make_promoted_evidence(PromotionStatus.PROMOTABLE)
+    rob = assess_research_robustness(ev)
+    qual = qualify_research_evidence(ev, robustness_assessment=rob)
+
     cand = PromotedCandidateArtifact(
         candidate_id="cand_persist_01",
         strategy_name="momentum",
@@ -284,7 +290,8 @@ def test_runtime_persistence_contains_complete_lineage(tmp_path):
         symbol="XAUUSD",
         timeframe="5m",
         operational_stability_score=0.85,
-        governance_decision_fingerprint="gov_fp_persist",
+        governance_decision=qual,
+        governance_decision_fingerprint=qual.decision_fingerprint,
         campaign_selection_decision_fingerprint="camp_fp_persist",
     )
     save_research_experiment(cand.evidence, base_dir=tmp_path)
@@ -293,7 +300,7 @@ def test_runtime_persistence_contains_complete_lineage(tmp_path):
         evidence=cand.evidence,
         operational_stability_score=0.85,
         base_dir=tmp_path,
-        governance_decision=type("Gov", (), {"qualified": True, "experiment_fingerprint": cand.evidence.experiment_fingerprint, "decision_fingerprint": cand.governance_decision_fingerprint})(),
+        governance_decision=qual,
         campaign_selection_decision=type("CampSel", (), {"decision_fingerprint": "camp_fp_persist", "campaign_id": "camp_1", "decision_status": "SELECTED", "selected_candidate_ids": ("cand_persist_01",)})(),
     )
 
@@ -340,7 +347,7 @@ def test_runtime_persistence_contains_complete_lineage(tmp_path):
     assert len(dec_hist) == 1
     rec = dec_hist[0]
     assert rec["runtime_authorization_fingerprint"] == res["runtime_authorization_fingerprint"]
-    assert rec["governance_decision_fingerprint"] == "gov_fp_persist"
+    assert rec["governance_decision_fingerprint"] == qual.decision_fingerprint
     assert rec["campaign_selection_decision_fingerprint"] == "camp_fp_persist"
     assert rec["candidate_id"] == "cand_persist_01"
 
@@ -349,7 +356,7 @@ def test_runtime_persistence_contains_complete_lineage(tmp_path):
     assert "runtime_authorization" in snapshot_data
     auth_dict = snapshot_data["runtime_authorization"]
     assert auth_dict["candidate_id"] == "cand_persist_01"
-    assert auth_dict["governance_decision_fingerprint"] == "gov_fp_persist"
+    assert auth_dict["governance_decision_fingerprint"] == qual.decision_fingerprint
     assert auth_dict["campaign_selection_decision_fingerprint"] == "camp_fp_persist"
     assert auth_dict["authorization_fingerprint"] == res["runtime_authorization_fingerprint"]
 
@@ -360,7 +367,7 @@ def test_runtime_persistence_contains_complete_lineage(tmp_path):
     pub = pub_hist[0]
     prov = pub["provenance"]
     assert prov["runtime_authorization_fingerprint"] == res["runtime_authorization_fingerprint"]
-    assert prov["governance_decision_fingerprint"] == "gov_fp_persist"
+    assert prov["governance_decision_fingerprint"] == qual.decision_fingerprint
     assert prov["campaign_selection_decision_fingerprint"] == "camp_fp_persist"
 
 
@@ -478,7 +485,13 @@ def test_replay_idempotency_and_conflict_safety(tmp_path):
 
 
 def test_single_authorization_invocation_in_runtime(tmp_path):
+    from src.evaluation.research_qualification import qualify_research_evidence
+    from src.evaluation.research_robustness import assess_research_robustness
+
     ev = make_promoted_evidence(PromotionStatus.PROMOTABLE)
+    rob = assess_research_robustness(ev)
+    qual = qualify_research_evidence(ev, robustness_assessment=rob)
+
     cand = PromotedCandidateArtifact(
         candidate_id="cand_single_auth",
         strategy_name="momentum",
@@ -487,7 +500,8 @@ def test_single_authorization_invocation_in_runtime(tmp_path):
         symbol="XAUUSD",
         timeframe="5m",
         operational_stability_score=0.85,
-        governance_decision_fingerprint="gov_fp_single",
+        governance_decision=qual,
+        governance_decision_fingerprint=qual.decision_fingerprint,
     )
     save_research_experiment(cand.evidence, base_dir=tmp_path)
     persist_promoted_candidate_binding(
@@ -495,7 +509,7 @@ def test_single_authorization_invocation_in_runtime(tmp_path):
         evidence=cand.evidence,
         operational_stability_score=0.85,
         base_dir=tmp_path,
-        governance_decision=type("Gov", (), {"qualified": True, "experiment_fingerprint": cand.evidence.experiment_fingerprint, "decision_fingerprint": cand.governance_decision_fingerprint})(),
+        governance_decision=qual,
     )
 
     runtime = LiveExecutionRuntime(

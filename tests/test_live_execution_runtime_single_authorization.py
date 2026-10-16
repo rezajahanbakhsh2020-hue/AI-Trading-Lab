@@ -33,11 +33,10 @@ from src.evaluation.research_constitution import (
 )
 
 
-def _make_dummy_candidate(
-    candidate_id: str = "cand_momentum_5m",
+def _make_dummy_evidence(
     symbol: str = "XAUUSD",
     timeframe: str = "5m",
-) -> PromotedCandidateArtifact:
+) -> ResearchEvidence:
     spec = ResearchExperimentSpec(
         hypothesis="Test hypothesis for single authorization",
         methodology_version="1.0",
@@ -60,31 +59,79 @@ def _make_dummy_candidate(
         parameters={"momentum_window": 10, "stop_loss_pct": 0.01, "take_profit_pct": 0.02},
     )
 
-    part = EvidencePartition(
+    part_is = EvidencePartition(
         role=EvidencePartitionRole.IN_SAMPLE,
         start_date="2024-01-01",
-        end_date="2024-06-01",
+        end_date="2024-02-28",
         total_return=0.1,
         max_drawdown=0.05,
         sharpe_ratio=1.5,
         observations=100,
+        start_timestamp_utc="2024-01-01T00:00:00+00:00",
+        end_timestamp_utc="2024-02-28T23:59:59+00:00",
+    )
+    part_oos = EvidencePartition(
+        role=EvidencePartitionRole.OUT_OF_SAMPLE,
+        start_date="2024-03-01",
+        end_date="2024-04-30",
+        total_return=0.1,
+        max_drawdown=0.05,
+        sharpe_ratio=1.5,
+        observations=50,
+        start_timestamp_utc="2024-03-01T00:00:00+00:00",
+        end_timestamp_utc="2024-04-30T23:59:59+00:00",
+    )
+    part_wf = EvidencePartition(
+        role=EvidencePartitionRole.WALK_FORWARD,
+        start_date="2024-05-01",
+        end_date="2024-06-01",
+        total_return=0.1,
+        max_drawdown=0.05,
+        sharpe_ratio=1.5,
+        observations=50,
+        start_timestamp_utc="2024-05-01T00:00:00+00:00",
+        end_timestamp_utc="2024-06-01T23:59:59+00:00",
     )
 
-    evidence = ResearchEvidence(
+    return ResearchEvidence(
         experiment_fingerprint=spec.fingerprint,
         spec=spec,
-        partitions=(part,),
+        partitions=(part_is, part_oos, part_wf),
+        robustness_verdict={
+            "passed": True,
+            "is_robust": True,
+            "parameter_sensitivity": {"passed": True},
+            "subsample_stability": {"passed": True},
+            "execution_cost_stress": {"passed": True},
+            "statistical_validation": {"passed": True},
+            "anti_overfitting": {"passed": True},
+        },
         promotion_status=PromotionStatus.PROMOTABLE,
     )
 
+
+def _make_dummy_candidate(
+    candidate_id: str = "cand_momentum_5m",
+    symbol: str = "XAUUSD",
+    timeframe: str = "5m",
+    gov_fp: str | None = None,
+    cs_fp: str | None = "cs_fp_1234567890",
+    operational_stability_score: float = 0.85,
+) -> PromotedCandidateArtifact:
+    evidence = _make_dummy_evidence(symbol, timeframe)
+    from src.evaluation.research_qualification import qualify_research_evidence
+    from src.evaluation.research_robustness import assess_research_robustness
+    rob = assess_research_robustness(evidence)
+    qual = qualify_research_evidence(evidence, robustness_assessment=rob)
+    effective_gov_fp = gov_fp if gov_fp is not None else qual.decision_fingerprint
     return PromotedCandidateArtifact.from_persisted_research(
         candidate_id=candidate_id,
         evidence=evidence,
         symbol=symbol,
         timeframe=timeframe,
-        governance_decision_fingerprint="gov_fp_1234567890",
-        campaign_selection_decision_fingerprint="cs_fp_1234567890",
-        operational_stability_score=0.85,
+        governance_decision_fingerprint=effective_gov_fp,
+        campaign_selection_decision_fingerprint=cs_fp,
+        operational_stability_score=operational_stability_score,
     )
 
 
