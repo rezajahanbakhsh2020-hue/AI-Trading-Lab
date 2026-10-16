@@ -572,16 +572,54 @@ def validate_promotion_eligibility(
     governance_decision_fingerprint: str | None = None,
     now: Optional[datetime] = None,
 ) -> bool:
-    """Validate that research evidence satisfies production promotion criteria.
+    """Validate that research evidence satisfies canonical production promotion criteria.
 
-    Consumes canonical governance decision. Fails closed if evidence is missing,
-    unpromoted, rejected, or invalid. Does NOT recompute qualification.
+    Delegates to canonical research qualification and robustness APIs.
+    Fails closed if evidence is missing, unpromoted, rejected, invalid,
+    fails qualification/integrity gates, or carries mismatched governance decision fingerprints.
     """
     if policy is None:
         policy = ProductionPromotionPolicy()
 
     if not isinstance(evidence, ResearchEvidence):
         raise TypeError("evidence must be a ResearchEvidence instance.")
+
+    from src.evaluation.research_qualification import (
+        ResearchQualificationPolicy,
+        qualify_research_evidence,
+    )
+
+    qual_policy = ResearchQualificationPolicy(
+        allowed_statuses=policy.allowed_statuses,
+        max_evidence_age_days=policy.max_evidence_age_days,
+        require_robustness=policy.require_robustness_pass,
+    )
+
+    rob_assessment = None
+    if policy.require_robustness_pass:
+        try:
+            from src.evaluation.research_robustness import assess_research_robustness
+            rob_assessment = assess_research_robustness(evidence)
+        except ValueError:
+            raise
+        except Exception as exc:
+            raise ValueError(
+                f"Failed to produce or validate canonical robustness assessment for evidence '{evidence.evidence_id}': {exc}"
+            ) from exc
+
+    qualification = qualify_research_evidence(
+        evidence,
+        policy=qual_policy,
+        robustness_assessment=rob_assessment,
+        now=now,
+    )
+
+    if not qualification.qualified:
+        reasons = [r.value if isinstance(r, Enum) else str(r) for r in qualification.rejection_reasons]
+        raise ValueError(
+            f"Evidence '{evidence.evidence_id}' failed canonical research qualification: "
+            f"{qualification.qualification_notes}. Rejection reasons: {reasons}"
+        )
 
     if governance_decision is not None:
         from src.evaluation.research_qualification import ResearchQualificationResult
@@ -596,12 +634,17 @@ def validate_promotion_eligibility(
         gov_exp_fp = getattr(governance_decision, "experiment_fingerprint", None)
         if not gov_exp_fp or not isinstance(gov_exp_fp, str) or not gov_exp_fp.strip():
             raise ValueError(
-                f"Governance decision missing valid non-empty experiment_fingerprint."
+                "Governance decision missing valid non-empty experiment_fingerprint."
             )
         if gov_exp_fp.strip() != evidence.experiment_fingerprint:
             raise ValueError(
                 f"Governance decision experiment fingerprint '{gov_exp_fp}' "
                 f"does not match evidence fingerprint '{evidence.experiment_fingerprint}'."
+            )
+        if governance_decision.decision_fingerprint != qualification.decision_fingerprint:
+            raise ValueError(
+                f"Governance decision fingerprint '{governance_decision.decision_fingerprint}' "
+                f"does not match canonical qualification decision_fingerprint '{qualification.decision_fingerprint}'."
             )
         if governance_decision_fingerprint is not None:
             if governance_decision.decision_fingerprint != governance_decision_fingerprint:
@@ -610,64 +653,12 @@ def validate_promotion_eligibility(
                     f"expected fingerprint '{governance_decision_fingerprint}'."
                 )
 
-    if evidence.promotion_status not in policy.allowed_statuses:
-        raise ValueError(
-            f"Evidence '{evidence.evidence_id}' has status '{evidence.promotion_status.value}' "
-            f"which is not allowed for production (allowed: {[s.value for s in policy.allowed_statuses]})."
-        )
-
-    if evidence.rejection_reasons:
-        orig_reasons = [r.value for r in evidence.rejection_reasons]
-        raise ValueError(
-            f"Evidence '{evidence.evidence_id}' contains rejection reasons: {orig_reasons}"
-        )
-
-    if policy.require_robustness_pass:
-        rv = getattr(evidence, "robustness_verdict", None)
-        if isinstance(rv, dict) and (rv.get("passed") is False or rv.get("is_robust") is False):
+    if governance_decision_fingerprint is not None and str(governance_decision_fingerprint).strip():
+        if governance_decision_fingerprint.strip() != qualification.decision_fingerprint:
             raise ValueError(
-                f"Evidence '{evidence.evidence_id}' robustness verdict explicitly failed."
+                f"Governance decision fingerprint '{governance_decision_fingerprint.strip()}' "
+                f"does not match canonical qualification decision_fingerprint '{qualification.decision_fingerprint}'."
             )
-        try:
-            from src.evaluation.research_robustness import assess_research_robustness
-            rob_assessment = assess_research_robustness(evidence)
-            if rob_assessment.experiment_fingerprint != evidence.experiment_fingerprint:
-                raise ValueError(
-                    f"Robustness assessment experiment_fingerprint '{rob_assessment.experiment_fingerprint}' "
-                    f"does not match evidence experiment_fingerprint '{evidence.experiment_fingerprint}'."
-                )
-            if rob_assessment.evidence_fingerprint != evidence.evidence_id:
-                raise ValueError(
-                    f"Robustness assessment evidence_fingerprint '{rob_assessment.evidence_fingerprint}' "
-                    f"does not match evidence_id '{evidence.evidence_id}'."
-                )
-            if not rob_assessment.is_robust:
-                raise ValueError(
-                    f"Evidence '{evidence.evidence_id}' canonical robustness assessment failed (is_robust=False)."
-                )
-        except ValueError:
-            raise
-        except Exception as exc:
-            raise ValueError(
-                f"Failed to produce or validate canonical robustness assessment for evidence '{evidence.evidence_id}': {exc}"
-            ) from exc
-
-    if policy.max_evidence_age_days is not None and evidence.created_at_utc:
-        try:
-            created = datetime.fromisoformat(str(evidence.created_at_utc).replace("Z", "+00:00"))
-            ref_now = now or datetime.now(timezone.utc)
-            if ref_now.tzinfo is None:
-                ref_now = ref_now.replace(tzinfo=timezone.utc)
-            age_days = (ref_now - created).total_seconds() / 86400.0
-            if age_days > policy.max_evidence_age_days:
-                raise ValueError(
-                    f"Evidence '{evidence.evidence_id}' is stale: age ({age_days:.1f} days) "
-                    f"exceeds max allowed age ({policy.max_evidence_age_days} days)."
-                )
-        except (ValueError, TypeError) as exc:
-            if "exceeds max allowed age" in str(exc):
-                raise
-            pass
 
     return True
 
