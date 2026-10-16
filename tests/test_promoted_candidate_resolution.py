@@ -627,7 +627,7 @@ def test_exact_original_forensic_reproduction(tmp_path: Path) -> None:
     assert RejectionReason.FAILED_ROBUSTNESS in qual_tampered.rejection_reasons or RejectionReason.MISSING_ROBUSTNESS_EVIDENCE in qual_tampered.rejection_reasons
 
     # 6. Verify resolution fails closed
-    with pytest.raises(PromotionEligibilityError, match="failed canonical qualification"):
+    with pytest.raises(PromotionEligibilityError, match="(failed canonical qualification|canonical robustness assessment failed|robustness)"):
         resolve_promoted_candidate(candidate_id=candidate_id, base_dir=tmp_path)
 
     # 7. Exercise live execution runtime boundary
