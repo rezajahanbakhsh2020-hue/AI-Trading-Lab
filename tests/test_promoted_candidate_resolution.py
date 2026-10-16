@@ -473,3 +473,95 @@ def test_save_research_experiment_still_round_trips(tmp_path: Path) -> None:
     path = save_research_experiment(evidence, base_dir=tmp_path)
     assert path.exists()
     assert resolve_promoted_candidate(candidate_id="no_binding", base_dir=tmp_path) is None
+
+
+def test_reproduction_A_forged_governance_mismatched_experiment_fingerprint_rejected(tmp_path: Path) -> None:
+    """Reproduction A: Forged governance decision with mismatched experiment fingerprint rejected at persistence."""
+    from src.evaluation.research_qualification import ResearchGovernanceDecision
+
+    evidence = make_research_evidence(robustness_passed=True)
+    save_research_experiment(evidence, base_dir=tmp_path)
+
+    forged_gov = ResearchGovernanceDecision(
+        qualified=True,
+        status=PromotionStatus.PROMOTABLE,
+        rejection_reasons=(),
+        evidence_fingerprint="DELIBERATELY-WRONG-EXPERIMENT-FINGERPRINT",
+        experiment_fingerprint="DELIBERATELY-WRONG-EXPERIMENT-FINGERPRINT",
+    )
+
+    with pytest.raises(PromotionIntegrityError, match="experiment fingerprint"):
+        save_research_candidate(
+            candidate_id="cand_repro_A",
+            evidence=evidence,
+            operational_stability_score=0.85,
+            governance_decision=forged_gov,
+            base_dir=tmp_path,
+        )
+
+
+def test_reproduction_B_forged_governance_cannot_bypass_canonical_qualification(tmp_path: Path) -> None:
+    """Reproduction B: Forged governance decision cannot bypass canonical qualification when robustness evidence fails."""
+    from src.evaluation.research_qualification import ResearchGovernanceDecision
+
+    # Evidence with failed robustness
+    evidence = make_research_evidence(robustness_passed=False)
+    save_research_experiment(evidence, base_dir=tmp_path)
+
+    forged_gov = ResearchGovernanceDecision(
+        qualified=True,
+        status=PromotionStatus.PROMOTABLE,
+        rejection_reasons=(),
+        evidence_fingerprint=evidence.experiment_fingerprint,
+        experiment_fingerprint=evidence.experiment_fingerprint,
+    )
+
+    with pytest.raises(PromotionEligibilityError, match="failed qualification"):
+        save_research_candidate(
+            candidate_id="cand_repro_B",
+            evidence=evidence,
+            operational_stability_score=0.85,
+            governance_decision=forged_gov,
+            base_dir=tmp_path,
+        )
+
+
+def test_reproduction_C_reconstitution_revalidates_eligibility_and_blocks_production_decision(tmp_path: Path) -> None:
+    """Reproduction C & D & E: Reconstitution revalidates eligibility, resolution rejects invalid candidate, and evaluate_production_decision cannot create decision."""
+    from src.evaluation.research_store import load_candidate_binding, _candidate_binding_path
+    import json
+
+    # 1. Save valid evidence first
+    evidence = make_research_evidence(robustness_passed=True)
+    save_research_experiment(evidence, base_dir=tmp_path)
+
+    cand_id = "cand_repro_C"
+    save_research_candidate(
+        candidate_id=cand_id,
+        evidence=evidence,
+        operational_stability_score=0.85,
+        base_dir=tmp_path,
+    )
+
+    # 2. Tamper with the evidence on disk to add a rejection reason while maintaining structure
+    evidence_file = tmp_path / evidence.experiment_fingerprint / "evidence.json"
+    ev_data = json.loads(evidence_file.read_text(encoding="utf-8"))
+    ev_data["rejection_reasons"] = ["FAILED_ROBUSTNESS"]
+    evidence_file.write_text(json.dumps(ev_data, indent=2), encoding="utf-8")
+
+    # 3. Test C & D: Authoritative resolution fails closed when reconstituting tampered invalid candidate
+    with pytest.raises((PromotionEligibilityError, PromotionIntegrityError)):
+        resolve_promoted_candidate(candidate_id=cand_id, base_dir=tmp_path)
+
+    # 4. Test E: Ensure evaluate_production_decision cannot be invoked with un-resolved/invalid candidate
+    # Confirm resolve_authoritative_promoted_candidate returns ProductionBlocked
+    blocked = resolve_authoritative_promoted_candidate(
+        ProductionRuntimeConfig(
+            symbol="XAUUSD",
+            timeframe="5m",
+            candidate_id=cand_id,
+            research_dir=tmp_path,
+        )
+    )
+    assert hasattr(blocked, "reason")
+    assert blocked.reason in ("PromotionEligibilityError", "PromotionIntegrityError")

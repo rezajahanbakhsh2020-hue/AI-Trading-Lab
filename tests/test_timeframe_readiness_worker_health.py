@@ -1110,22 +1110,25 @@ def test_promotable_evidence_alone_cannot_bypass_production_checks(tmp_path: Pat
         rejection_reasons=(RejectionReason.FAILED_OOS,),
     )
     save_research_experiment(failing_evidence, base_dir=tmp_path)
-    persist_promoted_candidate_binding(
-        candidate_id="cand_failing_15m",
-        evidence=failing_evidence,
-        operational_stability_score=0.80,
-        base_dir=tmp_path,
-        governance_decision=MagicMock(qualified=True, decision_fingerprint="gov_fp_failing"),
-    )
 
-    # Resolution must fail closed with PromotionEligibilityError due to rejection reasons in evidence
-    with pytest.raises(PromotionEligibilityError, match="contains rejection reasons"):
-        resolve_promoted_candidate(
+    # Binding fails closed at persistence boundary because evidence fails canonical qualification
+    with pytest.raises(PromotionEligibilityError, match="failed qualification"):
+        persist_promoted_candidate_binding(
             candidate_id="cand_failing_15m",
-            symbol="XAUUSD",
-            timeframe="15m",
+            evidence=failing_evidence,
+            operational_stability_score=0.80,
             base_dir=tmp_path,
+            governance_decision=MagicMock(qualified=True, decision_fingerprint="gov_fp_failing", experiment_fingerprint=failing_evidence.experiment_fingerprint),
         )
+
+    # Candidate resolution fails closed (returns None) as no binding was created
+    resolved_failing = resolve_promoted_candidate(
+        candidate_id="cand_failing_15m",
+        symbol="XAUUSD",
+        timeframe="15m",
+        base_dir=tmp_path,
+    )
+    assert resolved_failing is None
 
     readiness_failing = verify_timeframe_production_readiness(
         symbol="XAUUSD",
@@ -1134,7 +1137,7 @@ def test_promotable_evidence_alone_cannot_bypass_production_checks(tmp_path: Pat
         research_dir=tmp_path,
     )
     assert readiness_failing["status"] == "BLOCKED"
-    assert readiness_failing["reason_code"] == "PromotionEligibilityError"
+    assert readiness_failing["reason_code"] == "PromotionUnavailable"
 
 
 def test_malformed_candidate_json_fails_closed_without_crashing_diagnostics(tmp_path: Path):

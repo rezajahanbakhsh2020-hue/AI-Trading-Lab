@@ -588,9 +588,10 @@ def validate_promotion_eligibility(
             raise ValueError(
                 f"Evidence '{evidence.evidence_id}' supplied governance decision is rejected."
             )
-        if getattr(governance_decision, "experiment_fingerprint", "") != evidence.experiment_fingerprint:
+        gov_exp_fp = getattr(governance_decision, "experiment_fingerprint", "")
+        if gov_exp_fp != evidence.experiment_fingerprint:
             raise ValueError(
-                f"Governance decision experiment fingerprint '{getattr(governance_decision, 'experiment_fingerprint', '')}' "
+                f"Governance decision experiment fingerprint '{gov_exp_fp}' "
                 f"does not match evidence fingerprint '{evidence.experiment_fingerprint}'."
             )
         if governance_decision_fingerprint is not None:
