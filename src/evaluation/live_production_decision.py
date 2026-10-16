@@ -584,20 +584,29 @@ def validate_promotion_eligibility(
         raise TypeError("evidence must be a ResearchEvidence instance.")
 
     if governance_decision is not None:
-        if not getattr(governance_decision, "qualified", False):
+        from src.evaluation.research_qualification import ResearchQualificationResult
+        if not isinstance(governance_decision, ResearchQualificationResult):
+            raise ValueError(
+                f"Evidence '{evidence.evidence_id}' supplied governance decision is not a ResearchQualificationResult instance."
+            )
+        if not governance_decision.qualified:
             raise ValueError(
                 f"Evidence '{evidence.evidence_id}' supplied governance decision is rejected."
             )
-        if getattr(governance_decision, "experiment_fingerprint", "") != evidence.experiment_fingerprint:
+        gov_exp_fp = getattr(governance_decision, "experiment_fingerprint", None)
+        if not gov_exp_fp or not isinstance(gov_exp_fp, str) or not gov_exp_fp.strip():
             raise ValueError(
-                f"Governance decision experiment fingerprint '{getattr(governance_decision, 'experiment_fingerprint', '')}' "
+                f"Governance decision missing valid non-empty experiment_fingerprint."
+            )
+        if gov_exp_fp.strip() != evidence.experiment_fingerprint:
+            raise ValueError(
+                f"Governance decision experiment fingerprint '{gov_exp_fp}' "
                 f"does not match evidence fingerprint '{evidence.experiment_fingerprint}'."
             )
         if governance_decision_fingerprint is not None:
-            dec_fp = getattr(governance_decision, "decision_fingerprint", None)
-            if dec_fp != governance_decision_fingerprint:
+            if governance_decision.decision_fingerprint != governance_decision_fingerprint:
                 raise ValueError(
-                    f"Governance decision fingerprint '{dec_fp}' does not match "
+                    f"Governance decision fingerprint '{governance_decision.decision_fingerprint}' does not match "
                     f"expected fingerprint '{governance_decision_fingerprint}'."
                 )
 
@@ -612,6 +621,36 @@ def validate_promotion_eligibility(
         raise ValueError(
             f"Evidence '{evidence.evidence_id}' contains rejection reasons: {orig_reasons}"
         )
+
+    if policy.require_robustness_pass:
+        rv = getattr(evidence, "robustness_verdict", None)
+        if isinstance(rv, dict) and (rv.get("passed") is False or rv.get("is_robust") is False):
+            raise ValueError(
+                f"Evidence '{evidence.evidence_id}' robustness verdict explicitly failed."
+            )
+        try:
+            from src.evaluation.research_robustness import assess_research_robustness
+            rob_assessment = assess_research_robustness(evidence)
+            if rob_assessment.experiment_fingerprint != evidence.experiment_fingerprint:
+                raise ValueError(
+                    f"Robustness assessment experiment_fingerprint '{rob_assessment.experiment_fingerprint}' "
+                    f"does not match evidence experiment_fingerprint '{evidence.experiment_fingerprint}'."
+                )
+            if rob_assessment.evidence_fingerprint != evidence.evidence_id:
+                raise ValueError(
+                    f"Robustness assessment evidence_fingerprint '{rob_assessment.evidence_fingerprint}' "
+                    f"does not match evidence_id '{evidence.evidence_id}'."
+                )
+            if not rob_assessment.is_robust:
+                raise ValueError(
+                    f"Evidence '{evidence.evidence_id}' canonical robustness assessment failed (is_robust=False)."
+                )
+        except ValueError:
+            raise
+        except Exception as exc:
+            raise ValueError(
+                f"Failed to produce or validate canonical robustness assessment for evidence '{evidence.evidence_id}': {exc}"
+            ) from exc
 
     if policy.max_evidence_age_days is not None and evidence.created_at_utc:
         try:
