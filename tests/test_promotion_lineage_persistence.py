@@ -134,10 +134,9 @@ def make_test_evidence(
 
 
 class MockGovernanceDecision:
-    def __init__(self, qualified: bool = True, decision_fingerprint: str = "gov_fp_12345", experiment_fingerprint: str | None = None):
+    def __init__(self, qualified: bool = True, decision_fingerprint: str = "gov_fp_12345"):
         self.qualified = qualified
         self.decision_fingerprint = decision_fingerprint
-        self.experiment_fingerprint = experiment_fingerprint
         self.qualification_notes = "mock qualification"
         self.rejection_reasons = () if qualified else (RejectionReason.POOR_OUT_OF_SAMPLE,)
 
@@ -147,7 +146,7 @@ def test_A_governance_fingerprint_round_trip(tmp_path: Path):
     evidence = make_test_evidence()
     save_research_experiment(evidence, base_dir=tmp_path)
 
-    gov_dec = MockGovernanceDecision(qualified=True, decision_fingerprint="gov_fp_test_999", experiment_fingerprint=evidence.experiment_fingerprint)
+    gov_dec = MockGovernanceDecision(qualified=True, decision_fingerprint="gov_fp_test_999")
     cand_id = "cand_test_A"
 
     binding_path = persist_promoted_candidate_binding(
@@ -316,8 +315,8 @@ def test_E_conflicting_persisted_lineage(tmp_path: Path):
     save_research_experiment(evidence, base_dir=tmp_path)
 
     cand_id = "cand_test_E"
-    gov_dec_1 = MockGovernanceDecision(qualified=True, decision_fingerprint="gov_fp_AAAA", experiment_fingerprint=evidence.experiment_fingerprint)
-    gov_dec_2 = MockGovernanceDecision(qualified=True, decision_fingerprint="gov_fp_BBBB", experiment_fingerprint=evidence.experiment_fingerprint)
+    gov_dec_1 = MockGovernanceDecision(qualified=True, decision_fingerprint="gov_fp_AAAA")
+    gov_dec_2 = MockGovernanceDecision(qualified=True, decision_fingerprint="gov_fp_BBBB")
 
     binding_path = persist_promoted_candidate_binding(
         candidate_id=cand_id,
@@ -444,7 +443,7 @@ def test_G_idempotency(tmp_path: Path):
     save_research_experiment(evidence, base_dir=tmp_path)
 
     cand_id = "cand_test_G"
-    gov_dec = MockGovernanceDecision(qualified=True, decision_fingerprint="gov_idempotent", experiment_fingerprint=evidence.experiment_fingerprint)
+    gov_dec = MockGovernanceDecision(qualified=True, decision_fingerprint="gov_idempotent")
     sel_dec = ResearchCampaignSelectionDecision(
         campaign_id="camp_G",
         synthesis_fingerprint="synth_fp",

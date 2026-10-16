@@ -588,10 +588,9 @@ def validate_promotion_eligibility(
             raise ValueError(
                 f"Evidence '{evidence.evidence_id}' supplied governance decision is rejected."
             )
-        gov_exp_fp = getattr(governance_decision, "experiment_fingerprint", "")
-        if gov_exp_fp != evidence.experiment_fingerprint:
+        if getattr(governance_decision, "experiment_fingerprint", "") != evidence.experiment_fingerprint:
             raise ValueError(
-                f"Governance decision experiment fingerprint '{gov_exp_fp}' "
+                f"Governance decision experiment fingerprint '{getattr(governance_decision, 'experiment_fingerprint', '')}' "
                 f"does not match evidence fingerprint '{evidence.experiment_fingerprint}'."
             )
         if governance_decision_fingerprint is not None:
@@ -613,6 +612,13 @@ def validate_promotion_eligibility(
         raise ValueError(
             f"Evidence '{evidence.evidence_id}' contains rejection reasons: {orig_reasons}"
         )
+
+    if policy.require_robustness_pass:
+        rv = getattr(evidence, "robustness_verdict", None)
+        if isinstance(rv, dict) and (rv.get("passed") is False or rv.get("is_robust") is False):
+            raise ValueError(
+                f"Evidence '{evidence.evidence_id}' robustness verdict explicitly failed."
+            )
 
     if policy.max_evidence_age_days is not None and evidence.created_at_utc:
         try:

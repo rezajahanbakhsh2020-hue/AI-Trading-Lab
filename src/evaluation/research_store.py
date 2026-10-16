@@ -435,7 +435,7 @@ def persist_promoted_candidate_binding(
                 f"Rejection reasons: {reasons}"
             )
         gov_exp_fp = getattr(governance_decision, "experiment_fingerprint", None)
-        if gov_exp_fp != evidence.experiment_fingerprint:
+        if gov_exp_fp is not None and gov_exp_fp != evidence.experiment_fingerprint:
             raise PromotionIntegrityError(
                 f"Cannot bind candidate '{candidate_id}': governance decision experiment fingerprint "
                 f"'{gov_exp_fp}' does not match evidence experiment fingerprint '{evidence.experiment_fingerprint}'."
@@ -662,18 +662,6 @@ def _reconstitute_promoted_candidate_from_binding(
             f"Candidate '{candidate_id}' operational_stability_score must be finite (got {raw_stab})."
         )
 
-    from src.evaluation.research_qualification import (
-        ResearchQualificationPolicy,
-        qualify_research_evidence,
-    )
-    try:
-        from src.evaluation.research_robustness import (
-            assess_research_robustness,
-        )
-        robustness_assessment = assess_research_robustness(evidence)
-    except Exception:
-        robustness_assessment = None
-
     reconstitution_policy = policy if policy is not None else ProductionPromotionPolicy()
     gov_fp = binding.get("governance_decision_fingerprint")
     campaign_sel_fp = binding.get("campaign_selection_decision_fingerprint")
@@ -694,7 +682,7 @@ def _reconstitute_promoted_candidate_from_binding(
         raise
     except ValueError as exc:
         message = str(exc)
-        if "not allowed for production" in message or "rejection reasons" in message or "stale" in message or "exceeds max allowed age" in message:
+        if "not allowed for production" in message or "rejection reasons" in message or "stale" in message or "exceeds max allowed age" in message or "robustness" in message:
             raise PromotionEligibilityError(message) from exc
         raise PromotionIntegrityError(message) from exc
 

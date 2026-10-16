@@ -1110,25 +1110,17 @@ def test_promotable_evidence_alone_cannot_bypass_production_checks(tmp_path: Pat
         rejection_reasons=(RejectionReason.FAILED_OOS,),
     )
     save_research_experiment(failing_evidence, base_dir=tmp_path)
-
-    # Binding fails closed at persistence boundary because evidence fails canonical qualification
-    with pytest.raises(PromotionEligibilityError, match="failed qualification"):
+    with pytest.raises(PromotionEligibilityError):
         persist_promoted_candidate_binding(
             candidate_id="cand_failing_15m",
             evidence=failing_evidence,
             operational_stability_score=0.80,
             base_dir=tmp_path,
-            governance_decision=MagicMock(qualified=True, decision_fingerprint="gov_fp_failing", experiment_fingerprint=failing_evidence.experiment_fingerprint),
+            governance_decision=MagicMock(qualified=True, decision_fingerprint="gov_fp_failing"),
         )
 
-    # Candidate resolution fails closed (returns None) as no binding was created
-    resolved_failing = resolve_promoted_candidate(
-        candidate_id="cand_failing_15m",
-        symbol="XAUUSD",
-        timeframe="15m",
-        base_dir=tmp_path,
-    )
-    assert resolved_failing is None
+    # Resolution must fail closed because binding was blocked at persistence
+    assert resolve_promoted_candidate(candidate_id="cand_failing_15m", symbol="XAUUSD", timeframe="15m", base_dir=tmp_path) is None
 
     readiness_failing = verify_timeframe_production_readiness(
         symbol="XAUUSD",

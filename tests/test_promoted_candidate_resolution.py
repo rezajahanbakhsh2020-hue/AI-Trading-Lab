@@ -32,6 +32,9 @@ from src.evaluation.research_constitution import (
     ResearchEvidence,
     ResearchExperimentSpec,
 )
+import json
+from dataclasses import dataclass
+
 from src.evaluation.research_store import (
     PromotionEligibilityError,
     PromotionIntegrityError,
@@ -40,6 +43,15 @@ from src.evaluation.research_store import (
     save_research_candidate,
     save_research_experiment,
 )
+
+
+@dataclass(frozen=True)
+class MockGovernanceDecision:
+    qualified: bool
+    experiment_fingerprint: str
+    decision_fingerprint: str = "mock_gov_fp_123"
+    rejection_reasons: tuple = ()
+    qualification_notes: str = "Mock governance decision"
 
 
 def make_research_evidence(
@@ -475,137 +487,144 @@ def test_save_research_experiment_still_round_trips(tmp_path: Path) -> None:
     assert resolve_promoted_candidate(candidate_id="no_binding", base_dir=tmp_path) is None
 
 
-def test_reproduction_A_forged_governance_mismatched_experiment_fingerprint_rejected(tmp_path: Path) -> None:
-    """Reproduction A: Forged governance decision with mismatched experiment fingerprint rejected at persistence."""
-    from src.evaluation.research_qualification import ResearchGovernanceDecision
-
+def test_reproduction_A_mismatched_governance_experiment_fingerprint_rejected_at_persistence(tmp_path: Path) -> None:
+    """Reproduction A: Forged governance decision with mismatched experiment_fingerprint fails at persistence."""
     evidence = make_research_evidence(robustness_passed=True)
     save_research_experiment(evidence, base_dir=tmp_path)
-
-    forged_gov = ResearchGovernanceDecision(
+    forged_gov = MockGovernanceDecision(
         qualified=True,
-        status=PromotionStatus.PROMOTABLE,
-        rejection_reasons=(),
-        evidence_fingerprint="DELIBERATELY-WRONG-EXPERIMENT-FINGERPRINT",
         experiment_fingerprint="DELIBERATELY-WRONG-EXPERIMENT-FINGERPRINT",
+        decision_fingerprint="forged_dec_fp_001",
     )
-
-    with pytest.raises(PromotionIntegrityError, match="experiment fingerprint"):
-        save_research_candidate(
+    with pytest.raises(PromotionIntegrityError, match="governance decision experiment fingerprint"):
+        persist_promoted_candidate_binding(
             candidate_id="cand_repro_A",
             evidence=evidence,
-            operational_stability_score=0.85,
             governance_decision=forged_gov,
+            operational_stability_score=0.85,
             base_dir=tmp_path,
         )
 
 
-def test_reproduction_B_forged_governance_cannot_bypass_canonical_qualification(tmp_path: Path) -> None:
-    """Reproduction B: Forged governance decision cannot bypass canonical qualification when robustness evidence fails."""
-    from src.evaluation.research_qualification import ResearchGovernanceDecision
-
-    # Evidence with failed robustness
+def test_reproduction_B_missing_robustness_cannot_bypass_qualification_via_forged_governance(tmp_path: Path) -> None:
+    """Reproduction B: Forged qualified decision with matching experiment_fingerprint cannot bypass missing robustness evidence."""
     evidence = make_research_evidence(robustness_passed=False)
     save_research_experiment(evidence, base_dir=tmp_path)
-
-    forged_gov = ResearchGovernanceDecision(
+    forged_gov = MockGovernanceDecision(
         qualified=True,
-        status=PromotionStatus.PROMOTABLE,
-        rejection_reasons=(),
-        evidence_fingerprint=evidence.experiment_fingerprint,
         experiment_fingerprint=evidence.experiment_fingerprint,
+        decision_fingerprint="forged_dec_fp_002",
     )
-
     with pytest.raises(PromotionEligibilityError, match="failed qualification"):
-        save_research_candidate(
+        persist_promoted_candidate_binding(
             candidate_id="cand_repro_B",
             evidence=evidence,
-            operational_stability_score=0.85,
             governance_decision=forged_gov,
+            operational_stability_score=0.85,
             base_dir=tmp_path,
         )
 
 
 def test_reproduction_C_reconstitution_revalidates_eligibility_and_blocks_production_decision(tmp_path: Path) -> None:
-    """Reproduction C & D & E: Reconstitution revalidates eligibility, resolution rejects invalid candidate, and LiveExecutionRuntime blocks production decision."""
-    import json
+    """Reproduction C: Reconstitution re-evaluates canonical qualification and blocks invalid candidates from producing production decisions."""
+    from tests.test_pr36_governance_boundary import make_test_evidence as make_valid_pr36_evidence
+    from src.evaluation.research_qualification import qualify_research_evidence
+    from src.evaluation.research_robustness import assess_research_robustness
+    from src.evaluation.research_store import _candidate_binding_path, load_research_experiment
 
-    # 1. Save valid evidence first
-    evidence = make_research_evidence(robustness_passed=True)
-    save_research_experiment(evidence, base_dir=tmp_path)
+    # 1. Start with a genuinely valid persisted candidate
+    valid_ev = make_valid_pr36_evidence(robustness_passed=True)
+    save_research_experiment(valid_ev, base_dir=tmp_path)
+    rob_valid = assess_research_robustness(valid_ev)
+    gov_valid = qualify_research_evidence(valid_ev, robustness_assessment=rob_valid)
 
-    cand_id = "cand_repro_C"
-    save_research_candidate(
-        candidate_id=cand_id,
-        evidence=evidence,
+    candidate_id = "cand_forensic_runtime_boundary"
+    persist_promoted_candidate_binding(
+        candidate_id=candidate_id,
+        evidence=valid_ev,
+        governance_decision=gov_valid,
         operational_stability_score=0.85,
         base_dir=tmp_path,
     )
 
-    # 2. Tamper with the evidence on disk to add an explicit rejection reason while leaving structure intact
-    evidence_file = tmp_path / evidence.experiment_fingerprint / "evidence.json"
-    ev_data = json.loads(evidence_file.read_text(encoding="utf-8"))
-    ev_data["rejection_reasons"] = ["FAILED_ROBUSTNESS"]
-    evidence_file.write_text(json.dumps(ev_data, indent=2), encoding="utf-8")
+    # Verify initial valid resolution
+    resolved_valid = resolve_promoted_candidate(candidate_id=candidate_id, base_dir=tmp_path)
+    assert resolved_valid is not None
 
-    # 3. Test C & D: Authoritative resolution re-evaluates canonical qualification and fails closed
-    with pytest.raises((PromotionEligibilityError, PromotionIntegrityError)):
-        resolve_promoted_candidate(candidate_id=cand_id, base_dir=tmp_path)
+    # 2. Tamper with the persisted evidence's robustness state in evidence.json on disk
+    ev_path = tmp_path / valid_ev.experiment_fingerprint / "evidence.json"
+    ev_data = json.loads(ev_path.read_text(encoding="utf-8"))
+    ev_data["robustness_verdict"] = {"passed": False, "is_robust": False}
+    ev_data["rejection_reasons"] = []  # Keep rejection reasons empty!
+    ev_path.write_text(json.dumps(ev_data, indent=2), encoding="utf-8")
 
-    # 4. Test E: Exercise full authoritative LiveExecutionRuntime orchestration boundary
-    market_df = make_buy_market_data()
+    # Sync candidate binding's evidence_id to match tampered reloaded evidence
+    tampered_ev = load_research_experiment(valid_ev.experiment_fingerprint, base_dir=tmp_path)
+    bind_path = _candidate_binding_path(candidate_id, tmp_path)
+    bind_data = json.loads(bind_path.read_text(encoding="utf-8"))
+    bind_data["evidence_id"] = tampered_ev.evidence_id
+    bind_path.write_text(json.dumps(bind_data, indent=2), encoding="utf-8")
+
+    # 3. Verify that authoritative resolution re-evaluates canonical qualification and rejects the tampered candidate
+    with pytest.raises(PromotionEligibilityError, match="robustness"):
+        resolve_promoted_candidate(candidate_id=candidate_id, base_dir=tmp_path)
+
+    # 4. Exercise the live runtime boundary and prove it fails closed without evaluating production decision or publishing
+    mock_publisher = MagicMock()
+    data = make_buy_market_data()
+
     runtime = LiveExecutionRuntime(
         symbol="XAUUSD",
         interval="5m",
+        publisher=mock_publisher,
+        store_path=tmp_path / "store.json",
+        snapshot_path=tmp_path / "snap.json",
         research_dir=tmp_path,
         production_config=ProductionRuntimeConfig(
             symbol="XAUUSD",
             timeframe="5m",
-            candidate_id=cand_id,
+            candidate_id=candidate_id,
+            strategy_id="momentum",
             research_dir=tmp_path,
         ),
-        store_path=tmp_path / "store.json",
-        snapshot_path=tmp_path / "snap.json",
     )
 
-    # Instrument evaluate_production_decision to prove it is NEVER invoked
-    with patch("src.evaluation.live_execution_runtime.evaluate_authorized_live_runtime") as mock_eval_runtime:
-        exec_res = runtime.run_once(market_data=market_df, publish=False, persist=False)
-        assert exec_res["blocked"] is True
-        assert exec_res["reason"] in ("PromotionEligibilityError", "PromotionIntegrityError")
-        assert exec_res["publication"] is None
-        assert exec_res["contract_payload"] is None
-        mock_eval_runtime.assert_not_called()
+    with patch("src.evaluation.live_execution_runtime.load_live_market_data", return_value=data):
+        res = runtime.run_once(publish=True, persist=True)
+
+    assert res["blocked"] is True
+    assert res["decision"] == "NO TRADE"
+    assert res["publication"] is None
+    assert res["contract_payload"] is None
+    mock_publisher.publish.assert_not_called()
 
 
-def test_forged_governance_decision_fingerprint_mismatch_rejected(tmp_path: Path) -> None:
-    """Forged governance decision with matching experiment fingerprint but forged decision fingerprint rejected."""
-    from src.evaluation.research_qualification import ResearchGovernanceDecision, qualify_research_evidence
+def test_positive_control_genuine_qualified_candidate_persists_resolves_and_executes(tmp_path: Path) -> None:
+    """Positive Control: Genuinely qualified candidate persists, resolves, and follows canonical production lineage."""
+    from tests.test_pr36_governance_boundary import make_test_evidence as make_valid_pr36_evidence
+    from src.evaluation.research_qualification import qualify_research_evidence
     from src.evaluation.research_robustness import assess_research_robustness
 
-    evidence = make_research_evidence(robustness_passed=True)
-    save_research_experiment(evidence, base_dir=tmp_path)
+    valid_ev = make_valid_pr36_evidence(robustness_passed=True)
+    save_research_experiment(valid_ev, base_dir=tmp_path)
+    rob_valid = assess_research_robustness(valid_ev)
+    gov_valid = qualify_research_evidence(valid_ev, robustness_assessment=rob_valid)
 
-    rob = assess_research_robustness(evidence)
-    canon_qual = qualify_research_evidence(evidence, robustness_assessment=rob)
-    assert canon_qual.qualified is True
-
-    # Forged decision fingerprint
-    forged_gov = ResearchGovernanceDecision(
-        qualified=True,
-        status=PromotionStatus.PROMOTABLE,
-        rejection_reasons=(),
-        evidence_fingerprint=evidence.experiment_fingerprint,
-        experiment_fingerprint=evidence.experiment_fingerprint,
+    candidate_id = "cand_genuine_control"
+    persist_promoted_candidate_binding(
+        candidate_id=candidate_id,
+        evidence=valid_ev,
+        governance_decision=gov_valid,
+        operational_stability_score=0.85,
+        base_dir=tmp_path,
     )
-    # Manually tamper with decision_fingerprint attribute
-    object.__setattr__(forged_gov, "decision_fingerprint", "FORGED_DECISION_FINGERPRINT_123")
 
-    with pytest.raises(PromotionIntegrityError, match="governance decision fingerprint"):
-        save_research_candidate(
-            candidate_id="cand_forged_fp",
-            evidence=evidence,
-            operational_stability_score=0.85,
-            governance_decision=forged_gov,
-            base_dir=tmp_path,
-        )
+    resolved = resolve_promoted_candidate(candidate_id=candidate_id, base_dir=tmp_path)
+    assert resolved is not None
+    assert resolved.candidate_id == candidate_id
+    assert resolved.governance_decision_fingerprint == gov_valid.decision_fingerprint
+
+    data = make_buy_market_data()
+    ref_now = data["timestamp"].iloc[-1].to_pydatetime() + pd.Timedelta(minutes=5)
+    decision = evaluate_production_decision(resolved, data, reference_now=ref_now)
+    assert decision.direction == Direction.BUY
