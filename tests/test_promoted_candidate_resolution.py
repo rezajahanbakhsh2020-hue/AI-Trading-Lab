@@ -527,8 +527,7 @@ def test_reproduction_B_forged_governance_cannot_bypass_canonical_qualification(
 
 
 def test_reproduction_C_reconstitution_revalidates_eligibility_and_blocks_production_decision(tmp_path: Path) -> None:
-    """Reproduction C & D & E: Reconstitution revalidates eligibility, resolution rejects invalid candidate, and evaluate_production_decision cannot create decision."""
-    from src.evaluation.research_store import load_candidate_binding, _candidate_binding_path
+    """Reproduction C & D & E: Reconstitution revalidates eligibility, resolution rejects invalid candidate, and LiveExecutionRuntime blocks production decision."""
     import json
 
     # 1. Save valid evidence first
@@ -543,25 +542,70 @@ def test_reproduction_C_reconstitution_revalidates_eligibility_and_blocks_produc
         base_dir=tmp_path,
     )
 
-    # 2. Tamper with the evidence on disk to add a rejection reason while maintaining structure
+    # 2. Tamper with the evidence on disk to add an explicit rejection reason while leaving structure intact
     evidence_file = tmp_path / evidence.experiment_fingerprint / "evidence.json"
     ev_data = json.loads(evidence_file.read_text(encoding="utf-8"))
     ev_data["rejection_reasons"] = ["FAILED_ROBUSTNESS"]
     evidence_file.write_text(json.dumps(ev_data, indent=2), encoding="utf-8")
 
-    # 3. Test C & D: Authoritative resolution fails closed when reconstituting tampered invalid candidate
+    # 3. Test C & D: Authoritative resolution re-evaluates canonical qualification and fails closed
     with pytest.raises((PromotionEligibilityError, PromotionIntegrityError)):
         resolve_promoted_candidate(candidate_id=cand_id, base_dir=tmp_path)
 
-    # 4. Test E: Ensure evaluate_production_decision cannot be invoked with un-resolved/invalid candidate
-    # Confirm resolve_authoritative_promoted_candidate returns ProductionBlocked
-    blocked = resolve_authoritative_promoted_candidate(
-        ProductionRuntimeConfig(
+    # 4. Test E: Exercise full authoritative LiveExecutionRuntime orchestration boundary
+    market_df = make_buy_market_data()
+    runtime = LiveExecutionRuntime(
+        symbol="XAUUSD",
+        interval="5m",
+        research_dir=tmp_path,
+        production_config=ProductionRuntimeConfig(
             symbol="XAUUSD",
             timeframe="5m",
             candidate_id=cand_id,
             research_dir=tmp_path,
-        )
+        ),
+        store_path=tmp_path / "store.json",
+        snapshot_path=tmp_path / "snap.json",
     )
-    assert hasattr(blocked, "reason")
-    assert blocked.reason in ("PromotionEligibilityError", "PromotionIntegrityError")
+
+    # Instrument evaluate_production_decision to prove it is NEVER invoked
+    with patch("src.evaluation.live_execution_runtime.evaluate_authorized_live_runtime") as mock_eval_runtime:
+        exec_res = runtime.run_once(market_data=market_df, publish=False, persist=False)
+        assert exec_res["blocked"] is True
+        assert exec_res["reason"] in ("PromotionEligibilityError", "PromotionIntegrityError")
+        assert exec_res["publication"] is None
+        assert exec_res["contract_payload"] is None
+        mock_eval_runtime.assert_not_called()
+
+
+def test_forged_governance_decision_fingerprint_mismatch_rejected(tmp_path: Path) -> None:
+    """Forged governance decision with matching experiment fingerprint but forged decision fingerprint rejected."""
+    from src.evaluation.research_qualification import ResearchGovernanceDecision, qualify_research_evidence
+    from src.evaluation.research_robustness import assess_research_robustness
+
+    evidence = make_research_evidence(robustness_passed=True)
+    save_research_experiment(evidence, base_dir=tmp_path)
+
+    rob = assess_research_robustness(evidence)
+    canon_qual = qualify_research_evidence(evidence, robustness_assessment=rob)
+    assert canon_qual.qualified is True
+
+    # Forged decision fingerprint
+    forged_gov = ResearchGovernanceDecision(
+        qualified=True,
+        status=PromotionStatus.PROMOTABLE,
+        rejection_reasons=(),
+        evidence_fingerprint=evidence.experiment_fingerprint,
+        experiment_fingerprint=evidence.experiment_fingerprint,
+    )
+    # Manually tamper with decision_fingerprint attribute
+    object.__setattr__(forged_gov, "decision_fingerprint", "FORGED_DECISION_FINGERPRINT_123")
+
+    with pytest.raises(PromotionIntegrityError, match="governance decision fingerprint"):
+        save_research_candidate(
+            candidate_id="cand_forged_fp",
+            evidence=evidence,
+            operational_stability_score=0.85,
+            governance_decision=forged_gov,
+            base_dir=tmp_path,
+        )

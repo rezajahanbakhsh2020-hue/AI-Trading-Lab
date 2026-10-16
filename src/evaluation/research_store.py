@@ -402,9 +402,21 @@ def persist_promoted_candidate_binding(
         except Exception:
             robustness_assessment = None
 
+    from src.evaluation.live_production_decision import ProductionPromotionPolicy
+    if isinstance(policy, ProductionPromotionPolicy):
+        qual_policy = ResearchQualificationPolicy(
+            allowed_statuses=policy.allowed_statuses,
+            max_evidence_age_days=policy.max_evidence_age_days,
+            require_robustness=policy.require_robustness_pass,
+        )
+    elif isinstance(policy, ResearchQualificationPolicy):
+        qual_policy = policy
+    else:
+        qual_policy = ResearchQualificationPolicy()
+
     qualification = qualify_research_evidence(
         evidence,
-        policy=policy if isinstance(policy, ResearchQualificationPolicy) else None,
+        policy=qual_policy,
         robustness_assessment=robustness_assessment,
     )
     if not qualification.qualified:
@@ -415,11 +427,12 @@ def persist_promoted_candidate_binding(
         )
 
     if governance_decision is not None:
-        if not getattr(governance_decision, "qualified", False):
+        if getattr(governance_decision, "qualified", None) != qualification.qualified:
             reasons = [r.value if isinstance(r, Enum) else str(r) for r in getattr(governance_decision, "rejection_reasons", ())]
             raise PromotionEligibilityError(
-                f"Cannot bind candidate '{candidate_id}': governance decision failed qualification "
-                f"({getattr(governance_decision, 'qualification_notes', '')}). Rejection reasons: {reasons}"
+                f"Cannot bind candidate '{candidate_id}': governance decision qualification status "
+                f"({getattr(governance_decision, 'qualified', None)}) does not match canonical qualification status ({qualification.qualified}). "
+                f"Rejection reasons: {reasons}"
             )
         gov_exp_fp = getattr(governance_decision, "experiment_fingerprint", None)
         if gov_exp_fp != evidence.experiment_fingerprint:
@@ -433,6 +446,14 @@ def persist_promoted_candidate_binding(
                 f"Cannot bind candidate '{candidate_id}': governance decision missing valid decision_fingerprint."
             )
         gov_fp = gov_fp.strip()
+        from src.evaluation.research_qualification import ResearchQualificationResult
+        if isinstance(governance_decision, ResearchQualificationResult):
+            if governance_decision.decision_fingerprint != qualification.decision_fingerprint:
+                raise PromotionIntegrityError(
+                    f"Cannot bind candidate '{candidate_id}': governance decision fingerprint "
+                    f"'{governance_decision.decision_fingerprint}' does not match canonical qualification decision_fingerprint "
+                    f"'{qualification.decision_fingerprint}'."
+                )
     else:
         gov_fp = qualification.decision_fingerprint
 
@@ -641,7 +662,39 @@ def _reconstitute_promoted_candidate_from_binding(
             f"Candidate '{candidate_id}' operational_stability_score must be finite (got {raw_stab})."
         )
 
+    from src.evaluation.research_qualification import (
+        ResearchQualificationPolicy,
+        qualify_research_evidence,
+    )
+    try:
+        from src.evaluation.research_robustness import (
+            assess_research_robustness,
+        )
+        robustness_assessment = assess_research_robustness(evidence)
+    except Exception:
+        robustness_assessment = None
+
     reconstitution_policy = policy if policy is not None else ProductionPromotionPolicy()
+
+    # Map ProductionPromotionPolicy to ResearchQualificationPolicy
+    qual_policy = ResearchQualificationPolicy(
+        allowed_statuses=reconstitution_policy.allowed_statuses,
+        max_evidence_age_days=reconstitution_policy.max_evidence_age_days,
+        require_robustness=reconstitution_policy.require_robustness_pass,
+    )
+
+    qualification = qualify_research_evidence(
+        evidence,
+        policy=qual_policy,
+        robustness_assessment=robustness_assessment,
+    )
+    if not qualification.qualified:
+        reasons = [r.value if isinstance(r, Enum) else str(r) for r in qualification.rejection_reasons]
+        raise PromotionEligibilityError(
+            f"Cannot reconstitute candidate '{candidate_id}': reloaded evidence '{evidence.evidence_id}' "
+            f"failed canonical qualification ({qualification.qualification_notes}). Rejection reasons: {reasons}"
+        )
+
     gov_fp = binding.get("governance_decision_fingerprint")
     campaign_sel_fp = binding.get("campaign_selection_decision_fingerprint")
     try:
