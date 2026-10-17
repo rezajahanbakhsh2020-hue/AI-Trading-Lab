@@ -153,16 +153,19 @@ class TestP1WorkerReadinessAndPublicationForensics:
         assert res2["published"] is False
         assert "Missing PROJECT2_PUBLISH_URL" in res2["reason"]
 
-    def test_worker_resolves_candidate_for_exact_timeframe(self):
+    def test_worker_resolves_candidate_for_exact_timeframe(self, tmp_path):
         """7. Verify readiness check resolves candidates for exact timeframe without borrowing across timeframes."""
+        from tests.test_continuous_live_runtime import persist_momentum_candidate
+        cand_id = persist_momentum_candidate(tmp_path, candidate_id="cand_moving_average_5m", symbol="XAUUSD", timeframe="5m")
+
         res_5m = verify_timeframe_production_readiness(
-            symbol="XAUUSD", timeframe="5m", candidate_id="cand_moving_average_5m", research_dir=DEFAULT_RESEARCH_DIR
+            symbol="XAUUSD", timeframe="5m", candidate_id=cand_id, research_dir=tmp_path
         )
         assert res_5m["status"] == "READY"
-        assert res_5m["candidate_id"] == "cand_moving_average_5m"
+        assert res_5m["candidate_id"] == cand_id
 
         res_1m = verify_timeframe_production_readiness(
-            symbol="XAUUSD", timeframe="1m", candidate_id=None, research_dir=DEFAULT_RESEARCH_DIR
+            symbol="XAUUSD", timeframe="1m", candidate_id=None, research_dir=tmp_path
         )
         assert res_1m["status"] == "BLOCKED"
         assert res_1m["reason_code"] == "PromotionUnavailable"

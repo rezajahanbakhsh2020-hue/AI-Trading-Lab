@@ -6,6 +6,38 @@ from src.evaluation.live_runtime import (
 )
 
 
+def _make_synth_candidate(strategy_name="momentum", timeframe="5m", stability_score=0.85, fast_window=10, slow_window=20):
+    from tests.test_production_decision_integrity import make_promoted_evidence
+    from src.evaluation.research_qualification import qualify_research_evidence
+    from src.evaluation.research_robustness import assess_research_robustness
+    from src.evaluation.live_production_decision import PromotedCandidateArtifact
+    ev = make_promoted_evidence(timeframe=timeframe, strategy_name=strategy_name)
+    rob = assess_research_robustness(ev)
+    gov = qualify_research_evidence(ev, robustness_assessment=rob)
+    params = {"fast_window": fast_window, "slow_window": slow_window, "stop_loss_pct": 0.01, "take_profit_pct": 0.02} if strategy_name in ("moving_average", "baseline") else {"momentum_window": 10, "stop_loss_pct": 0.01, "take_profit_pct": 0.02}
+    return PromotedCandidateArtifact(
+        candidate_id=f"cand_{strategy_name}_{timeframe}",
+        strategy_name=strategy_name,
+        strategy_version="1.0",
+        evidence=ev,
+        symbol="XAUUSD",
+        timeframe=timeframe,
+        operational_stability_score=stability_score,
+        parameters=params,
+        governance_decision=gov,
+        governance_decision_fingerprint=gov.decision_fingerprint,
+    )
+
+
+@pytest.fixture(autouse=True)
+def mock_default_resolve_promoted_candidate(monkeypatch):
+    def mock_resolve(*args, candidate_id=None, strategy_id=None, symbol=None, timeframe=None, base_dir=None, **kwargs):
+        strat = strategy_id or "momentum"
+        tf = timeframe or "5m"
+        return _make_synth_candidate(strategy_name=strat, timeframe=tf)
+
+    monkeypatch.setattr("src.evaluation.live_runtime.resolve_promoted_candidate", mock_resolve)
+    monkeypatch.setattr("src.evaluation.research_store.resolve_promoted_candidate", mock_resolve)
 
 
 def _data() -> pd.DataFrame:

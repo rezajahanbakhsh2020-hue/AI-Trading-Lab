@@ -79,41 +79,50 @@ def test_seven_timeframe_canonical_ladder_and_1m_support():
     assert res_1m["reason_code"] == "PromotionUnavailable"
 
 
-def test_1m_readiness_and_non_borrowing_isolation():
+def test_1m_readiness_and_non_borrowing_isolation(tmp_path):
     """Verify 1m fails closed when its candidate is missing and does not borrow 5m candidates."""
+    from tests.test_continuous_live_runtime import persist_momentum_candidate
+    cand_5m_id = persist_momentum_candidate(tmp_path, candidate_id="cand_moving_average_5m", symbol="XAUUSD", timeframe="5m")
+
     matrix = verify_all_canonical_timeframes_readiness(
         symbol="XAUUSD",
         candidate_ids={
-            "5m": "cand_moving_average_5m",
+            "5m": cand_5m_id,
             # 1m candidate intentionally missing
         },
+        research_dir=tmp_path,
     )
 
     assert matrix["5m"]["status"] == "READY"
-    assert matrix["5m"]["candidate_id"] == "cand_moving_average_5m"
+    assert matrix["5m"]["candidate_id"] == cand_5m_id
 
     assert matrix["1m"]["status"] == "BLOCKED"
     assert matrix["1m"]["reason_code"] == "PromotionUnavailable"
     assert matrix["1m"]["candidate_id"] is None
 
 
-def test_canonical_timeframe_casing_normalization():
+def test_canonical_timeframe_casing_normalization(tmp_path):
     """Verify casing/normalization rules (e.g. 1d vs 1D, 4h vs 4H)."""
+    from tests.test_continuous_live_runtime import persist_momentum_candidate
+    cand_1d_id = persist_momentum_candidate(tmp_path, candidate_id="cand_moving_average_1d", symbol="XAUUSD", timeframe="1d")
+
     # 1D uppercase request with 1d lowercase candidate artifact
     res_1D = verify_timeframe_production_readiness(
         symbol="XAUUSD",
         timeframe="1D",
-        candidate_id="cand_moving_average_1d",
+        candidate_id=cand_1d_id,
+        research_dir=tmp_path,
     )
     assert res_1D["status"] == "READY"
     assert res_1D["reason_code"] == "READY"
-    assert res_1D["candidate_id"] == "cand_moving_average_1d"
+    assert res_1D["candidate_id"] == cand_1d_id
 
     # 1d lowercase request with 1d lowercase candidate artifact
     res_1d = verify_timeframe_production_readiness(
         symbol="XAUUSD",
         timeframe="1d",
-        candidate_id="cand_moving_average_1d",
+        candidate_id=cand_1d_id,
+        research_dir=tmp_path,
     )
     assert res_1d["status"] == "READY"
     assert res_1d["reason_code"] == "READY"
@@ -125,14 +134,19 @@ def test_canonical_timeframe_casing_normalization():
     assert CanonicalTimeframe.from_str("4H") == CanonicalTimeframe.FOUR_HOURS
 
 
-def test_independent_per_timeframe_readiness_matrix():
+def test_independent_per_timeframe_readiness_matrix(tmp_path):
     """Verify independent per-timeframe evaluation across the seven canonical timeframes."""
+    from tests.test_continuous_live_runtime import persist_momentum_candidate
+    cand_5m_id = persist_momentum_candidate(tmp_path, candidate_id="cand_moving_average_5m", symbol="XAUUSD", timeframe="5m")
+    cand_1d_id = persist_momentum_candidate(tmp_path, candidate_id="cand_moving_average_1d", symbol="XAUUSD", timeframe="1d")
+
     matrix = verify_all_canonical_timeframes_readiness(
         symbol="XAUUSD",
         candidate_ids={
-            "5m": "cand_moving_average_5m",
-            "1D": "cand_moving_average_1d",
+            "5m": cand_5m_id,
+            "1D": cand_1d_id,
         },
+        research_dir=tmp_path,
     )
 
     canonical_tfs = [tf.value for tf in CanonicalTimeframe.canonical_ladder()]
@@ -141,10 +155,10 @@ def test_independent_per_timeframe_readiness_matrix():
 
     # 5m and 1D are READY
     assert matrix["5m"]["status"] == "READY"
-    assert matrix["5m"]["candidate_id"] == "cand_moving_average_5m"
+    assert matrix["5m"]["candidate_id"] == cand_5m_id
 
     assert matrix["1D"]["status"] == "READY"
-    assert matrix["1D"]["candidate_id"] == "cand_moving_average_1d"
+    assert matrix["1D"]["candidate_id"] == cand_1d_id
 
     # Unpromoted timeframes (15m, 30m, 1H, 4H) must be BLOCKED with PromotionUnavailable
     for unpromoted_tf in ("15m", "30m", "1H", "4H"):
