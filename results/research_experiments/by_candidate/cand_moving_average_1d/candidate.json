@@ -2,16 +2,16 @@
   "candidate_id": "cand_moving_average_1d",
   "strategy_name": "moving_average",
   "strategy_version": "1.0",
-  "experiment_fingerprint": "edc387680b24264ae29c66d6120f159770b573309359e2fbaf872ead957177a2",
-  "evidence_id": "ev_89c02210b360ef7f",
+  "experiment_fingerprint": "a2dfe0aa42d08948f9a460ab55ece9b3972a554293425ca6092a58d544a90f61",
+  "evidence_id": "ev_521e13db2ab9f66c",
   "symbol": "XAUUSD",
   "timeframe": "1d",
+  "operational_stability_score": 0.7458282289664787,
+  "governance_decision_fingerprint": "399547ceb2b364b17c5420eebd3d821fccf626b80b94c7684140642076c5d338",
   "parameters": {
-    "fast_window": 20,
-    "slow_window": 50,
+    "fast_window": 10,
+    "slow_window": 20,
     "stop_loss_pct": 0.01,
     "take_profit_pct": 0.02
-  },
-  "governance_decision_fingerprint": "gov_dec_cand_moving_average_1d_v1",
-  "operational_stability_score": 0.7458282289664787
+  }
 }

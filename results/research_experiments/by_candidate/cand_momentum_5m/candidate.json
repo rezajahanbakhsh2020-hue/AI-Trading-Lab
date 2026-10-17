@@ -2,15 +2,15 @@
   "candidate_id": "cand_momentum_5m",
   "strategy_name": "momentum",
   "strategy_version": "1.0",
-  "experiment_fingerprint": "e6b8a768fd1b98a7a0c914fdebf863f88923870eedcab35bb54d7acedb270c0b",
-  "evidence_id": "ev_dd81bc440136adb0",
+  "experiment_fingerprint": "85e14b957652770470270c22692b192965532785a1f735bedae5464e37db3d1a",
+  "evidence_id": "ev_23f842886fe2c9d2",
   "symbol": "XAUUSD",
   "timeframe": "5m",
+  "operational_stability_score": 0.7458282289664787,
+  "governance_decision_fingerprint": "d4fdb5d621ecbfe30c98d7cd65ad54d463fb8cb12c3612a6fa77ccca333cfeb9",
   "parameters": {
     "momentum_window": 10,
     "stop_loss_pct": 0.01,
     "take_profit_pct": 0.02
-  },
-  "governance_decision_fingerprint": "gov_dec_cand_momentum_5m_v1",
-  "operational_stability_score": 0.7458282289664787
+  }
 }

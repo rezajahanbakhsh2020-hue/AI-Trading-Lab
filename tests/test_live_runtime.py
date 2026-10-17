@@ -6,42 +6,6 @@ from src.evaluation.live_runtime import (
 )
 
 
-@pytest.fixture(autouse=True)
-def mock_candidate_resolution(monkeypatch):
-    from src.evaluation.live_production_decision import PromotedCandidateArtifact
-    from tests.test_production_decision_integrity import make_promoted_evidence
-    from src.evaluation.research_qualification import qualify_research_evidence
-    from src.evaluation.research_robustness import assess_research_robustness
-
-    def _mock_resolve(*args, **kwargs):
-        strategy_id = kwargs.get("strategy_id") or kwargs.get("candidate_id", "momentum")
-        if "moving_average" in str(strategy_id):
-            strategy_id = "moving_average"
-        elif "momentum" in str(strategy_id):
-            strategy_id = "momentum"
-        timeframe = kwargs.get("timeframe") or "5m"
-        candidate_id = kwargs.get("candidate_id") or f"cand_{strategy_id}_{timeframe.lower()}"
-        symbol = kwargs.get("symbol") or "XAUUSD"
-
-        from tests.test_production_decision_integrity import make_promoted_evidence
-        ev = make_promoted_evidence(symbol=symbol, timeframe=timeframe, strategy_name=strategy_id)
-        rob = assess_research_robustness(ev)
-        gov = qualify_research_evidence(ev, robustness_assessment=rob)
-        return PromotedCandidateArtifact(
-            candidate_id=candidate_id,
-            strategy_name=strategy_id,
-            strategy_version="1.0",
-            evidence=ev,
-            symbol=symbol,
-            timeframe=timeframe,
-            operational_stability_score=0.85,
-            parameters={"fast_window": 10, "slow_window": 20, "momentum_window": 10},
-            governance_decision=gov,
-            governance_decision_fingerprint=gov.decision_fingerprint,
-        )
-
-    monkeypatch.setattr("src.evaluation.research_store.resolve_promoted_candidate", _mock_resolve)
-    monkeypatch.setattr("src.evaluation.live_runtime.resolve_promoted_candidate", _mock_resolve)
 
 
 def _data() -> pd.DataFrame:

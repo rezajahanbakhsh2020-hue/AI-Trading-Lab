@@ -36,7 +36,24 @@ from src.integration.project2_publisher import Project2Publisher, validate_publi
 
 def _create_real_pub_artifact(timeframe: str = "5m", candidate_id: str = "cand_moving_average_5m") -> ProductionIntelligencePublication:
     """Helper to create a genuine, fully-authorized ProductionIntelligencePublication instance."""
-    cand = resolve_promoted_candidate(candidate_id=candidate_id, symbol="XAUUSD", timeframe=timeframe)
+    from tests.test_production_decision_integrity import make_promoted_evidence
+    from src.evaluation.research_qualification import qualify_research_evidence
+    from src.evaluation.research_robustness import assess_research_robustness
+    ev = make_promoted_evidence(timeframe=timeframe, strategy_name="moving_average")
+    rob = assess_research_robustness(ev)
+    gov = qualify_research_evidence(ev, robustness_assessment=rob)
+    cand = PromotedCandidateArtifact(
+        candidate_id=candidate_id,
+        strategy_name="moving_average",
+        strategy_version="1.0",
+        evidence=ev,
+        symbol="XAUUSD",
+        timeframe=timeframe,
+        operational_stability_score=0.85,
+        parameters={"fast_window": 10, "slow_window": 20},
+        governance_decision=gov,
+        governance_decision_fingerprint=gov.decision_fingerprint,
+    )
     auth = authorize_production_runtime(cand, symbol="XAUUSD", timeframe=timeframe)
     now_utc = datetime.datetime.now(datetime.timezone.utc)
     df = pd.DataFrame([

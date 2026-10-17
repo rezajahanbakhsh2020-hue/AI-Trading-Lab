@@ -137,6 +137,7 @@ def make_promoted_evidence(
         partitions=(part_is, part_oos, part_wf),
         robustness_verdict={
             "passed": robustness_passed,
+            "is_robust": robustness_passed,
             "parameter_sensitivity": {"passed": True},
             "subsample_stability": {"passed": True},
             "execution_cost_stress": {"passed": True},
@@ -556,7 +557,7 @@ def test_missing_risk_parameters_fails_closed():
         experiment_fingerprint=spec_no_risk.fingerprint,
         spec=spec_no_risk,
         partitions=ev.partitions,
-        robustness_verdict={"passed": True},
+        robustness_verdict=ev.robustness_verdict,
         promotion_status=PromotionStatus.PROMOTABLE,
     )
     cand = PromotedCandidateArtifact("cand_no_risk", "momentum", "1.0", ev_no_risk, "XAUUSD", "5m", 0.85)
@@ -852,7 +853,7 @@ def test_missing_strategy_window_parameter_fails_closed():
         experiment_fingerprint=spec_no_window.fingerprint,
         spec=spec_no_window,
         partitions=ev.partitions,
-        robustness_verdict={"passed": True},
+        robustness_verdict=ev.robustness_verdict,
         promotion_status=PromotionStatus.PROMOTABLE,
     )
     cand = PromotedCandidateArtifact("cand_no_window", "momentum", "1.0", ev_no_window, "XAUUSD", "5m", 0.85)
@@ -993,7 +994,7 @@ def test_37_missing_risk_parameter_fails_closed():
         experiment_fingerprint=spec_no_sl.fingerprint,
         spec=spec_no_sl,
         partitions=ev.partitions,
-        robustness_verdict={"passed": True},
+        robustness_verdict=ev.robustness_verdict,
         promotion_status=PromotionStatus.PROMOTABLE,
     )
     cand = PromotedCandidateArtifact("cand_no_sl", "momentum", "1.0", ev_no_sl, "XAUUSD", "5m", 0.85)
