@@ -74,14 +74,48 @@ def make_test_artifacts(
         start_timestamp_utc="2025-01-01T00:00:00+00:00",
         end_timestamp_utc="2025-01-02T00:00:00+00:00",
     )
+    part_oos = EvidencePartition(
+        role=EvidencePartitionRole.OUT_OF_SAMPLE,
+        start_date="2025-01-03",
+        end_date="2025-01-05",
+        total_return=0.15,
+        max_drawdown=0.05,
+        sharpe_ratio=1.8,
+        observations=30,
+        start_timestamp_utc="2025-01-03T00:00:00+00:00",
+        end_timestamp_utc="2025-01-05T00:00:00+00:00",
+    )
+    part_wf = EvidencePartition(
+        role=EvidencePartitionRole.WALK_FORWARD,
+        start_date="2025-01-01",
+        end_date="2025-01-05",
+        total_return=0.10,
+        max_drawdown=0.05,
+        sharpe_ratio=1.5,
+        observations=30,
+        start_timestamp_utc="2025-01-01T00:00:00+00:00",
+        end_timestamp_utc="2025-01-05T00:00:00+00:00",
+    )
     evidence = ResearchEvidence(
         experiment_fingerprint=spec.fingerprint,
         spec=spec,
-        partitions=(part_is,),
-        robustness_verdict={"passed": True},
+        partitions=(part_is, part_oos, part_wf),
+        robustness_verdict={
+            "passed": True,
+            "is_robust": True,
+            "parameter_sensitivity": {"passed": True},
+            "subsample_stability": {"passed": True},
+            "execution_cost_stress": {"passed": True},
+            "statistical_validation": {"passed": True},
+            "anti_overfitting": {"passed": True},
+        },
         promotion_status=PromotionStatus.PROMOTABLE,
         rejection_reasons=(),
     )
+    from src.evaluation.research_qualification import qualify_research_evidence
+    from src.evaluation.research_robustness import assess_research_robustness
+    rob = assess_research_robustness(evidence)
+    gov_decision = qualify_research_evidence(evidence, robustness_assessment=rob)
     cand = PromotedCandidateArtifact(
         candidate_id="cand_pub_unit",
         strategy_name="momentum",
@@ -90,7 +124,8 @@ def make_test_artifacts(
         symbol=symbol,
         timeframe=timeframe,
         operational_stability_score=stability_score,
-        governance_decision_fingerprint="gov_fp_test_123",
+        governance_decision=gov_decision,
+        governance_decision_fingerprint=gov_decision.decision_fingerprint,
     )
     dec = ProductionDecision(
         candidate_id=cand.candidate_id,

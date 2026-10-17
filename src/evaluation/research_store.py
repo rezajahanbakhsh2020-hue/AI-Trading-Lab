@@ -694,7 +694,7 @@ def _reconstitute_promoted_candidate_from_binding(
         raise
     except ValueError as exc:
         message = str(exc)
-        if "not allowed for production" in message or "rejection reasons" in message or "stale" in message or "exceeds max allowed age" in message or "robustness" in message:
+        if "not allowed for production" in message or "rejection reasons" in message or "stale" in message or "exceeds max allowed age" in message or "robustness" in message or "integrity gate" in message or "qualification" in message:
             raise PromotionEligibilityError(message) from exc
         raise PromotionIntegrityError(message) from exc
 

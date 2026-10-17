@@ -71,6 +71,7 @@ def make_promoted_evidence(
     robustness_passed: bool = True,
     symbol: str = "XAUUSD",
     timeframe: str = "5m",
+    strategy_name: str = "momentum",
 ) -> ResearchEvidence:
     ds = DatasetScope(
         dataset_id="ds_test",
@@ -81,16 +82,21 @@ def make_promoted_evidence(
     )
     ea = ExecutionAssumptions(transaction_cost=0.001, slippage=0.001, latency_ms=10.0)
     cp = CodeProvenance(commit_sha="843dfa76cf86a9057dba0a127541d7093fb15e42")
+    params = (
+        {"fast_window": 10, "slow_window": 20, "stop_loss_pct": 0.01, "take_profit_pct": 0.02}
+        if strategy_name == "moving_average"
+        else {"momentum_window": 10, "stop_loss_pct": 0.01, "take_profit_pct": 0.02}
+    )
     spec = ResearchExperimentSpec(
         hypothesis="Test hypothesis for production decision integrity",
         methodology_version="1.0",
-        strategy_name="momentum",
+        strategy_name=strategy_name,
         strategy_version="1.0",
         dataset_scope=ds,
         execution_assumptions=ea,
         code_provenance=cp,
         benchmark_reference="buy_and_hold",
-        parameters={"momentum_window": 10, "stop_loss_pct": 0.01, "take_profit_pct": 0.02},
+        parameters=params,
     )
     part_is = EvidencePartition(
         role=EvidencePartitionRole.IN_SAMPLE,
@@ -131,6 +137,7 @@ def make_promoted_evidence(
         partitions=(part_is, part_oos, part_wf),
         robustness_verdict={
             "passed": robustness_passed,
+            "is_robust": robustness_passed,
             "parameter_sensitivity": {"passed": True},
             "subsample_stability": {"passed": True},
             "execution_cost_stress": {"passed": True},
@@ -550,7 +557,7 @@ def test_missing_risk_parameters_fails_closed():
         experiment_fingerprint=spec_no_risk.fingerprint,
         spec=spec_no_risk,
         partitions=ev.partitions,
-        robustness_verdict={"passed": True},
+        robustness_verdict=ev.robustness_verdict,
         promotion_status=PromotionStatus.PROMOTABLE,
     )
     cand = PromotedCandidateArtifact("cand_no_risk", "momentum", "1.0", ev_no_risk, "XAUUSD", "5m", 0.85)
@@ -846,7 +853,7 @@ def test_missing_strategy_window_parameter_fails_closed():
         experiment_fingerprint=spec_no_window.fingerprint,
         spec=spec_no_window,
         partitions=ev.partitions,
-        robustness_verdict={"passed": True},
+        robustness_verdict=ev.robustness_verdict,
         promotion_status=PromotionStatus.PROMOTABLE,
     )
     cand = PromotedCandidateArtifact("cand_no_window", "momentum", "1.0", ev_no_window, "XAUUSD", "5m", 0.85)
@@ -987,7 +994,7 @@ def test_37_missing_risk_parameter_fails_closed():
         experiment_fingerprint=spec_no_sl.fingerprint,
         spec=spec_no_sl,
         partitions=ev.partitions,
-        robustness_verdict={"passed": True},
+        robustness_verdict=ev.robustness_verdict,
         promotion_status=PromotionStatus.PROMOTABLE,
     )
     cand = PromotedCandidateArtifact("cand_no_sl", "momentum", "1.0", ev_no_sl, "XAUUSD", "5m", 0.85)

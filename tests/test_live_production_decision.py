@@ -7,6 +7,37 @@ from src.evaluation.live_production_decision import (
 )
 
 
+@pytest.fixture(autouse=True)
+def mock_candidate_resolution(monkeypatch):
+    from tests.test_production_decision_integrity import make_promoted_evidence
+    from src.evaluation.research_qualification import qualify_research_evidence
+    from src.evaluation.research_robustness import assess_research_robustness
+    from src.evaluation.live_production_decision import PromotedCandidateArtifact
+
+    def synth_resolve(candidate_id=None, strategy_id=None, symbol="XAUUSD", timeframe="5m", base_dir=None, **kwargs):
+        strat = strategy_id or "momentum"
+        tf = timeframe or "5m"
+        cid = candidate_id or f"cand_{strat}_{tf}"
+        ev = make_promoted_evidence(timeframe=tf, symbol=symbol, strategy_name=strat)
+        rob = assess_research_robustness(ev)
+        gov = qualify_research_evidence(ev, robustness_assessment=rob)
+        params = dict(ev.spec.parameters)
+        return PromotedCandidateArtifact(
+            candidate_id=cid,
+            strategy_name=strat,
+            strategy_version="1.0",
+            evidence=ev,
+            symbol=symbol,
+            timeframe=tf,
+            operational_stability_score=0.7458282289664787,
+            parameters=params,
+            governance_decision=gov,
+            governance_decision_fingerprint=gov.decision_fingerprint,
+        )
+
+    monkeypatch.setattr("src.evaluation.research_store.resolve_promoted_candidate", synth_resolve)
+
+
 def make_rising_market(rows: int = 80) -> pd.DataFrame:
     close = [100.0 + index for index in range(rows)]
 
@@ -219,15 +250,28 @@ def test_candidate_windows_are_authoritative(monkeypatch):
     data = make_rising_market()
 
     from src.evaluation.research_store import resolve_promoted_candidate
+    from src.evaluation.research_qualification import qualify_research_evidence
+    from src.evaluation.research_robustness import assess_research_robustness
+    from src.evaluation.live_production_decision import PromotedCandidateArtifact
     from dataclasses import replace
 
     ma_cand = resolve_promoted_candidate(strategy_id="moving_average", symbol="XAUUSD", timeframe="5m")
-    custom_spec = replace(ma_cand.evidence.spec, parameters={"fast_window": 10, "slow_window": 30, "stop_loss_pct": 0.01, "take_profit_pct": 0.02})
+    custom_params = {"fast_window": 10, "slow_window": 30, "stop_loss_pct": 0.01, "take_profit_pct": 0.02}
+    custom_spec = replace(ma_cand.evidence.spec, parameters=custom_params)
     custom_evidence = replace(ma_cand.evidence, spec=custom_spec, experiment_fingerprint=custom_spec.fingerprint)
-    custom_cand = replace(
-        ma_cand,
+    rob = assess_research_robustness(custom_evidence)
+    gov = qualify_research_evidence(custom_evidence, robustness_assessment=rob)
+    custom_cand = PromotedCandidateArtifact(
+        candidate_id=ma_cand.candidate_id,
+        strategy_name=ma_cand.strategy_name,
+        strategy_version=ma_cand.strategy_version,
         evidence=custom_evidence,
-        parameters={"fast_window": 10, "slow_window": 30, "stop_loss_pct": 0.01, "take_profit_pct": 0.02},
+        symbol=ma_cand.symbol,
+        timeframe=ma_cand.timeframe,
+        operational_stability_score=ma_cand.operational_stability_score,
+        governance_decision=gov,
+        governance_decision_fingerprint=gov.decision_fingerprint,
+        parameters=custom_params,
     )
 
     monkeypatch.setattr(

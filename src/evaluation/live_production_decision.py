@@ -572,10 +572,11 @@ def validate_promotion_eligibility(
     governance_decision_fingerprint: str | None = None,
     now: Optional[datetime] = None,
 ) -> bool:
-    """Validate that research evidence satisfies production promotion criteria.
+    """Validate that research evidence satisfies canonical production promotion criteria.
 
-    Consumes canonical governance decision. Fails closed if evidence is missing,
-    unpromoted, rejected, or invalid. Does NOT recompute qualification.
+    Delegates to canonical research qualification and robustness APIs.
+    Fails closed if evidence is missing, unpromoted, rejected, invalid,
+    fails qualification/integrity gates, or carries mismatched governance decision fingerprints.
     """
     if policy is None:
         policy = ProductionPromotionPolicy()
@@ -583,45 +584,38 @@ def validate_promotion_eligibility(
     if not isinstance(evidence, ResearchEvidence):
         raise TypeError("evidence must be a ResearchEvidence instance.")
 
-    if governance_decision is not None:
-        from src.evaluation.research_qualification import ResearchQualificationResult
-        if not isinstance(governance_decision, ResearchQualificationResult):
-            raise ValueError(
-                f"Evidence '{evidence.evidence_id}' supplied governance decision is not a ResearchQualificationResult instance."
-            )
-        if not governance_decision.qualified:
-            raise ValueError(
-                f"Evidence '{evidence.evidence_id}' supplied governance decision is rejected."
-            )
-        gov_exp_fp = getattr(governance_decision, "experiment_fingerprint", None)
-        if not gov_exp_fp or not isinstance(gov_exp_fp, str) or not gov_exp_fp.strip():
-            raise ValueError(
-                f"Governance decision missing valid non-empty experiment_fingerprint."
-            )
-        if gov_exp_fp.strip() != evidence.experiment_fingerprint:
-            raise ValueError(
-                f"Governance decision experiment fingerprint '{gov_exp_fp}' "
-                f"does not match evidence fingerprint '{evidence.experiment_fingerprint}'."
-            )
-        if governance_decision_fingerprint is not None:
-            if governance_decision.decision_fingerprint != governance_decision_fingerprint:
-                raise ValueError(
-                    f"Governance decision fingerprint '{governance_decision.decision_fingerprint}' does not match "
-                    f"expected fingerprint '{governance_decision_fingerprint}'."
-                )
+    from src.evaluation.evidence_integrity import ResearchEvidenceIntegrityGate
 
+    # 1. Structural, temporal, and partition integrity gate
+    gate_res = ResearchEvidenceIntegrityGate.validate(
+        evidence,
+        require_exact_timestamps=True,
+        require_walk_forward=True,
+        require_oos=True,
+    )
+    if not gate_res.valid:
+        reasons = [r.value if isinstance(r, Enum) else str(r) for r in gate_res.rejection_reasons]
+        notes = "; ".join(gate_res.notes)
+        raise ValueError(
+            f"Evidence '{evidence.evidence_id}' failed research evidence integrity gate: "
+            f"{notes}. Rejection reasons: {reasons}"
+        )
+
+    # 2. Status check
     if evidence.promotion_status not in policy.allowed_statuses:
         raise ValueError(
             f"Evidence '{evidence.evidence_id}' has status '{evidence.promotion_status.value}' "
             f"which is not allowed for production (allowed: {[s.value for s in policy.allowed_statuses]})."
         )
 
+    # 3. Prior rejection reasons check
     if evidence.rejection_reasons:
         orig_reasons = [r.value for r in evidence.rejection_reasons]
         raise ValueError(
             f"Evidence '{evidence.evidence_id}' contains rejection reasons: {orig_reasons}"
         )
 
+    # 4. Robustness assessment validation
     if policy.require_robustness_pass:
         rv = getattr(evidence, "robustness_verdict", None)
         if isinstance(rv, dict) and (rv.get("passed") is False or rv.get("is_robust") is False):
@@ -629,7 +623,10 @@ def validate_promotion_eligibility(
                 f"Evidence '{evidence.evidence_id}' robustness verdict explicitly failed."
             )
         try:
-            from src.evaluation.research_robustness import assess_research_robustness
+            from src.evaluation.research_robustness import (
+                RobustnessStatus,
+                assess_research_robustness,
+            )
             rob_assessment = assess_research_robustness(evidence)
             if rob_assessment.experiment_fingerprint != evidence.experiment_fingerprint:
                 raise ValueError(
@@ -645,12 +642,49 @@ def validate_promotion_eligibility(
                 raise ValueError(
                     f"Evidence '{evidence.evidence_id}' canonical robustness assessment failed (is_robust=False)."
                 )
+            if rob_assessment.status in (RobustnessStatus.NOT_EVALUATED, RobustnessStatus.INSUFFICIENT_DATA):
+                raise ValueError(
+                    f"Evidence '{evidence.evidence_id}' canonical robustness status is '{rob_assessment.status.value}'."
+                )
+            if rob_assessment.dimensions_unavailable:
+                raise ValueError(
+                    f"Evidence '{evidence.evidence_id}' canonical robustness assessment has unevaluated dimensions: "
+                    f"{', '.join(rob_assessment.dimensions_unavailable)}."
+                )
         except ValueError:
             raise
         except Exception as exc:
             raise ValueError(
                 f"Failed to produce or validate canonical robustness assessment for evidence '{evidence.evidence_id}': {exc}"
             ) from exc
+
+    # 5. Governance decision validation
+    if governance_decision is not None:
+        from src.evaluation.research_qualification import ResearchQualificationResult
+        if not isinstance(governance_decision, ResearchQualificationResult):
+            raise ValueError(
+                f"Evidence '{evidence.evidence_id}' supplied governance decision is not a ResearchQualificationResult instance."
+            )
+        if not governance_decision.qualified:
+            raise ValueError(
+                f"Evidence '{evidence.evidence_id}' supplied governance decision is rejected."
+            )
+        gov_exp_fp = getattr(governance_decision, "experiment_fingerprint", None)
+        if not gov_exp_fp or not isinstance(gov_exp_fp, str) or not gov_exp_fp.strip():
+            raise ValueError(
+                "Governance decision missing valid non-empty experiment_fingerprint."
+            )
+        if gov_exp_fp.strip() != evidence.experiment_fingerprint:
+            raise ValueError(
+                f"Governance decision experiment fingerprint '{gov_exp_fp}' "
+                f"does not match evidence fingerprint '{evidence.experiment_fingerprint}'."
+            )
+        if governance_decision_fingerprint is not None:
+            if governance_decision.decision_fingerprint != governance_decision_fingerprint:
+                raise ValueError(
+                    f"Governance decision fingerprint '{governance_decision.decision_fingerprint}' does not match "
+                    f"expected fingerprint '{governance_decision_fingerprint}'."
+                )
 
     if policy.max_evidence_age_days is not None and evidence.created_at_utc:
         try:

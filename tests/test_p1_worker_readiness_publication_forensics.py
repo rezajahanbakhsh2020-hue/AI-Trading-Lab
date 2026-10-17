@@ -36,7 +36,24 @@ from src.integration.project2_publisher import Project2Publisher, validate_publi
 
 def _create_real_pub_artifact(timeframe: str = "5m", candidate_id: str = "cand_moving_average_5m") -> ProductionIntelligencePublication:
     """Helper to create a genuine, fully-authorized ProductionIntelligencePublication instance."""
-    cand = resolve_promoted_candidate(candidate_id=candidate_id, symbol="XAUUSD", timeframe=timeframe)
+    from tests.test_production_decision_integrity import make_promoted_evidence
+    from src.evaluation.research_qualification import qualify_research_evidence
+    from src.evaluation.research_robustness import assess_research_robustness
+    ev = make_promoted_evidence(timeframe=timeframe, strategy_name="moving_average")
+    rob = assess_research_robustness(ev)
+    gov = qualify_research_evidence(ev, robustness_assessment=rob)
+    cand = PromotedCandidateArtifact(
+        candidate_id=candidate_id,
+        strategy_name="moving_average",
+        strategy_version="1.0",
+        evidence=ev,
+        symbol="XAUUSD",
+        timeframe=timeframe,
+        operational_stability_score=0.85,
+        parameters={"fast_window": 10, "slow_window": 20},
+        governance_decision=gov,
+        governance_decision_fingerprint=gov.decision_fingerprint,
+    )
     auth = authorize_production_runtime(cand, symbol="XAUUSD", timeframe=timeframe)
     now_utc = datetime.datetime.now(datetime.timezone.utc)
     df = pd.DataFrame([
@@ -136,16 +153,19 @@ class TestP1WorkerReadinessAndPublicationForensics:
         assert res2["published"] is False
         assert "Missing PROJECT2_PUBLISH_URL" in res2["reason"]
 
-    def test_worker_resolves_candidate_for_exact_timeframe(self):
+    def test_worker_resolves_candidate_for_exact_timeframe(self, tmp_path):
         """7. Verify readiness check resolves candidates for exact timeframe without borrowing across timeframes."""
+        from tests.test_continuous_live_runtime import persist_momentum_candidate
+        cand_id = persist_momentum_candidate(tmp_path, candidate_id="cand_moving_average_5m", symbol="XAUUSD", timeframe="5m")
+
         res_5m = verify_timeframe_production_readiness(
-            symbol="XAUUSD", timeframe="5m", candidate_id="cand_moving_average_5m", research_dir=DEFAULT_RESEARCH_DIR
+            symbol="XAUUSD", timeframe="5m", candidate_id=cand_id, research_dir=tmp_path
         )
         assert res_5m["status"] == "READY"
-        assert res_5m["candidate_id"] == "cand_moving_average_5m"
+        assert res_5m["candidate_id"] == cand_id
 
         res_1m = verify_timeframe_production_readiness(
-            symbol="XAUUSD", timeframe="1m", candidate_id=None, research_dir=DEFAULT_RESEARCH_DIR
+            symbol="XAUUSD", timeframe="1m", candidate_id=None, research_dir=tmp_path
         )
         assert res_1m["status"] == "BLOCKED"
         assert res_1m["reason_code"] == "PromotionUnavailable"

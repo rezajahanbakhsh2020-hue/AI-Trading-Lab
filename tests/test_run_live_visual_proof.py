@@ -58,6 +58,10 @@ def test_live_visual_proof_creates_real_html(monkeypatch, tmp_path):
         lambda config: promoted,
     )
     monkeypatch.setattr(
+        "src.evaluation.live_runtime.resolve_promoted_candidate",
+        lambda *args, **kwargs: promoted,
+    )
+    monkeypatch.setattr(
         "run_live_visual_proof.fetch_xauusd_ohlc",
         lambda **kwargs: _make_mock_ohlc(),
     )
@@ -170,6 +174,10 @@ def test_live_visual_proof_uses_production_selection(monkeypatch, tmp_path):
     monkeypatch.setattr(
         "run_live_visual_proof.resolve_authoritative_promoted_candidate",
         lambda config: promoted,
+    )
+    monkeypatch.setattr(
+        "src.evaluation.live_runtime.resolve_promoted_candidate",
+        lambda *args, **kwargs: promoted,
     )
     monkeypatch.setattr(
         "run_live_visual_proof.fetch_xauusd_ohlc",

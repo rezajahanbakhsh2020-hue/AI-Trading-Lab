@@ -54,8 +54,31 @@ def _data(rows: int = 80) -> pd.DataFrame:
     })
 
 
+def _get_synthetic_candidate(candidate_id="cand_momentum_5m", timeframe="5m", symbol="XAUUSD"):
+    from tests.test_production_decision_integrity import make_promoted_evidence
+    from src.evaluation.research_qualification import qualify_research_evidence
+    from src.evaluation.research_robustness import assess_research_robustness
+    from src.evaluation.live_production_decision import PromotedCandidateArtifact
+
+    ev = make_promoted_evidence(timeframe=timeframe, symbol=symbol, strategy_name="momentum")
+    rob = assess_research_robustness(ev)
+    gov = qualify_research_evidence(ev, robustness_assessment=rob)
+    return PromotedCandidateArtifact(
+        candidate_id=candidate_id,
+        strategy_name="momentum",
+        strategy_version="1.0",
+        evidence=ev,
+        symbol=symbol,
+        timeframe=timeframe,
+        operational_stability_score=0.7458282289664787,
+        parameters=dict(ev.spec.parameters),
+        governance_decision=gov,
+        governance_decision_fingerprint=gov.decision_fingerprint,
+    )
+
+
 def _setup_canonical_components():
-    candidate = resolve_promoted_candidate(candidate_id="cand_momentum_5m")
+    candidate = _get_synthetic_candidate("cand_momentum_5m")
     assert candidate is not None
     data = _data()
     ref_now = data["timestamp"].iloc[-1] + pd.Timedelta(minutes=5)
@@ -127,7 +150,7 @@ def test_deterministic_fingerprint():
         parameters=decision.parameters,
     )
     sig_diff = ProductionSignal.from_decision(dec_diff)
-    candidate = resolve_promoted_candidate(candidate_id="cand_momentum_5m")
+    candidate = _get_synthetic_candidate("cand_momentum_5m")
     risk_diff = calculate_production_risk_levels(dec_diff, candidate)
 
     cld3 = create_canonical_live_decision(receipt, dec_diff, sig_diff, risk_diff, timestamp_utc=ts)
@@ -328,13 +351,20 @@ def test_display_bypass_regression(monkeypatch):
 
 # --- Test L: Runtime and Display Identity Parity ---
 def test_runtime_and_display_identity_parity(tmp_path):
+    from tests.test_production_decision_integrity import make_promoted_evidence
+    from src.evaluation.research_store import save_research_candidate
+
+    ev = make_promoted_evidence(symbol="XAUUSD", timeframe="5m")
+    save_research_candidate(candidate_id="cand_momentum_5m", evidence=ev, base_dir=tmp_path, operational_stability_score=0.85)
+
     data = _data()
     ref_now = pd.to_datetime(data["timestamp"], utc=True).iloc[-1].to_pydatetime() + pd.Timedelta(minutes=5)
     res = build_live_runtime(
         data,
         stable_strategy="momentum",
-        stability_score=None,
+        stability_score=0.85,
         reference_now=ref_now,
+        research_dir=tmp_path,
         store_path=tmp_path / "store.json",
         persist=False,
     )
@@ -393,13 +423,17 @@ def test_persistence_replay_idempotency_and_conflict(tmp_path):
 
 
 # --- Test N: Missing Authorization Blocks Execution ---
-def test_missing_authorization_blocks_execution():
-    candidate = resolve_promoted_candidate(candidate_id="cand_momentum_5m")
-    assert candidate is not None
+def test_missing_authorization_blocks_execution(tmp_path):
+    from tests.test_production_decision_integrity import make_promoted_evidence
+    from src.evaluation.research_store import save_research_candidate
+
+    ev = make_promoted_evidence(symbol="XAUUSD", timeframe="5m")
+    save_research_candidate(candidate_id="cand_momentum_5m", evidence=ev, base_dir=tmp_path, operational_stability_score=0.85)
 
     runtime = LiveExecutionRuntime(
         symbol="EURUSD",
-        production_config=ProductionRuntimeConfig(symbol="EURUSD", timeframe="5m", candidate_id="cand_momentum_5m"),
+        research_dir=tmp_path,
+        production_config=ProductionRuntimeConfig(symbol="EURUSD", timeframe="5m", candidate_id="cand_momentum_5m", research_dir=tmp_path),
     )
     res = runtime.run_once(publish=False, persist=False)
 

@@ -10,6 +10,38 @@ from src.evaluation.live_trade_display import (
 )
 
 
+@pytest.fixture(autouse=True)
+def mock_candidate_resolution(monkeypatch):
+    from tests.test_production_decision_integrity import make_promoted_evidence
+    from src.evaluation.research_qualification import qualify_research_evidence
+    from src.evaluation.research_robustness import assess_research_robustness
+    from src.evaluation.live_production_decision import PromotedCandidateArtifact
+
+    def synth_resolve(candidate_id=None, strategy_id=None, symbol="XAUUSD", timeframe="5m", base_dir=None, **kwargs):
+        strat = strategy_id or "momentum"
+        tf = timeframe or "5m"
+        cid = candidate_id or f"cand_{strat}_{tf}"
+        ev = make_promoted_evidence(timeframe=tf, symbol=symbol, strategy_name=strat)
+        rob = assess_research_robustness(ev)
+        gov = qualify_research_evidence(ev, robustness_assessment=rob)
+        params = dict(ev.spec.parameters)
+        return PromotedCandidateArtifact(
+            candidate_id=cid,
+            strategy_name=strat,
+            strategy_version="1.0",
+            evidence=ev,
+            symbol=symbol,
+            timeframe=tf,
+            operational_stability_score=0.7458282289664787,
+            parameters=params,
+            governance_decision=gov,
+            governance_decision_fingerprint=gov.decision_fingerprint,
+        )
+
+    monkeypatch.setattr("src.evaluation.research_store.resolve_promoted_candidate", synth_resolve)
+    monkeypatch.setattr("src.evaluation.live_runtime.resolve_promoted_candidate", synth_resolve)
+
+
 def _rising_data(rows: int = 80) -> pd.DataFrame:
     timestamps = pd.date_range(
         end=pd.Timestamp.now(tz="UTC"),
@@ -288,6 +320,9 @@ def test_valid_canonical_decision_preserves_identities_without_runtime_calls(mon
 
 def test_end_to_end_candidate_tp_multipliers_propagate_to_display(monkeypatch):
     from src.evaluation.research_store import resolve_promoted_candidate
+    from src.evaluation.research_qualification import qualify_research_evidence
+    from src.evaluation.research_robustness import assess_research_robustness
+    from src.evaluation.live_production_decision import PromotedCandidateArtifact
     from dataclasses import replace
 
     mom_cand = resolve_promoted_candidate(strategy_id="momentum", symbol="XAUUSD", timeframe="5m")
@@ -301,9 +336,18 @@ def test_end_to_end_candidate_tp_multipliers_propagate_to_display(monkeypatch):
     }
     custom_spec = replace(mom_cand.evidence.spec, parameters=custom_params)
     custom_evidence = replace(mom_cand.evidence, spec=custom_spec, experiment_fingerprint=custom_spec.fingerprint)
-    custom_cand = replace(
-        mom_cand,
+    rob = assess_research_robustness(custom_evidence)
+    gov = qualify_research_evidence(custom_evidence, robustness_assessment=rob)
+    custom_cand = PromotedCandidateArtifact(
+        candidate_id=mom_cand.candidate_id,
+        strategy_name=mom_cand.strategy_name,
+        strategy_version=mom_cand.strategy_version,
         evidence=custom_evidence,
+        symbol=mom_cand.symbol,
+        timeframe=mom_cand.timeframe,
+        operational_stability_score=mom_cand.operational_stability_score,
+        governance_decision=gov,
+        governance_decision_fingerprint=gov.decision_fingerprint,
         parameters=custom_params,
     )
 
