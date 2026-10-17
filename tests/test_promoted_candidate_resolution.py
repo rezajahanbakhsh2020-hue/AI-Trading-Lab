@@ -478,7 +478,7 @@ def test_missing_production_candidate_configuration_resolves_or_blocks(tmp_path:
 
 def test_validate_promotion_eligibility_rejects_unpromoted_evidence() -> None:
     evidence = make_research_evidence(status=PromotionStatus.PROPOSED)
-    with pytest.raises(ValueError, match="not in allowed promotion statuses"):
+    with pytest.raises(ValueError, match="not allowed for production"):
         validate_promotion_eligibility(evidence)
 
 

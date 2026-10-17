@@ -146,11 +146,11 @@ def make_test_evidence(
 def test_missing_exact_utc_partition_timestamps_fails_closed(tmp_path: Path) -> None:
     evidence = make_test_evidence(start_utc_is=None, end_utc_is=None)
 
-    with pytest.raises(ValueError, match="failed canonical research qualification"):
+    with pytest.raises(ValueError, match="failed research evidence integrity gate"):
         validate_promotion_eligibility(evidence)
 
     # Cannot save as candidate
-    with pytest.raises(PromotionEligibilityError, match="failed qualification"):
+    with pytest.raises(PromotionEligibilityError, match="missing required exact UTC timestamps"):
         save_research_candidate(
             candidate_id="cand_no_utc",
             evidence=evidence,
@@ -177,7 +177,7 @@ def test_overlapping_or_reversed_partitions_fails_closed(tmp_path: Path) -> None
         end_date_oos="2025-01-05",
     )
 
-    with pytest.raises(ValueError, match="failed canonical research qualification"):
+    with pytest.raises(ValueError, match="failed research evidence integrity gate"):
         validate_promotion_eligibility(evidence)
 
 
@@ -189,7 +189,7 @@ def test_partially_evaluated_robustness_fails_closed(tmp_path: Path) -> None:
     assert qual.qualified is False
     assert RejectionReason.FAILED_ROBUSTNESS in qual.rejection_reasons
 
-    with pytest.raises(ValueError, match="failed canonical research qualification"):
+    with pytest.raises(ValueError, match="canonical robustness assessment has unevaluated dimensions"):
         validate_promotion_eligibility(evidence)
 
 
@@ -199,10 +199,11 @@ def test_mismatched_governance_decision_fingerprint_fails_closed() -> None:
     qual = qualify_research_evidence(evidence, robustness_assessment=rob)
     assert qual.qualified is True
 
-    # Bad governance decision fingerprint passed directly
-    with pytest.raises(ValueError, match="does not match canonical qualification decision_fingerprint"):
+    # Bad governance decision fingerprint passed with mismatching governance_decision
+    with pytest.raises(ValueError, match="does not match expected fingerprint"):
         validate_promotion_eligibility(
             evidence,
+            governance_decision=qual,
             governance_decision_fingerprint="bad_fingerprint_12345",
         )
 
@@ -215,10 +216,11 @@ def test_mismatched_governance_decision_fingerprint_fails_closed() -> None:
         experiment_fingerprint=evidence.experiment_fingerprint,
         policy_version="tampered_policy_version",
     )
-    with pytest.raises(ValueError, match="does not match canonical qualification decision_fingerprint"):
+    with pytest.raises(ValueError, match="does not match expected fingerprint"):
         validate_promotion_eligibility(
             evidence,
             governance_decision=fake_qual,
+            governance_decision_fingerprint="some_expected_fp",
         )
 
 

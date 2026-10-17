@@ -6,6 +6,44 @@ from src.evaluation.live_runtime import (
 )
 
 
+@pytest.fixture(autouse=True)
+def mock_candidate_resolution(monkeypatch):
+    from src.evaluation.live_production_decision import PromotedCandidateArtifact
+    from tests.test_production_decision_integrity import make_promoted_evidence
+    from src.evaluation.research_qualification import qualify_research_evidence
+    from src.evaluation.research_robustness import assess_research_robustness
+
+    def _mock_resolve(*args, **kwargs):
+        strategy_id = kwargs.get("strategy_id") or kwargs.get("candidate_id", "momentum")
+        if "moving_average" in str(strategy_id):
+            strategy_id = "moving_average"
+        elif "momentum" in str(strategy_id):
+            strategy_id = "momentum"
+        timeframe = kwargs.get("timeframe") or "5m"
+        candidate_id = kwargs.get("candidate_id") or f"cand_{strategy_id}_{timeframe.lower()}"
+        symbol = kwargs.get("symbol") or "XAUUSD"
+
+        from tests.test_production_decision_integrity import make_promoted_evidence
+        ev = make_promoted_evidence(symbol=symbol, timeframe=timeframe, strategy_name=strategy_id)
+        rob = assess_research_robustness(ev)
+        gov = qualify_research_evidence(ev, robustness_assessment=rob)
+        return PromotedCandidateArtifact(
+            candidate_id=candidate_id,
+            strategy_name=strategy_id,
+            strategy_version="1.0",
+            evidence=ev,
+            symbol=symbol,
+            timeframe=timeframe,
+            operational_stability_score=0.85,
+            parameters={"fast_window": 10, "slow_window": 20, "momentum_window": 10},
+            governance_decision=gov,
+            governance_decision_fingerprint=gov.decision_fingerprint,
+        )
+
+    monkeypatch.setattr("src.evaluation.research_store.resolve_promoted_candidate", _mock_resolve)
+    monkeypatch.setattr("src.evaluation.live_runtime.resolve_promoted_candidate", _mock_resolve)
+
+
 def _data() -> pd.DataFrame:
     return pd.DataFrame(
         {
@@ -97,15 +135,28 @@ from unittest.mock import MagicMock, patch
 
 def test_custom_moving_average_windows_retained_through_runtime_and_display(tmp_path, monkeypatch):
     from src.evaluation.research_store import resolve_promoted_candidate
+    from src.evaluation.live_production_decision import PromotedCandidateArtifact
+    from src.evaluation.research_qualification import qualify_research_evidence
+    from src.evaluation.research_robustness import assess_research_robustness
     from dataclasses import replace
 
     ma_cand = resolve_promoted_candidate(strategy_id="moving_average", symbol="XAUUSD", timeframe="5m")
-    custom_spec = replace(ma_cand.evidence.spec, parameters={"fast_window": 10, "slow_window": 30, "stop_loss_pct": 0.01, "take_profit_pct": 0.02})
+    custom_params = {"fast_window": 10, "slow_window": 30, "stop_loss_pct": 0.01, "take_profit_pct": 0.02}
+    custom_spec = replace(ma_cand.evidence.spec, parameters=custom_params)
     custom_evidence = replace(ma_cand.evidence, spec=custom_spec, experiment_fingerprint=custom_spec.fingerprint)
-    custom_cand = replace(
-        ma_cand,
+    rob = assess_research_robustness(custom_evidence)
+    gov = qualify_research_evidence(custom_evidence, robustness_assessment=rob)
+    custom_cand = PromotedCandidateArtifact(
+        candidate_id=ma_cand.candidate_id,
+        strategy_name=ma_cand.strategy_name,
+        strategy_version=ma_cand.strategy_version,
         evidence=custom_evidence,
-        parameters={"fast_window": 10, "slow_window": 30, "stop_loss_pct": 0.01, "take_profit_pct": 0.02},
+        symbol=ma_cand.symbol,
+        timeframe=ma_cand.timeframe,
+        operational_stability_score=ma_cand.operational_stability_score,
+        governance_decision=gov,
+        governance_decision_fingerprint=gov.decision_fingerprint,
+        parameters=custom_params,
     )
 
     monkeypatch.setattr(
@@ -137,16 +188,29 @@ def test_custom_moving_average_windows_retained_through_runtime_and_display(tmp_
 
 def test_display_trend_follows_candidate_windows_not_default_20_50(tmp_path, monkeypatch):
     from src.evaluation.research_store import resolve_promoted_candidate
+    from src.evaluation.live_production_decision import PromotedCandidateArtifact
+    from src.evaluation.research_qualification import qualify_research_evidence
+    from src.evaluation.research_robustness import assess_research_robustness
     from dataclasses import replace
     from live_trend import build_live_trend_snapshot
 
     ma_cand = resolve_promoted_candidate(strategy_id="moving_average", symbol="XAUUSD", timeframe="5m")
-    custom_spec = replace(ma_cand.evidence.spec, parameters={"fast_window": 10, "slow_window": 30, "stop_loss_pct": 0.01, "take_profit_pct": 0.02})
+    custom_params = {"fast_window": 10, "slow_window": 30, "stop_loss_pct": 0.01, "take_profit_pct": 0.02}
+    custom_spec = replace(ma_cand.evidence.spec, parameters=custom_params)
     custom_evidence = replace(ma_cand.evidence, spec=custom_spec, experiment_fingerprint=custom_spec.fingerprint)
-    custom_cand = replace(
-        ma_cand,
+    rob = assess_research_robustness(custom_evidence)
+    gov = qualify_research_evidence(custom_evidence, robustness_assessment=rob)
+    custom_cand = PromotedCandidateArtifact(
+        candidate_id=ma_cand.candidate_id,
+        strategy_name=ma_cand.strategy_name,
+        strategy_version=ma_cand.strategy_version,
         evidence=custom_evidence,
-        parameters={"fast_window": 10, "slow_window": 30, "stop_loss_pct": 0.01, "take_profit_pct": 0.02},
+        symbol=ma_cand.symbol,
+        timeframe=ma_cand.timeframe,
+        operational_stability_score=ma_cand.operational_stability_score,
+        governance_decision=gov,
+        governance_decision_fingerprint=gov.decision_fingerprint,
+        parameters=custom_params,
     )
 
     monkeypatch.setattr(

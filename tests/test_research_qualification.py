@@ -317,8 +317,8 @@ def test_V_qualification_policy_version_included_in_canonical_decision_identity(
 
 # --- AST Structural Invariant Tests ---
 
-def test_ast_production_decision_code_delegates_qualification() -> None:
-    """Verify production decision logic delegates qualification check to qualify_research_evidence."""
+def test_ast_production_decision_code_does_not_calculate_qualification() -> None:
+    """Verify production decision logic delegates qualification check and does not calculate custom qualification."""
     prod_file = Path("src/evaluation/live_production_decision.py")
     tree = ast.parse(prod_file.read_text(encoding="utf-8"), filename=str(prod_file))
 
@@ -328,7 +328,7 @@ def test_ast_production_decision_code_delegates_qualification() -> None:
             if any(alias.name == "qualify_research_evidence" for alias in node.names):
                 found_import = True
 
-    assert found_import is True, "live_production_decision.py must import qualify_research_evidence"
+    assert found_import is False, "live_production_decision.py must NOT call qualify_research_evidence directly"
 
 
 def test_ast_qualification_service_does_not_depend_on_production_decision_chain() -> None:
