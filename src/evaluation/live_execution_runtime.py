@@ -1328,6 +1328,9 @@ class ContinuousLiveRuntime:
         else:
             tf_list = list(timeframes)
 
+        if not tf_list:
+            raise ValueError("ContinuousLiveRuntime requires at least one configured timeframe.")
+
         # Enforce repository's existing canonical timeframe vocabulary.
         # Fails closed on unsupported timeframes and duplicate identities.
         canonical_tfs: list[str] = []
@@ -1342,6 +1345,26 @@ class ContinuousLiveRuntime:
             canonical_tfs.append(c_tf)
 
         self.timeframes = tuple(canonical_tfs)
+        configured_set = set(self.timeframes)
+
+        # Validate directly supplied candidate_ids mapping
+        normalized_candidate_ids: dict[str, str] = {}
+        if candidate_ids is not None:
+            if not isinstance(candidate_ids, dict):
+                raise ValueError("candidate_ids must be a dictionary mapping timeframes to candidate IDs.")
+            for k, v in candidate_ids.items():
+                if not isinstance(k, str) or not k.strip():
+                    raise ValueError(f"Invalid candidate_ids key {k!r}: mapping keys must be non-empty strings.")
+                if not isinstance(v, str) or not v.strip():
+                    raise ValueError(f"Invalid candidate_id value {v!r} for timeframe {k!r}: candidate IDs must be non-empty strings.")
+                k_canonical = CanonicalTimeframe.from_str(k.strip()).value
+                if k_canonical in normalized_candidate_ids:
+                    raise ValueError(f"Duplicate candidate mapping key for canonical timeframe '{k_canonical}'.")
+                if k_canonical not in configured_set:
+                    raise ValueError(
+                        f"Explicit candidate mapping key '{k_canonical}' is outside the configured timeframe scope {sorted(configured_set)}."
+                    )
+                normalized_candidate_ids[k_canonical] = v.strip()
 
         self.poll_interval = max(0.0, poll_interval)
         if publisher is not None:
@@ -1361,7 +1384,7 @@ class ContinuousLiveRuntime:
         self.store_path = Path(store_path)
         self.snapshot_path = Path(snapshot_path)
         self.market_data_loaders = market_data_loaders
-        self.candidate_ids = candidate_ids or {}
+        self.candidate_ids = normalized_candidate_ids
         self.clock = clock or (lambda: datetime.datetime.now(datetime.timezone.utc))
         self.sleep_fn = sleep_fn or time.sleep
 

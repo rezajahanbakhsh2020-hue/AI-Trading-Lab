@@ -569,6 +569,49 @@ def test_candidate_mapping_parser_empty_or_none_compatible() -> None:
     assert parse_continuous_candidate_ids("   ", timeframes=["5m"]) == {}
 
 
+def test_continuous_live_runtime_constructor_empty_timeframes_rejected() -> None:
+    """Boundary B: ContinuousLiveRuntime constructor with empty timeframes sequence must raise ValueError."""
+    with pytest.raises(ValueError, match="ContinuousLiveRuntime requires at least one configured timeframe"):
+        ContinuousLiveRuntime(symbol="XAUUSD", timeframes=[])
+
+    with pytest.raises(ValueError, match="Invalid timeframes string"):
+        ContinuousLiveRuntime(symbol="XAUUSD", timeframes=" , ")
+
+
+def test_continuous_live_runtime_constructor_direct_candidate_ids_out_of_scope_rejected() -> None:
+    """Boundary A1: Direct candidate_ids injection with key outside configured timeframe set must raise ValueError."""
+    with pytest.raises(ValueError, match="outside the configured timeframe scope"):
+        ContinuousLiveRuntime(symbol="XAUUSD", timeframes=["5m"], candidate_ids={"1D": "cand_1d"})
+
+
+def test_continuous_live_runtime_constructor_direct_candidate_ids_canonical_duplicates_rejected() -> None:
+    """Boundary A2: Direct candidate_ids injection with duplicate canonical keys (1h and 1H) must raise ValueError."""
+    with pytest.raises(ValueError, match="Duplicate candidate mapping key for canonical timeframe '1H'"):
+        ContinuousLiveRuntime(symbol="XAUUSD", timeframes=["1H"], candidate_ids={"1h": "cand_a", "1H": "cand_b"})
+
+
+def test_continuous_live_runtime_constructor_direct_candidate_ids_invalid_types_or_empty_rejected() -> None:
+    """Boundary A3: Direct candidate_ids injection with non-string, empty, or whitespace keys/values must raise ValueError."""
+    with pytest.raises(ValueError, match="candidate IDs must be non-empty strings"):
+        ContinuousLiveRuntime(symbol="XAUUSD", timeframes=["5m"], candidate_ids={"5m": ""})
+
+    with pytest.raises(ValueError, match="candidate IDs must be non-empty strings"):
+        ContinuousLiveRuntime(symbol="XAUUSD", timeframes=["5m"], candidate_ids={"5m": "   "})
+
+    with pytest.raises(ValueError, match="mapping keys must be non-empty strings"):
+        ContinuousLiveRuntime(symbol="XAUUSD", timeframes=["5m"], candidate_ids={"": "cand_5m"})  # type: ignore
+
+
+def test_continuous_live_runtime_constructor_direct_candidate_ids_valid_partial_accepted() -> None:
+    """Boundary A4: Direct candidate_ids injection with valid partial mapping is accepted and normalized."""
+    cont = ContinuousLiveRuntime(
+        symbol="XAUUSD",
+        timeframes=["1m", "5m", "15m", "30m", "1H", "4H", "1D"],
+        candidate_ids={"5m": "cand_5m", "1d": "cand_1d"},
+    )
+    assert cont.candidate_ids == {"5m": "cand_5m", "1D": "cand_1d"}
+
+
 # -----------------------------------------------------------------------------
 # Deduplication tests (19-24)
 # -----------------------------------------------------------------------------
