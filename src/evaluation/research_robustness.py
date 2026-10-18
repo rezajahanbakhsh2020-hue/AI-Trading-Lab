@@ -374,16 +374,19 @@ def assess_research_robustness(
 
                 if _has_non_finite_numeric(dim_val):
                     dim_passed = False
-                elif "passed" in dim_val:
-                    dim_passed = bool(dim_val["passed"])
-                elif "is_valid" in dim_val:
-                    dim_passed = bool(dim_val["is_valid"])
-                elif "robust" in dim_val:
-                    dim_passed = bool(dim_val["robust"])
-                elif "is_robust" in dim_val:
-                    dim_passed = bool(dim_val["is_robust"])
                 else:
-                    dim_passed = False
+                    flag_keys = [
+                        k for k in ("passed", "is_valid", "robust", "is_robust")
+                        if k in dim_val
+                    ]
+                    if not flag_keys:
+                        dim_passed = False
+                    else:
+                        for fk in flag_keys:
+                            fk_val = dim_val[fk]
+                            if not isinstance(fk_val, bool) or fk_val is not True:
+                                dim_passed = False
+                                break
 
                 if not dim_passed:
                     failed_dims_list.append(dim)
@@ -392,7 +395,22 @@ def assess_research_robustness(
 
         dims_eval = tuple(dims_eval_list)
         dims_unavail = tuple(dims_unavail_list)
-        top_level_passed = bool(verdict.get("is_robust", verdict.get("passed", True)))
+
+        has_is_robust = "is_robust" in verdict
+        has_passed = "passed" in verdict
+
+        top_level_passed = False
+        if has_is_robust or has_passed:
+            is_robust_flag = verdict.get("is_robust") if has_is_robust else None
+            passed_flag = verdict.get("passed") if has_passed else None
+
+            valid_is_robust = isinstance(is_robust_flag, bool) if has_is_robust else True
+            valid_passed = isinstance(passed_flag, bool) if has_passed else True
+
+            if valid_is_robust and valid_passed:
+                val_ir = is_robust_flag if has_is_robust else True
+                val_p = passed_flag if has_passed else True
+                top_level_passed = (val_ir is True) and (val_p is True)
 
         is_robust = (
             len(dims_unavail_list) == 0
