@@ -470,15 +470,103 @@ def test_16_missing_candidate_fails_closed(tmp_path) -> None:
     assert eval_5m["reason"] == "PromotionUnavailable"
 
 
-def test_17_18_parse_continuous_candidate_ids_prevents_global_copy() -> None:
-    """17, 18. Continuous candidate parser prevents single candidate ID copying across multiple timeframes."""
-    # Single candidate ID for multiple timeframes raises ValueError
-    with pytest.raises(ValueError, match="must specify explicit per-timeframe mappings"):
-        parse_continuous_candidate_ids("single_cand_id", timeframes=["5m", "15m"])
+def test_candidate_mapping_parser_exact_duplicate_key_rejected() -> None:
+    """1. Exact duplicate key in explicit mapping must raise ValueError."""
+    with pytest.raises(ValueError, match="Duplicate candidate mapping key for canonical timeframe '5m'"):
+        parse_continuous_candidate_ids("5m=cand_A,5m=cand_B", timeframes=["5m"])
 
-    # Explicit mapping parses correctly
-    parsed = parse_continuous_candidate_ids("5m=cand1,15m=cand2", timeframes=["5m", "15m"])
-    assert parsed == {"5m": "cand1", "15m": "cand2"}
+
+def test_candidate_mapping_parser_canonical_duplicate_key_rejected() -> None:
+    """2. Duplicate key after canonicalization (e.g. 1h and 1H) must raise ValueError."""
+    with pytest.raises(ValueError, match="Duplicate candidate mapping key for canonical timeframe '1H'"):
+        parse_continuous_candidate_ids("1h=cand_A,1H=cand_B", timeframes=["1H"])
+
+
+def test_candidate_mapping_parser_out_of_scope_key_rejected() -> None:
+    """3. Explicit mapping key outside configured timeframe scope must raise ValueError."""
+    with pytest.raises(ValueError, match="outside the configured timeframe scope"):
+        parse_continuous_candidate_ids("5m=cand_5m,1D=cand_1d", timeframes=["5m"])
+
+
+def test_candidate_mapping_parser_empty_middle_segment_rejected() -> None:
+    """4. Empty middle segment in comma-separated mapping must raise ValueError."""
+    with pytest.raises(ValueError, match="Contains empty comma-separated segment"):
+        parse_continuous_candidate_ids("5m=cand_5m,,1D=cand_1d", timeframes=["5m", "1D"])
+
+
+def test_candidate_mapping_parser_leading_trailing_empty_segment_rejected() -> None:
+    """5. Leading or trailing empty segment in non-empty mapping must raise ValueError."""
+    with pytest.raises(ValueError, match="Contains empty comma-separated segment"):
+        parse_continuous_candidate_ids(",5m=cand_5m", timeframes=["5m"])
+
+    with pytest.raises(ValueError, match="Contains empty comma-separated segment"):
+        parse_continuous_candidate_ids("5m=cand_5m,", timeframes=["5m"])
+
+
+def test_candidate_mapping_parser_duplicate_configured_timeframe_rejected() -> None:
+    """6. Configured timeframes containing aliases that normalize to duplicate canonical identity must raise ValueError."""
+    with pytest.raises(ValueError, match="Duplicate canonical timeframe identity '1H'"):
+        parse_continuous_candidate_ids("1H=cand_1h", timeframes=["1h", "1H"])
+
+
+def test_candidate_mapping_parser_single_candidate_multi_timeframe_rejected() -> None:
+    """7. Plain candidate ID supplied for multiple timeframes must raise ValueError."""
+    with pytest.raises(ValueError, match="must specify explicit per-timeframe mappings"):
+        parse_continuous_candidate_ids("cand_single", timeframes=["5m", "15m"])
+
+
+def test_candidate_mapping_parser_unsupported_timeframe_fails_closed() -> None:
+    """8. Unsupported timeframe names in mapping or configured timeframes fail closed."""
+    with pytest.raises(ValueError, match="Unknown or unsupported timeframe '2m'"):
+        parse_continuous_candidate_ids("2m=cand_2m", timeframes=["5m"])
+
+    with pytest.raises(ValueError, match="Unknown or unsupported timeframe '2m'"):
+        parse_continuous_candidate_ids("5m=cand_5m", timeframes=["2m"])
+
+
+def test_candidate_mapping_parser_valid_explicit_mapping() -> None:
+    """9. Valid explicit mapping matching configured timeframes is accepted."""
+    parsed = parse_continuous_candidate_ids("5m=cand_5m,15m=cand_15m", timeframes=["5m", "15m"])
+    assert parsed == {"5m": "cand_5m", "15m": "cand_15m"}
+
+
+def test_candidate_mapping_parser_independent_1m_and_5m_mapping() -> None:
+    """10. Independent 1m and 5m mapping is accepted."""
+    parsed = parse_continuous_candidate_ids("1m=cand_1m,5m=cand_5m", timeframes=["1m", "5m"])
+    assert parsed == {"1m": "cand_1m", "5m": "cand_5m"}
+
+
+def test_candidate_mapping_parser_valid_partial_mapping_seven_timeframes() -> None:
+    """11. Valid partial mapping across seven configured timeframes is accepted."""
+    seven_tfs = ["1m", "5m", "15m", "30m", "1H", "4H", "1D"]
+    parsed = parse_continuous_candidate_ids("5m=cand_5m,1D=cand_1d", timeframes=seven_tfs)
+    assert parsed == {"5m": "cand_5m", "1D": "cand_1d"}
+
+
+def test_candidate_mapping_parser_render_yaml_exact_mapping_accepted() -> None:
+    """12. Exact mapping specified in render.yaml is accepted."""
+    seven_tfs = ["1m", "5m", "15m", "30m", "1H", "4H", "1D"]
+    parsed = parse_continuous_candidate_ids("5m=cand_moving_average_5m,1D=cand_moving_average_1d", timeframes=seven_tfs)
+    assert parsed == {"5m": "cand_moving_average_5m", "1D": "cand_moving_average_1d"}
+
+
+def test_candidate_mapping_parser_single_candidate_single_timeframe_accepted() -> None:
+    """13. Plain candidate ID with exactly one configured timeframe is accepted."""
+    parsed = parse_continuous_candidate_ids("cand_single", timeframes=["5m"])
+    assert parsed == {"5m": "cand_single"}
+
+
+def test_candidate_mapping_parser_whitespace_tolerance() -> None:
+    """14. Surrounding whitespace around valid components is supported cleanly."""
+    parsed = parse_continuous_candidate_ids(" 5m = cand_5m , 1D = cand_1d ", timeframes=["5m", "1D"])
+    assert parsed == {"5m": "cand_5m", "1D": "cand_1d"}
+
+
+def test_candidate_mapping_parser_empty_or_none_compatible() -> None:
+    """15. None or empty argument string returns empty dict."""
+    assert parse_continuous_candidate_ids(None, timeframes=["5m"]) == {}
+    assert parse_continuous_candidate_ids("", timeframes=["5m"]) == {}
+    assert parse_continuous_candidate_ids("   ", timeframes=["5m"]) == {}
 
 
 # -----------------------------------------------------------------------------
