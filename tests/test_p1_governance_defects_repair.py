@@ -290,6 +290,192 @@ def test_defect_b_malformed_dimension_payload_fails():
     assert rob2.is_robust is False
 
 
+# --- BETA Ω ROBUSTNESS FLAG STRICTNESS REGRESSIONS ---
+
+def test_robustness_flag_nested_boolean_controls():
+    """Nested 'passed=False' and 'passed=True' controls."""
+    evidence = make_valid_test_evidence()
+
+    # True control
+    verdict_true = dict(evidence.robustness_verdict)
+    verdict_true["parameter_sensitivity"] = {"passed": True}
+    ev_true = replace(evidence, robustness_verdict=verdict_true)
+    assert assess_research_robustness(ev_true).is_robust is True
+
+    # False control
+    verdict_false = dict(evidence.robustness_verdict)
+    verdict_false["parameter_sensitivity"] = {"passed": False}
+    ev_false = replace(evidence, robustness_verdict=verdict_false)
+    assert assess_research_robustness(ev_false).is_robust is False
+
+
+def test_robustness_flag_nested_string_and_numeric_rejected():
+    """Nested string 'false', '0', 'true', integer 0, 1 rejected."""
+    evidence = make_valid_test_evidence()
+
+    for bad_val in ("false", "0", "true", "1", 0, 1, 0.0, 1.0, None, [True]):
+        verdict = dict(evidence.robustness_verdict)
+        verdict["parameter_sensitivity"] = {"passed": bad_val}
+        ev = replace(evidence, robustness_verdict=verdict)
+        assert assess_research_robustness(ev).is_robust is False, f"Failed to reject bad_val: {bad_val}"
+
+
+def test_robustness_flag_nested_other_flag_keys_malformed_rejected():
+    """Nested 'is_valid', 'robust', and 'is_robust' with malformed non-Boolean values fail closed."""
+    evidence = make_valid_test_evidence()
+
+    for flag_key in ("is_valid", "robust", "is_robust"):
+        for bad_val in ("false", "0", "1", 0, 1, None):
+            verdict = dict(evidence.robustness_verdict)
+            verdict["statistical_validation"] = {flag_key: bad_val}
+            ev = replace(evidence, robustness_verdict=verdict)
+            assert assess_research_robustness(ev).is_robust is False, f"Failed for {flag_key}={bad_val}"
+
+
+def test_robustness_flag_toplevel_boolean_false():
+    """Top-level 'is_robust=False' and 'passed=False' controls."""
+    evidence = make_valid_test_evidence()
+
+    # is_robust=False
+    v1 = dict(evidence.robustness_verdict)
+    v1["is_robust"] = False
+    v1["passed"] = True
+    assert assess_research_robustness(replace(evidence, robustness_verdict=v1)).is_robust is False
+
+    # passed=False
+    v2 = dict(evidence.robustness_verdict)
+    v2["is_robust"] = True
+    v2["passed"] = False
+    assert assess_research_robustness(replace(evidence, robustness_verdict=v2)).is_robust is False
+
+
+def test_robustness_flag_toplevel_malformed_strings_and_integers_rejected():
+    """Top-level 'is_robust="false"', '"0"', '"true"', integer 0 and 1 rejected."""
+    evidence = make_valid_test_evidence()
+
+    for bad_val in ("false", "0", "true", "1", 0, 1, 0.0, 1.0, None):
+        v1 = dict(evidence.robustness_verdict)
+        v1["is_robust"] = bad_val
+        assert assess_research_robustness(replace(evidence, robustness_verdict=v1)).is_robust is False
+
+        v2 = dict(evidence.robustness_verdict)
+        v2["passed"] = bad_val
+        assert assess_research_robustness(replace(evidence, robustness_verdict=v2)).is_robust is False
+
+
+def test_robustness_flag_missing_both_toplevel_flags_fails_closed():
+    """Missing both top-level flags ('is_robust' and 'passed') fails closed."""
+    evidence = make_valid_test_evidence()
+    verdict = dict(evidence.robustness_verdict)
+    if "is_robust" in verdict:
+        del verdict["is_robust"]
+    if "passed" in verdict:
+        del verdict["passed"]
+
+    ev = replace(evidence, robustness_verdict=verdict)
+    assert assess_research_robustness(ev).is_robust is False
+
+
+def test_robustness_flag_conflicting_toplevel_flags_fails_closed():
+    """Conflicting top-level Boolean flags ('is_robust=True' and 'passed=False') fail closed."""
+    evidence = make_valid_test_evidence()
+
+    # is_robust=True, passed=False -> False
+    v1 = dict(evidence.robustness_verdict)
+    v1["is_robust"] = True
+    v1["passed"] = False
+    assert assess_research_robustness(replace(evidence, robustness_verdict=v1)).is_robust is False
+
+    # is_robust=False, passed=True -> False
+    v2 = dict(evidence.robustness_verdict)
+    v2["is_robust"] = False
+    v2["passed"] = True
+    assert assess_research_robustness(replace(evidence, robustness_verdict=v2)).is_robust is False
+
+
+def test_robustness_flag_valid_positive_controls():
+    """Valid positive controls using actual Boolean True values pass."""
+    evidence = make_valid_test_evidence()
+    v = dict(evidence.robustness_verdict)
+    v["is_robust"] = True
+    v["passed"] = True
+    ev = replace(evidence, robustness_verdict=v)
+
+    rob = assess_research_robustness(ev)
+    assert rob.is_robust is True
+
+    qual = qualify_research_evidence(ev, robustness_assessment=rob)
+    assert qual.qualified is True
+    assert validate_promotion_eligibility(ev) is True
+
+
+def test_end_to_end_security_gate_malformed_evidence_cannot_authorize_buy_decision(tmp_path: Path):
+    """End-to-end security gate: Malformed robustness evidence cannot qualify, promote, resolve, or produce a BUY decision."""
+    from src.evaluation.live_runtime import evaluate_authorized_live_runtime, evaluate_production_decision
+    import pandas as pd
+
+    # Construct evidence with malformed string "0" for top-level is_robust
+    evidence = make_valid_test_evidence()
+    verdict = dict(evidence.robustness_verdict)
+    verdict["is_robust"] = "0"
+    verdict["passed"] = True
+    malformed_ev = replace(evidence, robustness_verdict=verdict)
+
+    # 1. Robustness assessment fails
+    rob = assess_research_robustness(malformed_ev)
+    assert rob.is_robust is False
+
+    # 2. Qualification fails
+    qual = qualify_research_evidence(malformed_ev, robustness_assessment=rob)
+    assert qual.qualified is False
+
+    # 3. Promotion eligibility fails
+    with pytest.raises((PromotionEligibilityError, ValueError)):
+        validate_promotion_eligibility(malformed_ev)
+
+    # 4. Save attempt fails closed on qualification check
+    candidate_id = "cand_malformed_security_gate"
+    with pytest.raises(PromotionEligibilityError):
+        save_research_candidate(
+            candidate_id=candidate_id,
+            evidence=malformed_ev,
+            operational_stability_score=0.85,
+            governance_decision=qual,
+            base_dir=tmp_path,
+        )
+
+    # Candidate was blocked from being saved; resolution returns None
+    assert resolve_promoted_candidate(
+        candidate_id=candidate_id,
+        base_dir=tmp_path,
+    ) is None
+
+    # 5. Direct evaluate_production_decision / evaluate_authorized_live_runtime cannot produce BUY
+    # Attempting to authorize runtime with invalid candidate/evidence fails
+    with pytest.raises((PromotionEligibilityError, ValueError, AttributeError)):
+        from src.evaluation.live_production_decision import authorize_production_runtime
+        from src.evaluation.live_runtime_context import create_authorized_runtime_context
+
+        art = PromotedCandidateArtifact(
+            candidate_id=candidate_id,
+            strategy_name="momentum",
+            strategy_version="1.0",
+            evidence=malformed_ev,
+            symbol="XAUUSD",
+            timeframe="5m",
+            operational_stability_score=0.85,
+            governance_decision_fingerprint=qual.decision_fingerprint,
+        )
+        # Authorize runtime must fail eligibility validation
+        authorize_production_runtime(
+            promoted_artifact=art,
+            candidate_id=candidate_id,
+            symbol="XAUUSD",
+            timeframe="5m",
+            base_dir=tmp_path,
+        )
+
+
 # --- DEFECT C REGRESSIONS ---
 
 def test_defect_c_tampered_governance_fingerprint_in_binding_rejected(tmp_path: Path):
