@@ -647,12 +647,15 @@ def test_41_conflicting_caller_stability_score_rejected():
     from src.evaluation.live_production_decision import authorize_production_runtime, ProductionAuthorizationReceipt
 
     ev = make_promoted_evidence(symbol="XAUUSD", timeframe="5m")
+    from src.evaluation.research_qualification import qualify_research_evidence
+    from src.evaluation.research_robustness import assess_research_robustness
+    gov_fp = qualify_research_evidence(ev, robustness_assessment=assess_research_robustness(ev)).decision_fingerprint
     cand = PromotedCandidateArtifact.from_persisted_research(
         candidate_id="cand_auth_stab",
         evidence=ev,
         symbol="XAUUSD",
         timeframe="5m",
-        governance_decision_fingerprint="gov_fp_test_123",
+        governance_decision_fingerprint=gov_fp,
         operational_stability_score=0.88,
     )
     data = make_market_data(rows=80, trend="UP")

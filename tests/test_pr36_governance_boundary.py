@@ -296,13 +296,17 @@ def test_J_ast_structural_architectural_checks():
                 "research_qualification.py must not call assess_research_robustness internally."
             )
 
-    # 2. production promotion path (live_production_decision.py) must not call qualify_research_evidence inside validate_promotion_eligibility
+    # 2. production promotion path (live_production_decision.py) must delegate directly to qualify_research_evidence
     prod_file = pathlib.Path("src/evaluation/live_production_decision.py")
     tree_prod = ast.parse(prod_file.read_text(encoding="utf-8"), filename=str(prod_file))
+    found_qual_call = False
     for node in ast.walk(tree_prod):
         if isinstance(node, ast.FunctionDef) and node.name == "validate_promotion_eligibility":
             for child in ast.walk(node):
                 if isinstance(child, ast.Call) and isinstance(child.func, ast.Name):
-                    assert child.func.id != "qualify_research_evidence", (
-                        "validate_promotion_eligibility must consume canonical decision rather than recomputing qualification."
-                    )
+                    if child.func.id == "qualify_research_evidence":
+                        found_qual_call = True
+
+    assert found_qual_call is True, (
+        "validate_promotion_eligibility must delegate directly to canonical qualify_research_evidence."
+    )

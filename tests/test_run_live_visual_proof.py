@@ -9,6 +9,8 @@ from src.evaluation.live_production_decision import (
     ProductionRuntimeAuthorizationError,
     PromotionStatus,
 )
+from src.evaluation.research_qualification import qualify_research_evidence
+from src.evaluation.research_robustness import assess_research_robustness
 from tests.test_production_decision_integrity import make_promoted_evidence
 
 
@@ -42,6 +44,7 @@ def _make_mock_quote() -> dict:
 
 def test_live_visual_proof_creates_real_html(monkeypatch, tmp_path):
     ev = make_promoted_evidence(PromotionStatus.PROMOTABLE)
+    gov_fp = qualify_research_evidence(ev, robustness_assessment=assess_research_robustness(ev)).decision_fingerprint
     promoted = PromotedCandidateArtifact(
         candidate_id="cand_vp_01",
         strategy_name="momentum",
@@ -50,7 +53,7 @@ def test_live_visual_proof_creates_real_html(monkeypatch, tmp_path):
         symbol="XAUUSD",
         timeframe="5m",
         operational_stability_score=0.7458282289664787,
-        governance_decision_fingerprint="gov_fp_vp_01",
+        governance_decision_fingerprint=gov_fp,
     )
 
     monkeypatch.setattr(
@@ -119,7 +122,7 @@ def test_live_visual_proof_creates_real_html(monkeypatch, tmp_path):
     assert result["timestamp"]
     assert result["market_state"]
     assert result["authorization_fingerprint"] is not None
-    assert result["governance_decision_fingerprint"] == "gov_fp_vp_01"
+    assert result["governance_decision_fingerprint"] == gov_fp
 
     assert isinstance(
         result["quote_stale"],
@@ -160,6 +163,7 @@ def test_live_visual_proof_html_contains_visual_elements():
 
 def test_live_visual_proof_uses_production_selection(monkeypatch, tmp_path):
     ev = make_promoted_evidence(PromotionStatus.PROMOTABLE)
+    gov_fp = qualify_research_evidence(ev, robustness_assessment=assess_research_robustness(ev)).decision_fingerprint
     promoted = PromotedCandidateArtifact(
         candidate_id="cand_vp_02",
         strategy_name="momentum",
@@ -168,7 +172,7 @@ def test_live_visual_proof_uses_production_selection(monkeypatch, tmp_path):
         symbol="XAUUSD",
         timeframe="5m",
         operational_stability_score=0.85,
-        governance_decision_fingerprint="gov_fp_vp_02",
+        governance_decision_fingerprint=gov_fp,
     )
 
     monkeypatch.setattr(
