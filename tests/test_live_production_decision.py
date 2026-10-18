@@ -115,7 +115,7 @@ def test_unsupported_stable_strategy_blocks_trade(monkeypatch):
     mock_cand.governance_decision = None
     mock_cand.parameters = mom_cand.parameters
     mock_cand.operational_stability_score = 0.7458282289664787
-    mock_cand.governance_decision_fingerprint = "gov_dec_unsupported"
+    mock_cand.governance_decision_fingerprint = mom_cand.governance_decision_fingerprint
     mock_cand.artifact_fingerprint = "art_unsupported"
     mock_cand.campaign_selection_decision_fingerprint = None
 

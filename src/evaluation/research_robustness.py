@@ -16,9 +16,11 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 from collections.abc import Mapping
 from dataclasses import asdict, dataclass, field
 from enum import Enum
+from numbers import Real
 from typing import Any
 
 import pandas as pd
@@ -336,16 +338,67 @@ def assess_research_robustness(
     else:
         dims_eval_list = []
         dims_unavail_list = []
+        failed_dims_list = []
+
+        def _has_non_finite_numeric(obj: Any) -> bool:
+            if isinstance(obj, bool):
+                return False
+            if isinstance(obj, Real):
+                return not math.isfinite(float(obj))
+            if isinstance(obj, Mapping):
+                return any(_has_non_finite_numeric(v) for v in obj.values())
+            if isinstance(obj, (list, tuple, set)):
+                return any(_has_non_finite_numeric(item) for item in obj)
+            return False
 
         for dim in all_known_dimensions:
-            if dim in verdict or f"{dim}_verdict" in verdict:
+            dim_val = verdict.get(dim)
+            if dim_val is None:
+                dim_val = verdict.get(f"{dim}_verdict")
+
+            if dim_val is None:
+                dims_unavail_list.append(dim)
+                continue
+
+            if isinstance(dim_val, bool):
                 dims_eval_list.append(dim)
+                if not dim_val:
+                    failed_dims_list.append(dim)
+            elif isinstance(dim_val, Mapping):
+                if not dim_val:
+                    dims_unavail_list.append(dim)
+                    continue
+
+                dims_eval_list.append(dim)
+                dim_passed = True
+
+                if _has_non_finite_numeric(dim_val):
+                    dim_passed = False
+                elif "passed" in dim_val:
+                    dim_passed = bool(dim_val["passed"])
+                elif "is_valid" in dim_val:
+                    dim_passed = bool(dim_val["is_valid"])
+                elif "robust" in dim_val:
+                    dim_passed = bool(dim_val["robust"])
+                elif "is_robust" in dim_val:
+                    dim_passed = bool(dim_val["is_robust"])
+                else:
+                    dim_passed = False
+
+                if not dim_passed:
+                    failed_dims_list.append(dim)
             else:
                 dims_unavail_list.append(dim)
 
         dims_eval = tuple(dims_eval_list)
         dims_unavail = tuple(dims_unavail_list)
-        is_robust = bool(verdict.get("is_robust", verdict.get("passed", False)))
+        top_level_passed = bool(verdict.get("is_robust", verdict.get("passed", True)))
+
+        is_robust = (
+            len(dims_unavail_list) == 0
+            and len(failed_dims_list) == 0
+            and top_level_passed
+        )
 
         reasons = verdict.get("rejection_reasons", [])
         limitations = []
@@ -358,7 +411,9 @@ def assess_research_robustness(
         else:
             robustness_status = RobustnessStatus.EVALUATED
 
-        if not is_robust:
+        if failed_dims_list:
+            limitations.append(f"Failed robustness dimensions: {', '.join(failed_dims_list)}.")
+        if not is_robust and not failed_dims_list and not dims_unavail:
             limitations.append(f"Candidate failed robustness checks: {verdict.get('verdict_summary', 'failed')}")
 
         summary = verdict.get("verdict_summary", "Robustness evaluation completed.")

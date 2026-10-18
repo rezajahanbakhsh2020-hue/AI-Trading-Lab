@@ -34,7 +34,13 @@ from src.evaluation.live_execution_runtime import (
     ProductionRuntimeConfig,
     ProductionBlocked,
 )
+from src.evaluation.research_qualification import qualify_research_evidence
+from src.evaluation.research_robustness import assess_research_robustness
 from tests.test_production_decision_integrity import make_promoted_evidence
+
+
+def _gov_fp(ev):
+    return qualify_research_evidence(ev, robustness_assessment=assess_research_robustness(ev)).decision_fingerprint
 
 
 def test_authorization_success():
@@ -47,7 +53,7 @@ def test_authorization_success():
         symbol="XAUUSD",
         timeframe="5m",
         operational_stability_score=0.85,
-        governance_decision_fingerprint="gov_fp_12345",
+        governance_decision_fingerprint=_gov_fp(ev),
         campaign_selection_decision_fingerprint="camp_fp_67890",
     )
 
@@ -65,7 +71,7 @@ def test_authorization_success():
     assert auth.strategy_version == "1.0"
     assert auth.symbol == "XAUUSD"
     assert auth.timeframe == "5m"
-    assert auth.governance_decision_fingerprint == "gov_fp_12345"
+    assert auth.governance_decision_fingerprint == _gov_fp(ev)
     assert auth.campaign_selection_decision_fingerprint == "camp_fp_67890"
     assert auth.promoted_artifact_fingerprint == cand.artifact_fingerprint
     assert auth.authorization_fingerprint is not None
@@ -82,7 +88,7 @@ def test_missing_governance_fingerprint_fails():
         symbol="XAUUSD",
         timeframe="5m",
         operational_stability_score=0.85,
-        governance_decision_fingerprint="gov_fp_valid",
+        governance_decision_fingerprint=_gov_fp(ev),
     )
 
     # Force invalid governance_decision_fingerprint on artifact
@@ -106,7 +112,7 @@ def test_mismatched_candidate_scope_fails():
         symbol="XAUUSD",
         timeframe="5m",
         operational_stability_score=0.85,
-        governance_decision_fingerprint="gov_fp_123",
+        governance_decision_fingerprint=_gov_fp(ev),
     )
 
     with pytest.raises(ProductionRuntimeAuthorizationError, match="symbol"):
@@ -134,7 +140,7 @@ def test_campaign_lineage_preservation_to_authorization():
         symbol="XAUUSD",
         timeframe="5m",
         operational_stability_score=0.85,
-        governance_decision_fingerprint="gov_fp_abc",
+        governance_decision_fingerprint=_gov_fp(ev),
         campaign_selection_decision_fingerprint="camp_fp_xyz",
     )
 
@@ -157,7 +163,7 @@ def test_deterministic_authorization_fingerprint():
         symbol="XAUUSD",
         timeframe="5m",
         operational_stability_score=0.85,
-        governance_decision_fingerprint="gov_fp_det",
+        governance_decision_fingerprint=_gov_fp(ev),
     )
 
     now = datetime(2026, 1, 1, 12, 0, 0, tzinfo=timezone.utc)
@@ -177,7 +183,7 @@ def test_authorization_is_immutable():
         symbol="XAUUSD",
         timeframe="5m",
         operational_stability_score=0.85,
-        governance_decision_fingerprint="gov_fp_imm",
+        governance_decision_fingerprint=_gov_fp(ev),
     )
 
     auth = authorize_production_runtime(cand, symbol="XAUUSD", timeframe="5m")
@@ -196,7 +202,7 @@ def test_receipt_projection_and_invariants():
         symbol="XAUUSD",
         timeframe="5m",
         operational_stability_score=0.85,
-        governance_decision_fingerprint="gov_fp_rec",
+        governance_decision_fingerprint=_gov_fp(ev),
         campaign_selection_decision_fingerprint="camp_fp_rec",
     )
 
@@ -233,7 +239,7 @@ def test_missing_mandatory_receipt_field_fails_closed():
         symbol="XAUUSD",
         timeframe="5m",
         operational_stability_score=0.85,
-        governance_decision_fingerprint="gov_fp_rec",
+        governance_decision_fingerprint=_gov_fp(ev),
     )
 
     now = datetime(2026, 1, 1, 12, 0, 0, tzinfo=timezone.utc)

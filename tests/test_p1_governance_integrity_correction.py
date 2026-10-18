@@ -146,7 +146,7 @@ def make_test_evidence(
 def test_missing_exact_utc_partition_timestamps_fails_closed(tmp_path: Path) -> None:
     evidence = make_test_evidence(start_utc_is=None, end_utc_is=None)
 
-    with pytest.raises(ValueError, match="failed research evidence integrity gate"):
+    with pytest.raises(ValueError, match="missing required exact UTC timestamps"):
         validate_promotion_eligibility(evidence)
 
     # Cannot save as candidate
@@ -177,7 +177,7 @@ def test_overlapping_or_reversed_partitions_fails_closed(tmp_path: Path) -> None
         end_date_oos="2025-01-05",
     )
 
-    with pytest.raises(ValueError, match="failed research evidence integrity gate"):
+    with pytest.raises(ValueError, match="date/timestamp mismatch"):
         validate_promotion_eligibility(evidence)
 
 
@@ -189,7 +189,7 @@ def test_partially_evaluated_robustness_fails_closed(tmp_path: Path) -> None:
     assert qual.qualified is False
     assert RejectionReason.FAILED_ROBUSTNESS in qual.rejection_reasons
 
-    with pytest.raises(ValueError, match="canonical robustness assessment has unevaluated dimensions"):
+    with pytest.raises(ValueError, match="unevaluated dimensions"):
         validate_promotion_eligibility(evidence)
 
 
@@ -200,7 +200,7 @@ def test_mismatched_governance_decision_fingerprint_fails_closed() -> None:
     assert qual.qualified is True
 
     # Bad governance decision fingerprint passed with mismatching governance_decision
-    with pytest.raises(ValueError, match="does not match expected fingerprint"):
+    with pytest.raises(ValueError, match="does not match"):
         validate_promotion_eligibility(
             evidence,
             governance_decision=qual,
@@ -216,7 +216,7 @@ def test_mismatched_governance_decision_fingerprint_fails_closed() -> None:
         experiment_fingerprint=evidence.experiment_fingerprint,
         policy_version="tampered_policy_version",
     )
-    with pytest.raises(ValueError, match="does not match expected fingerprint"):
+    with pytest.raises(ValueError, match="does not match"):
         validate_promotion_eligibility(
             evidence,
             governance_decision=fake_qual,

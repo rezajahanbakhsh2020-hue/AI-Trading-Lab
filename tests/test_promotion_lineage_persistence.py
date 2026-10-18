@@ -16,7 +16,11 @@ from src.evaluation.campaign_synthesis import (
     ResearchCampaignSelectionDecision,
 )
 from src.evaluation.live_production_decision import (
+    ProductionPromotionPolicy,
     PromotedCandidateArtifact,
+)
+from src.evaluation.research_qualification import (
+    ResearchQualificationPolicy,
 )
 from src.evaluation.research_constitution import (
     CodeProvenance,
@@ -391,6 +395,15 @@ def test_E_conflicting_persisted_lineage(tmp_path: Path):
 def test_F_artifact_fingerprint_changes_with_lineage():
     """Test F: PromotedCandidateArtifact.artifact_fingerprint changes when lineage fingerprints differ."""
     evidence = make_test_evidence()
+    rob = assess_research_robustness(evidence)
+    p1 = ResearchQualificationPolicy(policy_version="qualification_v1.0")
+    p2 = ResearchQualificationPolicy(policy_version="qualification_v2.0")
+
+    gov1 = qualify_research_evidence(evidence, policy=p1, robustness_assessment=rob)
+    gov2 = qualify_research_evidence(evidence, policy=p2, robustness_assessment=rob)
+
+    policy1 = ProductionPromotionPolicy(policy_version="qualification_v1.0")
+    policy2 = ProductionPromotionPolicy(policy_version="qualification_v2.0")
 
     art1 = PromotedCandidateArtifact.from_persisted_research(
         candidate_id="cand_F",
@@ -398,7 +411,8 @@ def test_F_artifact_fingerprint_changes_with_lineage():
         symbol="XAUUSD",
         timeframe="5m",
         operational_stability_score=0.85,
-        governance_decision_fingerprint="gov_fp_1",
+        policy=policy1,
+        governance_decision_fingerprint=gov1.decision_fingerprint,
         campaign_selection_decision_fingerprint="cs_fp_1",
     )
 
@@ -408,7 +422,8 @@ def test_F_artifact_fingerprint_changes_with_lineage():
         symbol="XAUUSD",
         timeframe="5m",
         operational_stability_score=0.85,
-        governance_decision_fingerprint="gov_fp_2",
+        policy=policy2,
+        governance_decision_fingerprint=gov2.decision_fingerprint,
         campaign_selection_decision_fingerprint="cs_fp_1",
     )
 
@@ -418,7 +433,8 @@ def test_F_artifact_fingerprint_changes_with_lineage():
         symbol="XAUUSD",
         timeframe="5m",
         operational_stability_score=0.85,
-        governance_decision_fingerprint="gov_fp_1",
+        policy=policy1,
+        governance_decision_fingerprint=gov1.decision_fingerprint,
         campaign_selection_decision_fingerprint="cs_fp_2",
     )
 

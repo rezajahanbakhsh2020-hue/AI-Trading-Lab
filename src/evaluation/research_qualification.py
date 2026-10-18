@@ -243,8 +243,8 @@ def qualify_research_evidence(
     if evidence.promotion_status not in policy.allowed_statuses:
         rejection_reasons.append(RejectionReason.CRITIQUE_REJECTED)
         notes.append(
-            f"Evidence status '{evidence.promotion_status.value}' is not in allowed "
-            f"promotion statuses {[s.value for s in policy.allowed_statuses]}."
+            f"Evidence status '{evidence.promotion_status.value}' is not allowed for production "
+            f"(allowed: {[s.value for s in policy.allowed_statuses]})."
         )
 
     # 5. Prior rejection reasons check

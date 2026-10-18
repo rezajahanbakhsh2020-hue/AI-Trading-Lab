@@ -405,6 +405,7 @@ def persist_promoted_candidate_binding(
     from src.evaluation.live_production_decision import ProductionPromotionPolicy
     if isinstance(policy, ProductionPromotionPolicy):
         qual_policy = ResearchQualificationPolicy(
+            policy_version=policy.policy_version,
             allowed_statuses=policy.allowed_statuses,
             max_evidence_age_days=policy.max_evidence_age_days,
             require_robustness=policy.require_robustness_pass,
@@ -676,6 +677,11 @@ def _reconstitute_promoted_candidate_from_binding(
 
     reconstitution_policy = policy if policy is not None else ProductionPromotionPolicy()
     gov_fp = binding.get("governance_decision_fingerprint")
+    if gov_fp is None or not isinstance(gov_fp, str) or not gov_fp.strip():
+        raise PromotionEligibilityError(
+            f"Candidate '{candidate_id}' binding is missing required governance_decision_fingerprint."
+        )
+    gov_fp = gov_fp.strip()
     campaign_sel_fp = binding.get("campaign_selection_decision_fingerprint")
     try:
         validate_promotion_eligibility(evidence, policy=reconstitution_policy, governance_decision_fingerprint=gov_fp)
