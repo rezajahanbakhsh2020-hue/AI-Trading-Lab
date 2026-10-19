@@ -2259,36 +2259,38 @@ def main() -> None:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 
     if args.continuous:
-        if args.timeframes:
-            raw_tfs = args.timeframes.split(",")
-            if any(not t.strip() for t in raw_tfs):
-                raise ValueError(f"Invalid --timeframes argument '{args.timeframes}'. Contains empty timeframe token.")
-            tfs = [t.strip() for t in raw_tfs]
-        else:
-            tfs = [args.interval]
-
-        candidate_map = parse_continuous_candidate_ids(args.candidate_id, timeframes=tfs)
-
-        cont_runtime = ContinuousLiveRuntime(
-            symbol=args.symbol,
-            timeframes=tfs,
-            poll_interval=args.poll_interval,
-            publish=args.publish,
-            skip_if_no_trade=args.skip_no_trade,
-            persist=not args.no_persist,
-            limit=args.limit,
-            research_dir=DEFAULT_RESEARCH_DIR,
-            candidate_ids=candidate_map,
-        )
-
-        def handle_signal(sig, frame):
-            logger.info("Signal %s received, stopping continuous runtime...", sig)
-            cont_runtime.stop()
-
-        signal.signal(signal.SIGINT, handle_signal)
-        signal.signal(signal.SIGTERM, handle_signal)
-
         try:
+            if args.timeframes is not None:
+                if not args.timeframes.strip():
+                    raise ValueError("Explicitly empty --timeframes argument provided.")
+                raw_tfs = args.timeframes.split(",")
+                if any(not t.strip() for t in raw_tfs):
+                    raise ValueError(f"Invalid --timeframes argument '{args.timeframes}'. Contains empty timeframe token.")
+                tfs = [t.strip() for t in raw_tfs]
+            else:
+                tfs = [args.interval]
+
+            candidate_map = parse_continuous_candidate_ids(args.candidate_id, timeframes=tfs)
+
+            cont_runtime = ContinuousLiveRuntime(
+                symbol=args.symbol,
+                timeframes=tfs,
+                poll_interval=args.poll_interval,
+                publish=args.publish,
+                skip_if_no_trade=args.skip_no_trade,
+                persist=not args.no_persist,
+                limit=args.limit,
+                research_dir=DEFAULT_RESEARCH_DIR,
+                candidate_ids=candidate_map,
+            )
+
+            def handle_signal(sig, frame):
+                logger.info("Signal %s received, stopping continuous runtime...", sig)
+                cont_runtime.stop()
+
+            signal.signal(signal.SIGINT, handle_signal)
+            signal.signal(signal.SIGTERM, handle_signal)
+
             cont_runtime.run_continuous(max_ticks=args.max_ticks)
         except Exception as exc:
             logger.error("Continuous live execution failed: %s", exc)
