@@ -360,6 +360,7 @@ def test_complete_discovery_path(source_candidate, sample_market_data, dataset_s
         min_is_sharpe=-10.0,
         min_validation_sharpe=-10.0,
         min_oos_sharpe=-10.0,
+        min_walk_forward_positive_ratio=0.0,
         robustness_criteria=RobustnessCriteria(
             min_t_stat=-10.0,
             max_p_value=1.0,
