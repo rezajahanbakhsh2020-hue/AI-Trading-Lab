@@ -348,7 +348,7 @@ def test_risk_parameters_without_ohlc_fails_closed():
             "return": [0.0, 0.01, 0.01],
         }
     )
-    with pytest.raises(ValueError, match="Backtesting with risk parameters .* requires OHLC columns"):
+    with pytest.raises(ValueError, match="Backtesting with risk parameters requires OHLC columns"):
         run_backtest(df, stop_loss_pct=0.01)
 
 
