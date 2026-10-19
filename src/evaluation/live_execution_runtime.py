@@ -1227,27 +1227,57 @@ def parse_continuous_candidate_ids(
     Single candidate ID is accepted ONLY when exactly 1 timeframe is configured.
     Blind copying of a single candidate across multiple continuous timeframes is strictly rejected.
     """
+    if not timeframes:
+        raise ValueError("At least one configured timeframe is required.")
+
+    canonical_tfs: list[str] = []
+    configured_set: set[str] = set()
+    for tf in timeframes:
+        if not tf or not str(tf).strip():
+            raise ValueError("Configured timeframe must be a non-empty string.")
+        c_tf = CanonicalTimeframe.from_str(str(tf).strip()).value
+        if c_tf in configured_set:
+            raise ValueError(f"Duplicate canonical timeframe identity '{c_tf}' in configured timeframes.")
+        configured_set.add(c_tf)
+        canonical_tfs.append(c_tf)
+
     if not arg_str or not str(arg_str).strip():
         return {}
 
     cleaned = str(arg_str).strip()
     result: dict[str, str] = {}
 
-    if "=" in cleaned:
-        parts = [p.strip() for p in cleaned.split(",") if p.strip()]
-        for part in parts:
+    if "=" in cleaned or "," in cleaned:
+        raw_parts = [p.strip() for p in cleaned.split(",")]
+        if any(not p for p in raw_parts):
+            raise ValueError(f"Malformed candidate-id mapping '{arg_str}'. Contains empty comma-separated segment.")
+
+        for part in raw_parts:
             if "=" not in part:
                 raise ValueError(f"Invalid candidate-id mapping part '{part}'. Expected 'timeframe=candidate_id'.")
-            tf, cand = part.split("=", 1)
-            tf_canonical = CanonicalTimeframe.from_str(tf.strip()).value
-            cand_id = cand.strip()
+            tf_str, cand_str = part.split("=", 1)
+            tf_clean = tf_str.strip()
+            cand_id = cand_str.strip()
+
+            if not tf_clean:
+                raise ValueError(f"Empty timeframe supplied in candidate mapping part '{part}'.")
             if not cand_id:
-                raise ValueError(f"Empty candidate_id supplied for timeframe '{tf}'.")
+                raise ValueError(f"Empty candidate_id supplied for timeframe '{tf_clean}'.")
+
+            tf_canonical = CanonicalTimeframe.from_str(tf_clean).value
+
+            if tf_canonical in result:
+                raise ValueError(f"Duplicate candidate mapping key for canonical timeframe '{tf_canonical}'.")
+
+            if tf_canonical not in configured_set:
+                raise ValueError(
+                    f"Explicit candidate mapping key '{tf_canonical}' is outside the configured timeframe scope {sorted(configured_set)}."
+                )
+
             result[tf_canonical] = cand_id
         return result
 
-    # Plain string without '='
-    canonical_tfs = [CanonicalTimeframe.from_str(tf).value for tf in timeframes]
+    # Plain string without '=' or ','
     if len(canonical_tfs) == 1:
         result[canonical_tfs[0]] = cleaned
         return result
@@ -1291,13 +1321,50 @@ class ContinuousLiveRuntime:
         if timeframes is None:
             tf_list = [DEFAULT_INTERVAL]
         elif isinstance(timeframes, str):
-            tf_list = [timeframes]
+            raw_tfs = timeframes.split(",")
+            if any(not t.strip() for t in raw_tfs):
+                raise ValueError(f"Invalid timeframes string '{timeframes}'. Contains empty timeframe token.")
+            tf_list = [t.strip() for t in raw_tfs]
         else:
             tf_list = list(timeframes)
 
+        if not tf_list:
+            raise ValueError("ContinuousLiveRuntime requires at least one configured timeframe.")
+
         # Enforce repository's existing canonical timeframe vocabulary.
-        # Fails closed on unsupported timeframes.
-        self.timeframes = tuple(CanonicalTimeframe.from_str(tf).value for tf in tf_list)
+        # Fails closed on unsupported timeframes and duplicate identities.
+        canonical_tfs: list[str] = []
+        seen_tfs: set[str] = set()
+        for tf in tf_list:
+            if not isinstance(tf, str) or not tf.strip():
+                raise ValueError("Configured timeframe must be a non-empty string.")
+            c_tf = CanonicalTimeframe.from_str(tf.strip()).value
+            if c_tf in seen_tfs:
+                raise ValueError(f"Duplicate canonical timeframe identity '{c_tf}' in configured timeframes.")
+            seen_tfs.add(c_tf)
+            canonical_tfs.append(c_tf)
+
+        self.timeframes = tuple(canonical_tfs)
+        configured_set = set(self.timeframes)
+
+        # Validate directly supplied candidate_ids mapping
+        normalized_candidate_ids: dict[str, str] = {}
+        if candidate_ids is not None:
+            if not isinstance(candidate_ids, dict):
+                raise ValueError("candidate_ids must be a dictionary mapping timeframes to candidate IDs.")
+            for k, v in candidate_ids.items():
+                if not isinstance(k, str) or not k.strip():
+                    raise ValueError(f"Invalid candidate_ids key {k!r}: mapping keys must be non-empty strings.")
+                if not isinstance(v, str) or not v.strip():
+                    raise ValueError(f"Invalid candidate_id value {v!r} for timeframe {k!r}: candidate IDs must be non-empty strings.")
+                k_canonical = CanonicalTimeframe.from_str(k.strip()).value
+                if k_canonical in normalized_candidate_ids:
+                    raise ValueError(f"Duplicate candidate mapping key for canonical timeframe '{k_canonical}'.")
+                if k_canonical not in configured_set:
+                    raise ValueError(
+                        f"Explicit candidate mapping key '{k_canonical}' is outside the configured timeframe scope {sorted(configured_set)}."
+                    )
+                normalized_candidate_ids[k_canonical] = v.strip()
 
         self.poll_interval = max(0.0, poll_interval)
         if publisher is not None:
@@ -1317,7 +1384,7 @@ class ContinuousLiveRuntime:
         self.store_path = Path(store_path)
         self.snapshot_path = Path(snapshot_path)
         self.market_data_loaders = market_data_loaders
-        self.candidate_ids = candidate_ids or {}
+        self.candidate_ids = normalized_candidate_ids
         self.clock = clock or (lambda: datetime.datetime.now(datetime.timezone.utc))
         self.sleep_fn = sleep_fn or time.sleep
 
@@ -2192,33 +2259,38 @@ def main() -> None:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 
     if args.continuous:
-        if args.timeframes:
-            tfs = [t.strip() for t in args.timeframes.split(",") if t.strip()]
-        else:
-            tfs = [args.interval]
-
-        candidate_map = parse_continuous_candidate_ids(args.candidate_id, timeframes=tfs)
-
-        cont_runtime = ContinuousLiveRuntime(
-            symbol=args.symbol,
-            timeframes=tfs,
-            poll_interval=args.poll_interval,
-            publish=args.publish,
-            skip_if_no_trade=args.skip_no_trade,
-            persist=not args.no_persist,
-            limit=args.limit,
-            research_dir=DEFAULT_RESEARCH_DIR,
-            candidate_ids=candidate_map,
-        )
-
-        def handle_signal(sig, frame):
-            logger.info("Signal %s received, stopping continuous runtime...", sig)
-            cont_runtime.stop()
-
-        signal.signal(signal.SIGINT, handle_signal)
-        signal.signal(signal.SIGTERM, handle_signal)
-
         try:
+            if args.timeframes is not None:
+                if not args.timeframes.strip():
+                    raise ValueError("Explicitly empty --timeframes argument provided.")
+                raw_tfs = args.timeframes.split(",")
+                if any(not t.strip() for t in raw_tfs):
+                    raise ValueError(f"Invalid --timeframes argument '{args.timeframes}'. Contains empty timeframe token.")
+                tfs = [t.strip() for t in raw_tfs]
+            else:
+                tfs = [args.interval]
+
+            candidate_map = parse_continuous_candidate_ids(args.candidate_id, timeframes=tfs)
+
+            cont_runtime = ContinuousLiveRuntime(
+                symbol=args.symbol,
+                timeframes=tfs,
+                poll_interval=args.poll_interval,
+                publish=args.publish,
+                skip_if_no_trade=args.skip_no_trade,
+                persist=not args.no_persist,
+                limit=args.limit,
+                research_dir=DEFAULT_RESEARCH_DIR,
+                candidate_ids=candidate_map,
+            )
+
+            def handle_signal(sig, frame):
+                logger.info("Signal %s received, stopping continuous runtime...", sig)
+                cont_runtime.stop()
+
+            signal.signal(signal.SIGINT, handle_signal)
+            signal.signal(signal.SIGTERM, handle_signal)
+
             cont_runtime.run_continuous(max_ticks=args.max_ticks)
         except Exception as exc:
             logger.error("Continuous live execution failed: %s", exc)

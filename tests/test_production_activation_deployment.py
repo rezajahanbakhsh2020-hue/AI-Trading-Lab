@@ -268,3 +268,61 @@ def test_readiness_and_publisher_share_validation_contract() -> None:
     ok, err = validate_publication_configuration("ftp://example.com/ingest", "secret")
     assert ok is False
     assert "scheme" in err.lower()
+
+
+def test_cli_explicit_empty_timeframes_argument_rejected(monkeypatch) -> None:
+    """CLI test 1: --continuous --timeframes '' explicitly empty string is rejected with exit code 1."""
+    from src.evaluation.live_execution_runtime import main
+
+    monkeypatch.setattr("sys.argv", ["run_live_execution.py", "--continuous", "--timeframes", ""])
+
+    with pytest.raises(SystemExit) as exc_info:
+        main()
+
+    assert exc_info.value.code == 1
+
+
+def test_cli_omitted_timeframes_uses_interval_fallback(monkeypatch) -> None:
+    """CLI test 2: Omitted --timeframes argument falls back to --interval."""
+    from src.evaluation.live_execution_runtime import main
+
+    monkeypatch.setattr("sys.argv", ["run_live_execution.py", "--continuous", "--interval", "15m"])
+
+    mock_run_cont = MagicMock()
+    with patch("src.evaluation.live_execution_runtime.ContinuousLiveRuntime.run_continuous", mock_run_cont):
+        with patch("src.evaluation.live_execution_runtime.parse_continuous_candidate_ids", return_value={}) as mock_parse:
+            main()
+
+            mock_parse.assert_called_once_with(None, timeframes=["15m"])
+            mock_run_cont.assert_called_once()
+
+
+@pytest.mark.parametrize("malformed_tf", ["5m,", ",5m", "5m,,1D", "5m, ,1D"])
+def test_cli_malformed_timeframes_tokens_rejected(monkeypatch, malformed_tf: str) -> None:
+    """CLI test 3: Malformed empty timeframe tokens in --timeframes argument are rejected with exit code 1."""
+    from src.evaluation.live_execution_runtime import main
+
+    monkeypatch.setattr("sys.argv", ["run_live_execution.py", "--continuous", "--timeframes", malformed_tf])
+
+    with pytest.raises(SystemExit) as exc_info:
+        main()
+
+    assert exc_info.value.code == 1
+
+
+def test_cli_valid_explicit_seven_timeframe_configuration_accepted(monkeypatch) -> None:
+    """CLI test 4: Valid explicit seven-timeframe configuration is accepted."""
+    from src.evaluation.live_execution_runtime import main
+
+    seven_str = "1m,5m,15m,30m,1H,4H,1D"
+    cand_str = "5m=cand_5m,1D=cand_1d"
+    monkeypatch.setattr("sys.argv", ["run_live_execution.py", "--continuous", "--timeframes", seven_str, "--candidate-id", cand_str])
+
+    mock_run_cont = MagicMock()
+    with patch("src.evaluation.live_execution_runtime.ContinuousLiveRuntime.run_continuous", mock_run_cont):
+        with patch("src.evaluation.live_execution_runtime.parse_continuous_candidate_ids", return_value={"5m": "cand_5m", "1D": "cand_1d"}) as mock_parse:
+            main()
+
+            expected_tfs = ["1m", "5m", "15m", "30m", "1H", "4H", "1D"]
+            mock_parse.assert_called_once_with(cand_str, timeframes=expected_tfs)
+            mock_run_cont.assert_called_once()
