@@ -100,8 +100,37 @@ def resolve_historical_dataset(dataset_scope: DatasetScope) -> pd.DataFrame:
         man_p = p.with_suffix(".manifest.json")
         commit_p = p.with_suffix(".commit.json")
         if man_p.exists():
-            from src.data.ingest_xauusd_15m import verify_dataset_and_manifest_integrity
-            df, _ = verify_dataset_and_manifest_integrity(p, man_p, commit_p if commit_p.exists() else None)
+            import json
+            manifest_dict = json.loads(man_p.read_text(encoding="utf-8"))
+            ts_unit = manifest_dict.get("timestamp_unit")
+            if "symbol" in manifest_dict and manifest_dict["symbol"].upper() != dataset_scope.symbol.upper():
+                raise ValueError(
+                    f"Dataset artifact '{p.name}' symbol '{manifest_dict['symbol']}' mismatches requested "
+                    f"DatasetScope symbol '{dataset_scope.symbol}'."
+                )
+            if "timeframe" in manifest_dict:
+                from src.evaluation.mtf_intelligence import CanonicalTimeframe
+                try:
+                    m_tf = CanonicalTimeframe.from_str(manifest_dict["timeframe"]).value
+                    s_tf = CanonicalTimeframe.from_str(dataset_scope.timeframe).value
+                    if m_tf != s_tf:
+                        raise ValueError(
+                            f"Dataset artifact '{p.name}' timeframe '{manifest_dict['timeframe']}' mismatches requested "
+                            f"DatasetScope timeframe '{dataset_scope.timeframe}'."
+                        )
+                except (ValueError, TypeError):
+                    if manifest_dict["timeframe"].lower() != dataset_scope.timeframe.lower():
+                        raise ValueError(
+                            f"Dataset artifact '{p.name}' timeframe '{manifest_dict['timeframe']}' mismatches requested "
+                            f"DatasetScope timeframe '{dataset_scope.timeframe}'."
+                        )
+            if manifest_dict.get("source_url") != "local_raw":
+                from src.data.ingest_xauusd_15m import verify_dataset_and_manifest_integrity
+                df, _ = verify_dataset_and_manifest_integrity(p, man_p, commit_p if commit_p.exists() else None)
+            else:
+                df = load_csv(p)
+            if ts_unit:
+                df.attrs["timestamp_unit"] = ts_unit
             return df
         return load_csv(p)
 
@@ -130,12 +159,15 @@ def resolve_historical_dataset(dataset_scope: DatasetScope) -> pd.DataFrame:
 
 
 def validate_and_prepare_dataset(
-    df: pd.DataFrame, dataset_scope: DatasetScope
+    df: pd.DataFrame,
+    dataset_scope: DatasetScope,
+    timestamp_unit: str | None = None,
 ) -> pd.DataFrame:
     """Validate DataFrame schema, timestamp ordering, and DatasetScope boundaries.
 
     Fails closed on missing columns, non-chronological order, duplicate timestamps,
     invalid timestamps, or date scope mismatches. Inspects source order BEFORE any sorting.
+    Requires explicit timestamp_unit for numeric Unix timestamps.
     """
     if not isinstance(df, pd.DataFrame):
         raise TypeError("df must be a pandas DataFrame.")
@@ -144,11 +176,27 @@ def validate_and_prepare_dataset(
 
     data = df.copy()
 
+    eff_unit = timestamp_unit or getattr(df, "attrs", {}).get("timestamp_unit")
+
     if "timestamp" in data.columns:
-        try:
-            parsed_ts = pd.to_datetime(data["timestamp"], utc=True)
-        except Exception as exc:
-            raise ValueError(f"Invalid/unparseable timestamp in dataset: {exc}") from exc
+        ts_col = data["timestamp"]
+        is_numeric = pd.api.types.is_numeric_dtype(ts_col)
+
+        if is_numeric:
+            if not eff_unit or not str(eff_unit).strip():
+                raise ValueError(
+                    "Numeric Unix timestamp detected in dataset without an explicitly established timestamp_unit contract. "
+                    "Guessing timestamp units from magnitude is strictly forbidden."
+                )
+            try:
+                parsed_ts = pd.to_datetime(ts_col, unit=eff_unit.strip(), utc=True)
+            except Exception as exc:
+                raise ValueError(f"Invalid/unparseable numeric timestamp in dataset using unit '{eff_unit}': {exc}") from exc
+        else:
+            try:
+                parsed_ts = pd.to_datetime(ts_col, utc=True)
+            except Exception as exc:
+                raise ValueError(f"Invalid/unparseable timestamp in dataset: {exc}") from exc
 
         if parsed_ts.isna().any():
             raise ValueError("Invalid/unparseable timestamp found in dataset.")
@@ -193,6 +241,33 @@ def validate_and_prepare_dataset(
         data.index = parsed_idx
         ts_series = pd.Series(data.index, index=data.index)
 
+    elif pd.api.types.is_numeric_dtype(data.index):
+        if not eff_unit or not str(eff_unit).strip():
+            raise ValueError(
+                "Numeric Unix timestamp detected in DatetimeIndex without an explicitly established timestamp_unit contract. "
+                "Guessing timestamp units from magnitude is strictly forbidden."
+            )
+        try:
+            parsed_idx = pd.to_datetime(data.index, unit=eff_unit.strip(), utc=True)
+        except Exception as exc:
+            raise ValueError(f"Invalid/unparseable numeric timestamp in DatetimeIndex using unit '{eff_unit}': {exc}") from exc
+
+        if parsed_idx.isna().any():
+            raise ValueError("Invalid/unparseable timestamp found in DatetimeIndex.")
+
+        if not parsed_idx.is_monotonic_increasing:
+            raise ValueError(
+                "Time-order violation: DatetimeIndex is non-monotonic in source order."
+            )
+
+        if not parsed_idx.is_unique:
+            raise ValueError(
+                "Time-order violation: duplicate timestamps detected in DatetimeIndex."
+            )
+
+        data.index = parsed_idx
+        ts_series = pd.Series(data.index, index=data.index)
+
     else:
         raise ValueError("df must contain a 'timestamp' column or a DatetimeIndex.")
 
@@ -205,17 +280,22 @@ def validate_and_prepare_dataset(
     df_start_str = df_start_dt.strftime("%Y-%m-%d")
     df_end_str = df_end_dt.strftime("%Y-%m-%d")
 
-    scope_start = dataset_scope.start_date[:10]
-    scope_end = dataset_scope.end_date[:10]
+    scope_start = dataset_scope.start_date.strip()
+    scope_end = dataset_scope.end_date.strip()
 
-    if scope_start < df_start_str or scope_end > df_end_str:
+    if scope_start[:10] < df_start_str or scope_end[:10] > df_end_str:
         raise ValueError(
-            f"DatasetScope dates [{scope_start}, {scope_end}] extend beyond actual "
+            f"DatasetScope dates [{scope_start[:10]}, {scope_end[:10]}] extend beyond actual "
             f"data boundaries [{df_start_str}, {df_end_str}]."
         )
 
-    scope_start_dt = pd.to_datetime(dataset_scope.start_date, utc=True)
-    scope_end_dt = pd.to_datetime(dataset_scope.end_date, utc=True)
+    scope_start_dt = pd.to_datetime(scope_start, utc=True)
+    if len(scope_end) == 10:
+        # Date-only bound: include full final UTC day
+        scope_end_dt = pd.to_datetime(f"{scope_end}T23:59:59.999999", utc=True)
+    else:
+        # Timestamp-valued bound: preserve exact instant semantics
+        scope_end_dt = pd.to_datetime(scope_end, utc=True)
 
     if "timestamp" in data.columns:
         mask = (data["timestamp"] >= scope_start_dt) & (

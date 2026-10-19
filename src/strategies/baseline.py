@@ -29,3 +29,18 @@ def baseline_signal(
     ).astype(int)
 
     return result
+
+
+def moving_average_signal(
+    df: pd.DataFrame,
+    fast_window: int = 20,
+    slow_window: int = 50,
+) -> pd.DataFrame:
+    """
+    Generate a simple moving-average crossover signal for the moving_average candidate identity.
+
+    Signal:
+        1  -> fast MA above slow MA
+        0  -> otherwise
+    """
+    return baseline_signal(df, fast_window=fast_window, slow_window=slow_window)

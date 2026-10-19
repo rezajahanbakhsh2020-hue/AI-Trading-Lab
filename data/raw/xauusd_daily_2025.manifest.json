@@ -1,0 +1,26 @@
+{
+  "manifest_version": "1.0",
+  "dataset_id": "xauusd_daily_2025",
+  "symbol": "XAUUSD",
+  "timeframe": "1D",
+  "source_url": "local_raw",
+  "timestamp_unit": "s",
+  "raw_sha256": "523119638c48dd3f434f60b1789f93d60a56a40154585fba20cc46d3ea65a537",
+  "output_sha256": "523119638c48dd3f434f60b1789f93d60a56a40154585fba20cc46d3ea65a537",
+  "row_count": 261,
+  "columns": [
+    "timestamp",
+    "open",
+    "high",
+    "low",
+    "close"
+  ],
+  "start_timestamp_utc": "2025-01-01T00:00:00+00:00",
+  "end_timestamp_utc": "2025-12-31T00:00:00+00:00",
+  "validation_summary": {
+    "columns_valid": true,
+    "timestamps_monotonic": true,
+    "timestamps_unique": true,
+    "ohlc_geometry_valid": true
+  }
+}
