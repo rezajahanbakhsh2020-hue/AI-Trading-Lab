@@ -215,15 +215,40 @@ def validate_and_prepare_dataset(
         )
 
     scope_start_dt = pd.to_datetime(dataset_scope.start_date, utc=True)
-    scope_end_dt = pd.to_datetime(dataset_scope.end_date, utc=True)
+    scope_end_raw = str(dataset_scope.end_date).strip()
+    scope_end_dt = pd.to_datetime(scope_end_raw, utc=True)
+    # A date-only end boundary is inclusive for the whole UTC calendar day.
+    # Timestamp-valued boundaries retain their exact inclusive instant semantics.
+    scope_end_is_date_only = (
+        len(scope_end_raw) == 10
+        and scope_end_raw[4:5] == "-"
+        and scope_end_raw[7:8] == "-"
+    )
+    scope_end_exclusive = (
+        scope_end_dt + pd.Timedelta(days=1)
+        if scope_end_is_date_only
+        else None
+    )
 
     if "timestamp" in data.columns:
-        mask = (data["timestamp"] >= scope_start_dt) & (
-            data["timestamp"] <= scope_end_dt
-        )
+        if scope_end_is_date_only:
+            mask = (data["timestamp"] >= scope_start_dt) & (
+                data["timestamp"] < scope_end_exclusive
+            )
+        else:
+            mask = (data["timestamp"] >= scope_start_dt) & (
+                data["timestamp"] <= scope_end_dt
+            )
         filtered = data.loc[mask].reset_index(drop=True)
     else:
-        mask = (data.index >= scope_start_dt) & (data.index <= scope_end_dt)
+        if scope_end_is_date_only:
+            mask = (data.index >= scope_start_dt) & (
+                data.index < scope_end_exclusive
+            )
+        else:
+            mask = (data.index >= scope_start_dt) & (
+                data.index <= scope_end_dt
+            )
         filtered = data.loc[mask]
 
     if filtered.empty:

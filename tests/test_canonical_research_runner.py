@@ -141,6 +141,33 @@ def test_B_invalid_dataset_scope_fails_closed():
         run_research_experiment(hyp, df=df)
 
 
+def test_date_only_dataset_scope_end_includes_full_final_intraday_day():
+    df = pd.DataFrame({
+        "timestamp": [
+            "2025-01-01T00:00:00+00:00",
+            "2025-01-02T00:00:00+00:00",
+            "2025-01-02T12:00:00+00:00",
+            "2025-01-02T23:55:00+00:00",
+        ],
+        "open": [1.0, 1.0, 1.0, 1.0],
+        "high": [1.1, 1.1, 1.1, 1.1],
+        "low": [0.9, 0.9, 0.9, 0.9],
+        "close": [1.0, 1.0, 1.0, 1.0],
+    })
+    scope = DatasetScope(
+        dataset_id="xauusd_intraday_scope_test",
+        symbol="XAUUSD",
+        timeframe="5m",
+        start_date="2025-01-01",
+        end_date="2025-01-02",
+    )
+
+    filtered = validate_and_prepare_dataset(df, scope)
+
+    assert len(filtered) == 4
+    assert filtered["timestamp"].max() == pd.Timestamp("2025-01-02T23:55:00+00:00")
+
+
 def test_C_invalid_execution_assumptions_fail_closed():
     with pytest.raises(ValueError, match="transaction_cost cannot be negative"):
         ExecutionAssumptions(transaction_cost=-0.01, slippage=0.001, latency_ms=10.0)
