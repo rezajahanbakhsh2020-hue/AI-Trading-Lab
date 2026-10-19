@@ -100,9 +100,15 @@ def resolve_historical_dataset(dataset_scope: DatasetScope) -> pd.DataFrame:
         man_p = p.with_suffix(".manifest.json")
         commit_p = p.with_suffix(".commit.json")
         if man_p.exists():
-            import json
-            manifest_dict = json.loads(man_p.read_text(encoding="utf-8"))
+            from src.data.ingest_xauusd_15m import verify_dataset_and_manifest_integrity
+            df, manifest_dict = verify_dataset_and_manifest_integrity(p, man_p, commit_p if commit_p.exists() else None)
+
             ts_unit = manifest_dict.get("timestamp_unit")
+            if "dataset_id" in manifest_dict and manifest_dict["dataset_id"].strip().lower() != dataset_scope.dataset_id.strip().lower():
+                raise ValueError(
+                    f"Dataset artifact '{p.name}' dataset_id '{manifest_dict['dataset_id']}' mismatches requested "
+                    f"DatasetScope dataset_id '{dataset_scope.dataset_id}'."
+                )
             if "symbol" in manifest_dict and manifest_dict["symbol"].upper() != dataset_scope.symbol.upper():
                 raise ValueError(
                     f"Dataset artifact '{p.name}' symbol '{manifest_dict['symbol']}' mismatches requested "
@@ -124,11 +130,6 @@ def resolve_historical_dataset(dataset_scope: DatasetScope) -> pd.DataFrame:
                             f"Dataset artifact '{p.name}' timeframe '{manifest_dict['timeframe']}' mismatches requested "
                             f"DatasetScope timeframe '{dataset_scope.timeframe}'."
                         )
-            if manifest_dict.get("source_url") != "local_raw":
-                from src.data.ingest_xauusd_15m import verify_dataset_and_manifest_integrity
-                df, _ = verify_dataset_and_manifest_integrity(p, man_p, commit_p if commit_p.exists() else None)
-            else:
-                df = load_csv(p)
             if ts_unit:
                 df.attrs["timestamp_unit"] = ts_unit
             return df

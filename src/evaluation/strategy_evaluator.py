@@ -262,6 +262,7 @@ def evaluate_strategy(
         strategy_result,
         transaction_cost=transaction_cost,
         slippage=slippage,
+        **risk_kwargs,
     )
 
     total = _safe(total_return(backtest_result))

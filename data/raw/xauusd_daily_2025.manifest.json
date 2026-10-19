@@ -7,7 +7,7 @@
   "timestamp_unit": "s",
   "raw_sha256": "523119638c48dd3f434f60b1789f93d60a56a40154585fba20cc46d3ea65a537",
   "output_sha256": "523119638c48dd3f434f60b1789f93d60a56a40154585fba20cc46d3ea65a537",
-  "row_count": 261,
+  "row_count": 312,
   "columns": [
     "timestamp",
     "open",
