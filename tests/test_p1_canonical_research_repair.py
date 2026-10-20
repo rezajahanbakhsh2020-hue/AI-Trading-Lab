@@ -678,8 +678,163 @@ def test_evidence_integrity_gate_enforces_exact_utc_partition_timestamps():
 
 
 # -----------------------------------------------------------------------------
-# 7. Canonical Timeframes Independence Test
+# 7. Canonical Timeframes Independence & End-to-End Proof Tests
 # -----------------------------------------------------------------------------
+
+def test_e2e_1d_moving_average_signal_generation_and_publication(tmp_path):
+    """E2E Proof: Manifest dataset + moving_average strategy + valid promoted candidate -> canonical decision -> publication."""
+    import json
+    from datetime import datetime, timezone
+    from unittest.mock import patch, MagicMock
+
+    from src.evaluation.research_constitution import (
+        ResearchHypothesis,
+        ExecutionAssumptions,
+        CodeProvenance,
+        WalkForwardProtocol,
+        HypothesisStatus,
+        RobustnessCriteria,
+    )
+    from src.evaluation.research_runner import run_research_experiment, DiscoveryCriteria
+    from src.evaluation.research_robustness import assess_research_robustness
+    from src.evaluation.research_store import persist_promoted_candidate_binding
+    from src.evaluation.live_execution_runtime import LiveExecutionRuntime, ProductionRuntimeConfig
+    from src.integration.project2_publisher import Project2Publisher
+
+    res_dir = tmp_path / "research"
+    store_path = tmp_path / "decision_history.json"
+    snapshot_path = tmp_path / "live_snapshot.json"
+
+    ds = DatasetScope(
+        dataset_id="xauusd_daily_2025",
+        symbol="XAUUSD",
+        timeframe="1D",
+        start_date="2025-01-01",
+        end_date="2025-12-31",
+    )
+    raw_df = resolve_historical_dataset(ds)
+    df = validate_and_prepare_dataset(raw_df, ds)
+
+    hyp = ResearchHypothesis(
+        statement="Moving Average 5/20 on 1D",
+        methodology_version="1.0",
+        strategy_name="moving_average",
+        strategy_version="1.0",
+        dataset_scope=ds,
+        execution_assumptions=ExecutionAssumptions(0.0001, 0.0001, 10.0),
+        code_provenance=CodeProvenance("a1b2c3d4e5f678901234567890abcdef12345678"),
+        benchmark_reference="buy_and_hold",
+        parameters={"fast_window": 5, "slow_window": 20, "stop_loss_pct": 0.02, "take_profit_pct": 0.04},
+        walk_forward_protocol=WalkForwardProtocol(train_size=150, test_size=30),
+        status=HypothesisStatus.ACCEPTED_FOR_RESEARCH,
+    )
+    crit = DiscoveryCriteria(
+        min_observations_is=30,
+        min_observations_oos=10,
+        min_is_sharpe=-2.0,
+        min_validation_sharpe=-2.0,
+        min_oos_sharpe=-2.0,
+        max_oos_sharpe_degradation=10.0,
+        min_walk_forward_positive_ratio=0.0,
+        robustness_criteria=RobustnessCriteria(
+            min_perturbation_pass_rate=0.0,
+            min_cost_stress_pass_rate=0.0,
+            min_subsample_pass_rate=0.0,
+            min_t_stat=-10.0,
+            max_p_value=1.0,
+        ),
+    )
+    ev = run_research_experiment(hyp, df=df, criteria=crit, persist_evidence=True, base_dir=res_dir)
+    rob = assess_research_robustness(ev)
+
+    persist_promoted_candidate_binding(
+        candidate_id="cand_moving_average_1d",
+        evidence=ev,
+        operational_stability_score=0.75,
+        robustness_assessment=rob,
+        base_dir=res_dir,
+    )
+
+    ref_now = datetime(2026, 1, 1, 0, 1, 0, tzinfo=timezone.utc)
+
+    publisher = Project2Publisher(
+        publish_url="http://localhost:8000/api/v1/integration/project1/ingest",
+        api_key="test_api_key",
+        enabled=True,
+        max_age_seconds=86400 * 30,
+    )
+    cfg = ProductionRuntimeConfig(
+        symbol="XAUUSD",
+        timeframe="1D",
+        candidate_id="cand_moving_average_1d",
+        research_dir=res_dir,
+    )
+
+    def mock_urlopen(req, timeout=None):
+        payload = json.loads(req.data.decode("utf-8"))
+        pub_id = payload.get("event_id") or payload.get("publication_id")
+        resp = MagicMock()
+        resp.status = 200
+        resp.getcode.return_value = 200
+        resp.__enter__.return_value = resp
+        resp.read.return_value = json.dumps({"status": "INGESTED", "ack_id": pub_id, "event_id": pub_id}).encode("utf-8")
+        return resp
+
+    runtime = LiveExecutionRuntime(
+        symbol="XAUUSD",
+        interval="1D",
+        max_age_seconds=86400 * 30,
+        publisher=publisher,
+        production_config=cfg,
+        store_path=store_path,
+        snapshot_path=snapshot_path,
+        research_dir=res_dir,
+    )
+
+    with patch("urllib.request.urlopen", side_effect=mock_urlopen):
+        res = runtime.run_once(market_data=df, reference_now=ref_now)
+
+    assert res["blocked"] is False
+    assert res["decision"] == "BUY"
+    assert res["publish_result"]["published"] is True
+    assert res["publish_result"]["status"] == "PUBLISHED"
+    assert res["publish_result"]["delivery_status"] == "DELIVERED"
+    assert store_path.exists()
+
+
+def test_unauthorized_runtime_publishes_nothing(tmp_path):
+    """Negative Control: Unauthorized/unpromoted timeframe publishes nothing."""
+    from datetime import datetime, timezone
+    from src.evaluation.live_execution_runtime import LiveExecutionRuntime, ProductionRuntimeConfig
+    from src.integration.project2_publisher import Project2Publisher
+
+    store_path = tmp_path / "decision_history.json"
+    snapshot_path = tmp_path / "live_snapshot.json"
+
+    df_5m = sample_daily_df_iso_strings()
+
+    publisher = Project2Publisher(
+        publish_url="http://localhost:8000/api/v1/integration/project1/ingest",
+        api_key="test_api_key",
+        enabled=True,
+    )
+    cfg = ProductionRuntimeConfig(symbol="XAUUSD", timeframe="5m")
+
+    runtime = LiveExecutionRuntime(
+        symbol="XAUUSD",
+        interval="5m",
+        publisher=publisher,
+        production_config=cfg,
+        store_path=store_path,
+        snapshot_path=snapshot_path,
+    )
+
+    res = runtime.run_once(market_data=df_5m)
+
+    assert res["blocked"] is True
+    assert res["publish_result"]["published"] is False
+    assert res["publish_result"]["status"] == "SKIPPED_BLOCKED"
+
 
 def test_seven_canonical_timeframes_independent_resolution():
     canonical_timeframes = ["1m", "5m", "15m", "30m", "1H", "4H", "1D"]
