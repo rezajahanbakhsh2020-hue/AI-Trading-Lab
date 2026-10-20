@@ -31,6 +31,7 @@ from src.evaluation.research_runner import (
     resolve_historical_dataset,
     run_research_experiment,
     validate_and_prepare_dataset,
+    _calculate_max_drawdown,
 )
 from src.evaluation.evidence_integrity import ResearchEvidenceIntegrityGate
 from src.evaluation.research_qualification import qualify_research_evidence
@@ -39,6 +40,12 @@ from src.evaluation.strategy_evaluator import (
     evaluate_strategy,
     validate_and_separate_strategy_kwargs,
 )
+
+
+def test_walk_forward_drawdown_includes_initial_capital():
+    # The first OOS loss must be measured against starting equity 1.0.
+    assert _calculate_max_drawdown([-0.05, 0.02]) == pytest.approx(-0.05)
+    assert _calculate_max_drawdown([0.10, -0.05]) == pytest.approx(-0.05)
 
 
 def sample_daily_df_numeric_seconds() -> pd.DataFrame:
@@ -1145,7 +1152,7 @@ def test_real_manifest_backed_daily_candidate_qualifies_without_policy_relaxatio
     # dataset. Use a separate deterministic, completed daily candle fixture
     # only for the live evaluation because the 2025 dataset correctly emits NO TRADE.
     runtime_dates = pd.date_range(
-        end=(pd.Timestamp(now).normalize() - pd.Timedelta(days=1)),
+        end=(pd.Timestamp(now) - pd.Timedelta(days=1, minutes=1)),
         periods=100,
         freq="D",
     )
