@@ -711,6 +711,7 @@ def _eval_walk_forward(
                 return None, rejections
 
     wf_returns: list[float] = []
+    wf_period_returns: list[float] = []
     positive_windows = 0
 
     for w in windows:
@@ -744,6 +745,7 @@ def _eval_walk_forward(
             if not math.isfinite(ret):
                 raise ValueError("Walk-forward test return is non-finite.")
             wf_returns.append(ret)
+            wf_period_returns.extend(numeric_returns)
             if ret > 0:
                 positive_windows += 1
         except Exception:
@@ -778,18 +780,47 @@ def _eval_walk_forward(
     start_ts_utc = min_ts.isoformat()
     end_ts_utc = max_ts.isoformat()
 
-    mean_ret = sum(wf_returns) / len(wf_returns)
+    # Report metrics from the concatenated, disjoint test periods only.
+    # Fold-level returns remain separately available for positive-window ratio.
+    period_returns = pd.Series(wf_period_returns, dtype=float)
+    equity = (1.0 + period_returns).cumprod()
+    total_return = float(equity.iloc[-1] - 1.0) if not equity.empty else 0.0
+    drawdown = float((equity / equity.cummax() - 1.0).min()) if not equity.empty else 0.0
+
+    std_return = float(period_returns.std()) if len(period_returns) > 1 else 0.0
+    sharpe = (
+        float(period_returns.mean() / std_return)
+        if std_return > 0.0 and math.isfinite(std_return)
+        else 0.0
+    )
+    active_returns = period_returns[period_returns != 0.0]
+    win_rate_value = (
+        float((active_returns > 0.0).sum() / len(active_returns))
+        if not active_returns.empty
+        else 0.0
+    )
+    gross_profit = float(period_returns[period_returns > 0.0].sum())
+    gross_loss = float(abs(period_returns[period_returns < 0.0].sum()))
+    profit_factor_value = (
+        gross_profit / gross_loss
+        if gross_profit > 0.0 and gross_loss > 0.0
+        else 0.0
+    )
 
     wf_partition = EvidencePartition(
         role=EvidencePartitionRole.WALK_FORWARD,
         start_date=start_str,
         end_date=end_str,
-        total_return=round(mean_ret, 6),
-        max_drawdown=0.0,
-        sharpe_ratio=0.0,
-        observations=len(wf_returns),
+        total_return=round(total_return, 6),
+        max_drawdown=round(drawdown, 6),
+        sharpe_ratio=round(sharpe, 6),
+        win_rate=round(win_rate_value, 6),
+        profit_factor=round(profit_factor_value, 6),
+        observations=len(wf_period_returns),
         additional_metrics={
             "walk_forward_windows": float(len(wf_returns)),
+            "test_period_observations": float(len(wf_period_returns)),
+            "mean_window_return": float(sum(wf_returns) / len(wf_returns)),
             "positive_window_ratio": float(pos_ratio),
             "latency_ms": latency_ms,
             "transaction_cost": transaction_cost,
