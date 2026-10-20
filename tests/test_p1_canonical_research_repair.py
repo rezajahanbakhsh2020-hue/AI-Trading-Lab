@@ -693,10 +693,10 @@ def test_e2e_1d_moving_average_signal_generation_and_publication(tmp_path):
         CodeProvenance,
         WalkForwardProtocol,
         HypothesisStatus,
-        RobustnessCriteria,
     )
-    from src.evaluation.research_runner import run_research_experiment, DiscoveryCriteria
+    from src.evaluation.research_runner import run_research_experiment
     from src.evaluation.research_robustness import assess_research_robustness
+    from src.evaluation.stability import CanonicalStabilityEvidence, calculate_stability_score
     from src.evaluation.research_store import persist_promoted_candidate_binding
     from src.evaluation.live_execution_runtime import LiveExecutionRuntime, ProductionRuntimeConfig
     from src.integration.project2_publisher import Project2Publisher
@@ -722,35 +722,40 @@ def test_e2e_1d_moving_average_signal_generation_and_publication(tmp_path):
         strategy_version="1.0",
         dataset_scope=ds,
         execution_assumptions=ExecutionAssumptions(0.0001, 0.0001, 10.0),
-        code_provenance=CodeProvenance("a1b2c3d4e5f678901234567890abcdef12345678"),
+        code_provenance=CodeProvenance("c53e8b2bd54f1a64d3e6ea25989949ca097a2493"),
         benchmark_reference="buy_and_hold",
         parameters={"fast_window": 5, "slow_window": 20, "stop_loss_pct": 0.02, "take_profit_pct": 0.04},
         walk_forward_protocol=WalkForwardProtocol(train_size=150, test_size=30),
         status=HypothesisStatus.ACCEPTED_FOR_RESEARCH,
     )
-    crit = DiscoveryCriteria(
-        min_observations_is=30,
-        min_observations_oos=10,
-        min_is_sharpe=-2.0,
-        min_validation_sharpe=-2.0,
-        min_oos_sharpe=-2.0,
-        max_oos_sharpe_degradation=10.0,
-        min_walk_forward_positive_ratio=0.0,
-        robustness_criteria=RobustnessCriteria(
-            min_perturbation_pass_rate=0.0,
-            min_cost_stress_pass_rate=0.0,
-            min_subsample_pass_rate=0.0,
-            min_t_stat=-10.0,
-            max_p_value=1.0,
-        ),
-    )
-    ev = run_research_experiment(hyp, df=df, criteria=crit, persist_evidence=True, base_dir=res_dir)
+    # Use the repository's normal discovery and robustness policy. The E2E test
+    # must not weaken production qualification thresholds to manufacture a pass.
+    ev = run_research_experiment(hyp, df=df, persist_evidence=True, base_dir=res_dir)
     rob = assess_research_robustness(ev)
+
+    stability_inputs = pd.DataFrame(
+        [
+            {
+                "strategy": ev.spec.strategy_name,
+                "total_return": part.total_return,
+                "max_drawdown": part.max_drawdown,
+                "sharpe_ratio": part.sharpe_ratio,
+                "positive_window_rate": 1.0 if part.total_return > 0 else 0.0,
+            }
+            for part in ev.partitions
+        ]
+    )
+    stability_ranking = calculate_stability_score(stability_inputs)
+    assert not stability_ranking.empty
+    measured_stability = CanonicalStabilityEvidence(
+        strategy_name=ev.spec.strategy_name,
+        stability_score=float(stability_ranking.iloc[0]["stability_score"]),
+    )
 
     persist_promoted_candidate_binding(
         candidate_id="cand_moving_average_1d",
         evidence=ev,
-        operational_stability_score=0.75,
+        canonical_stability=measured_stability,
         robustness_assessment=rob,
         base_dir=res_dir,
     )
@@ -770,8 +775,11 @@ def test_e2e_1d_moving_average_signal_generation_and_publication(tmp_path):
         research_dir=res_dir,
     )
 
+    delivered_payloads = []
+
     def mock_urlopen(req, timeout=None):
         payload = json.loads(req.data.decode("utf-8"))
+        delivered_payloads.append(payload)
         pub_id = payload.get("event_id") or payload.get("publication_id")
         resp = MagicMock()
         resp.status = 200
@@ -791,8 +799,13 @@ def test_e2e_1d_moving_average_signal_generation_and_publication(tmp_path):
         research_dir=res_dir,
     )
 
-    with patch("urllib.request.urlopen", side_effect=mock_urlopen):
+    with patch("urllib.request.urlopen", side_effect=mock_urlopen) as publisher_transport:
         res = runtime.run_once(market_data=df, reference_now=ref_now)
+
+    assert publisher_transport.call_count == 1
+    assert len(delivered_payloads) == 1
+    assert delivered_payloads[0]["symbol"] == "XAUUSD"
+    assert delivered_payloads[0]["timeframe"] == "1D"
 
     assert res["blocked"] is False
     assert res["decision"] == "BUY"
