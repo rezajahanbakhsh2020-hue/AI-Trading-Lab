@@ -1035,7 +1035,17 @@ def test_real_manifest_backed_daily_candidate_qualifies_without_policy_relaxatio
     research_dir = Path("results/research_experiments")
     binding_path = research_dir / "by_candidate" / candidate_id / "candidate.json"
 
-    # Verify evidence integrity against checked-in committed artifact
+    # Verify candidate binding JSON file directly from disk
+    binding_data = json.loads(binding_path.read_text(encoding="utf-8"))
+    assert binding_data["candidate_id"] == candidate_id
+    assert binding_data["strategy_name"] == hypothesis.strategy_name
+    assert binding_data["strategy_version"] == hypothesis.strategy_version
+    assert binding_data["symbol"] == scope.symbol
+    assert binding_data["timeframe"] == scope.timeframe
+    assert binding_data["parameters"] == hypothesis.parameters
+    assert binding_data["experiment_fingerprint"] == evidence.experiment_fingerprint
+
+    # Resolve promoted candidate and verify evidence linkage against committed candidate binding
     promoted = resolve_promoted_candidate(
         candidate_id=candidate_id,
         symbol="XAUUSD",
@@ -1044,7 +1054,7 @@ def test_real_manifest_backed_daily_candidate_qualifies_without_policy_relaxatio
     )
     assert promoted is not None
     committed_evidence = promoted.evidence
-    assert committed_evidence.evidence_id == promoted.evidence.evidence_id
+    assert binding_data["evidence_id"] == committed_evidence.evidence_id
     assert committed_evidence.experiment_fingerprint == evidence.experiment_fingerprint
     assert committed_evidence.spec.fingerprint == evidence.spec.fingerprint
 
@@ -1054,7 +1064,7 @@ def test_real_manifest_backed_daily_candidate_qualifies_without_policy_relaxatio
     committed_qualification = qualify_research_evidence(committed_evidence, robustness_assessment=committed_robustness)
     assert committed_qualification.qualified is True
 
-    # Assert exact substantive partition outputs between freshly executed evidence and committed evidence artifact
+    # Fail-closed exact comparison of all substantive partition outputs
     assert len(committed_evidence.partitions) == len(evidence.partitions)
     for comm_p, fresh_p in zip(committed_evidence.partitions, evidence.partitions):
         assert comm_p.role == fresh_p.role
@@ -1064,10 +1074,28 @@ def test_real_manifest_backed_daily_candidate_qualifies_without_policy_relaxatio
         assert comm_p.total_return == pytest.approx(fresh_p.total_return, abs=1e-6)
         assert comm_p.max_drawdown == pytest.approx(fresh_p.max_drawdown, abs=1e-6)
         assert comm_p.sharpe_ratio == pytest.approx(fresh_p.sharpe_ratio, abs=1e-6)
-        if comm_p.win_rate is not None and fresh_p.win_rate is not None:
+
+        # Fail closed on win_rate presence/absence mismatches
+        assert (comm_p.win_rate is None) == (fresh_p.win_rate is None)
+        if comm_p.win_rate is not None:
             assert comm_p.win_rate == pytest.approx(fresh_p.win_rate, abs=1e-6)
-        if comm_p.profit_factor is not None and fresh_p.profit_factor is not None:
+
+        # Fail closed on profit_factor presence/absence mismatches
+        assert (comm_p.profit_factor is None) == (fresh_p.profit_factor is None)
+        if comm_p.profit_factor is not None:
             assert comm_p.profit_factor == pytest.approx(fresh_p.profit_factor, abs=1e-6)
+
+        # Compare additional_metrics fields
+        comm_metrics = comm_p.additional_metrics or {}
+        fresh_metrics = fresh_p.additional_metrics or {}
+        assert comm_metrics.keys() == fresh_metrics.keys()
+        for k in comm_metrics:
+            v_comm = comm_metrics[k]
+            v_fresh = fresh_metrics[k]
+            if isinstance(v_comm, (int, float)) and isinstance(v_fresh, (int, float)):
+                assert v_comm == pytest.approx(v_fresh, abs=1e-6)
+            else:
+                assert v_comm == v_fresh
 
     # Execute the real authorization gate on the committed candidate.
     authorization = authorize_production_runtime(promoted, symbol="XAUUSD", timeframe="1D")
