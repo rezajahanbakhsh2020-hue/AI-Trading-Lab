@@ -131,7 +131,15 @@ def run_backtest(
                     tp_hit = (c_high >= tp_price) if tp_price is not None else False
 
                     if sl_hit and tp_hit:
-                        exit_price = min(c_open, sl_price) if c_open < sl_price else sl_price
+                        # If the bar opens beyond either limit, honor the executable
+                        # opening price. Otherwise intrabar order is unknowable, so
+                        # resolve the collision conservatively at the stop.
+                        if c_open <= sl_price:
+                            exit_price = c_open
+                        elif c_open >= tp_price:
+                            exit_price = c_open
+                        else:
+                            exit_price = sl_price
                         gross_returns[i] = (exit_price - prev_close) / prev_close
                         positions[i] = 0.0
                         turnovers[i] = 1.0
@@ -176,7 +184,15 @@ def run_backtest(
                     tp_hit = (c_high >= tp_price) if tp_price is not None else False
 
                     if sl_hit and tp_hit:
-                        exit_price = min(c_open, sl_price) if c_open < sl_price else sl_price
+                        # If the bar opens beyond either limit, honor the executable
+                        # opening price. Otherwise intrabar order is unknowable, so
+                        # resolve the collision conservatively at the stop.
+                        if c_open <= sl_price:
+                            exit_price = c_open
+                        elif c_open >= tp_price:
+                            exit_price = c_open
+                        else:
+                            exit_price = sl_price
                         gross_returns[i] = (exit_price - entry_price) / entry_price
                         positions[i] = 0.0
                         turnovers[i] = 2.0
