@@ -1074,7 +1074,7 @@ def test_real_manifest_backed_daily_candidate_qualifies_without_policy_relaxatio
     assert math.isfinite(float(authorization.operational_stability_score))
 
     now = datetime.now(timezone.utc)
-    max_age_seconds = 400 * 24 * 60 * 60  # Historical fixture only; Render retains its normal live-data freshness gate.
+    max_age_seconds = 3 * 24 * 60 * 60  # Three days accommodates a completed daily candle in this integration fixture.
     publisher = Project2Publisher(
         publish_url="http://localhost:8000/api/v1/integration/project1/ingest",
         api_key="test_api_key",
@@ -1104,7 +1104,7 @@ def test_real_manifest_backed_daily_candidate_qualifies_without_policy_relaxatio
         snapshot_path=tmp_path / "continuous_snapshot.json",
         publisher=publisher,
         candidate_ids={"1D": candidate_id},
-        market_data_loaders={"1D": lambda: df},
+        market_data_loaders={"1D": lambda: runtime_market_data},
         clock=lambda: now,
         sleep_fn=lambda _: None,
     )
@@ -1140,8 +1140,26 @@ def test_real_manifest_backed_daily_candidate_qualifies_without_policy_relaxatio
         snapshot_path=tmp_path / "daily_snapshot.json",
         research_dir=research_dir,
     )
+    # The research evidence above comes from the real manifest-backed 2025
+    # dataset. Use a separate deterministic, completed daily candle fixture
+    # only for the live evaluation because the 2025 dataset correctly emits NO TRADE.
+    runtime_dates = pd.date_range(
+        end=(pd.Timestamp(now).normalize() - pd.Timedelta(days=1)),
+        periods=100,
+        freq="D",
+    )
+    runtime_idx = np.arange(len(runtime_dates), dtype=float)
+    runtime_close = 2200.0 * np.exp(0.002 * runtime_idx + 0.0005 * np.sin(runtime_idx * 0.1))
+    runtime_open = np.concatenate(([runtime_close[0] / np.exp(0.002)], runtime_close[:-1]))
+    runtime_market_data = pd.DataFrame({
+        "timestamp": runtime_dates,
+        "open": runtime_open,
+        "high": np.maximum(runtime_open, runtime_close) * 1.0015,
+        "low": np.minimum(runtime_open, runtime_close) * 0.9985,
+        "close": runtime_close,
+    })
     with patch("urllib.request.urlopen", side_effect=mock_urlopen) as transport:
-        result = runtime.run_once(market_data=df, reference_now=now, publish=True)
+        result = runtime.run_once(market_data=runtime_market_data, reference_now=now, publish=True)
 
     assert transport.call_count == 1
     assert len(delivered_payloads) == 1
