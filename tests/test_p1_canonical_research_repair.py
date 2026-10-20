@@ -1035,7 +1035,7 @@ def test_real_manifest_backed_daily_candidate_qualifies_without_policy_relaxatio
     research_dir = Path("results/research_experiments")
     binding_path = research_dir / "by_candidate" / candidate_id / "candidate.json"
 
-    # Resolve the persisted binding and execute the real authorization gate.
+    # Verify evidence integrity against checked-in committed artifact
     promoted = resolve_promoted_candidate(
         candidate_id=candidate_id,
         symbol="XAUUSD",
@@ -1043,6 +1043,33 @@ def test_real_manifest_backed_daily_candidate_qualifies_without_policy_relaxatio
         base_dir=research_dir,
     )
     assert promoted is not None
+    committed_evidence = promoted.evidence
+    assert committed_evidence.evidence_id == promoted.evidence.evidence_id
+    assert committed_evidence.experiment_fingerprint == evidence.experiment_fingerprint
+    assert committed_evidence.spec.fingerprint == evidence.spec.fingerprint
+
+    # Rerun canonical robustness and qualification on the committed evidence artifact
+    committed_robustness = assess_research_robustness(committed_evidence)
+    assert committed_robustness.is_robust is True
+    committed_qualification = qualify_research_evidence(committed_evidence, robustness_assessment=committed_robustness)
+    assert committed_qualification.qualified is True
+
+    # Assert exact substantive partition outputs between freshly executed evidence and committed evidence artifact
+    assert len(committed_evidence.partitions) == len(evidence.partitions)
+    for comm_p, fresh_p in zip(committed_evidence.partitions, evidence.partitions):
+        assert comm_p.role == fresh_p.role
+        assert comm_p.start_timestamp_utc == fresh_p.start_timestamp_utc
+        assert comm_p.end_timestamp_utc == fresh_p.end_timestamp_utc
+        assert comm_p.observations == fresh_p.observations
+        assert comm_p.total_return == pytest.approx(fresh_p.total_return, abs=1e-6)
+        assert comm_p.max_drawdown == pytest.approx(fresh_p.max_drawdown, abs=1e-6)
+        assert comm_p.sharpe_ratio == pytest.approx(fresh_p.sharpe_ratio, abs=1e-6)
+        if comm_p.win_rate is not None and fresh_p.win_rate is not None:
+            assert comm_p.win_rate == pytest.approx(fresh_p.win_rate, abs=1e-6)
+        if comm_p.profit_factor is not None and fresh_p.profit_factor is not None:
+            assert comm_p.profit_factor == pytest.approx(fresh_p.profit_factor, abs=1e-6)
+
+    # Execute the real authorization gate on the committed candidate.
     authorization = authorize_production_runtime(promoted, symbol="XAUUSD", timeframe="1D")
     assert authorization.authorization_fingerprint
     assert not isinstance(authorization.operational_stability_score, bool)
