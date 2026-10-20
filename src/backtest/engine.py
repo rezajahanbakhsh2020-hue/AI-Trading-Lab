@@ -47,6 +47,27 @@ def run_backtest(
     if return_column not in result.columns:
         raise ValueError(f"Column '{return_column}' not found.")
 
+    # OHLC inputs used by this engine must be finite and strictly positive.
+    # If a full candle is supplied, also enforce coherent high/low geometry.
+    ohlc_columns = {"open", "high", "low", "close"}
+    present_ohlc = ohlc_columns.intersection(result.columns)
+    for column in present_ohlc:
+        numeric = pd.to_numeric(result[column], errors="coerce")
+        if numeric.isna().any() or not all(
+            math.isfinite(float(value)) and float(value) > 0.0
+            for value in numeric
+        ):
+            raise ValueError(f"OHLC column '{column}' must contain only finite positive prices.")
+        result[column] = numeric
+
+    if ohlc_columns.issubset(result.columns):
+        invalid_geometry = (
+            (result["high"] < result[["open", "close", "low"]].max(axis=1))
+            | (result["low"] > result[["open", "close", "high"]].min(axis=1))
+        )
+        if invalid_geometry.any():
+            raise ValueError("OHLC candle geometry is invalid: high/low bounds do not contain open and close.")
+
     if not isinstance(transaction_cost, (int, float)) or isinstance(transaction_cost, bool) or not math.isfinite(transaction_cost) or transaction_cost < 0:
         raise ValueError("transaction_cost must be a non-negative finite float.")
 
@@ -131,7 +152,14 @@ def run_backtest(
                     tp_hit = (c_high >= tp_price) if tp_price is not None else False
 
                     if sl_hit and tp_hit:
-                        exit_price = min(c_open, sl_price) if c_open < sl_price else sl_price
+                        # Honor executable opening gaps. If the open is between
+                        # both barriers, intrabar order is unknowable: stop first.
+                        if c_open <= sl_price:
+                            exit_price = c_open
+                        elif c_open >= tp_price:
+                            exit_price = c_open
+                        else:
+                            exit_price = sl_price
                         gross_returns[i] = (exit_price - prev_close) / prev_close
                         positions[i] = 0.0
                         turnovers[i] = 1.0
@@ -176,7 +204,14 @@ def run_backtest(
                     tp_hit = (c_high >= tp_price) if tp_price is not None else False
 
                     if sl_hit and tp_hit:
-                        exit_price = min(c_open, sl_price) if c_open < sl_price else sl_price
+                        # Honor executable opening gaps. If the open is between
+                        # both barriers, intrabar order is unknowable: stop first.
+                        if c_open <= sl_price:
+                            exit_price = c_open
+                        elif c_open >= tp_price:
+                            exit_price = c_open
+                        else:
+                            exit_price = sl_price
                         gross_returns[i] = (exit_price - entry_price) / entry_price
                         positions[i] = 0.0
                         turnovers[i] = 2.0
