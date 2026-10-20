@@ -689,6 +689,32 @@ def test_evidence_integrity_gate_enforces_exact_utc_partition_timestamps():
 # 7. Canonical Timeframes Independence & End-to-End Proof Tests
 # -----------------------------------------------------------------------------
 
+def test_committed_render_daily_candidate_resolves_and_authorizes_from_checkout():
+    """The exact Render-mapped candidate must resolve from committed repository artifacts."""
+    from src.evaluation.research_store import resolve_promoted_candidate
+    from src.evaluation.live_production_decision import authorize_production_runtime
+
+    research_dir = Path("results/research_experiments")
+    candidate_id = "cand_moving_average_1d_verified_20261020"
+    promoted = resolve_promoted_candidate(
+        candidate_id=candidate_id,
+        symbol="XAUUSD",
+        timeframe="1D",
+        base_dir=research_dir,
+    )
+    assert promoted is not None
+    assert promoted.candidate_id == candidate_id
+    assert promoted.symbol == "XAUUSD"
+    assert promoted.timeframe == "1D"
+    assert not isinstance(promoted.operational_stability_score, bool)
+    assert math.isfinite(float(promoted.operational_stability_score))
+    authorization = authorize_production_runtime(
+        promoted, symbol="XAUUSD", timeframe="1D"
+    )
+    assert authorization.candidate_id == candidate_id
+    assert authorization.governance_decision_fingerprint
+
+
 def test_e2e_1d_moving_average_signal_generation_and_publication(tmp_path):
     """E2E proof: manifest-verified fixture -> real research qualification -> authorization -> Contract v1 publisher."""
     import hashlib
@@ -1018,7 +1044,7 @@ def test_real_manifest_backed_daily_candidate_qualifies_without_policy_relaxatio
         strategy_version="1.0",
         dataset_scope=scope,
         execution_assumptions=ExecutionAssumptions(0.0001, 0.0001, 10.0),
-        code_provenance=CodeProvenance("2b54cd857636cc6d8aae35e2c3a9ed312a00d764"),
+        code_provenance=CodeProvenance("fe1ce94340a2bba95a81f89045e3557fee2e88f5"),
         benchmark_reference="buy_and_hold",
         parameters={"fast_window": 20, "slow_window": 50, "stop_loss_pct": 0.05, "take_profit_pct": 0.10},
         walk_forward_protocol=WalkForwardProtocol(train_size=150, test_size=30),
@@ -1042,32 +1068,31 @@ def test_real_manifest_backed_daily_candidate_qualifies_without_policy_relaxatio
     candidate_id = "cand_moving_average_1d_verified_20261020"
     research_dir = Path("results/research_experiments")
     binding_path = research_dir / "by_candidate" / candidate_id / "candidate.json"
-    if not binding_path.exists():
-        # Persist the same canonical evidence/binding that passed qualification.
-        save_research_experiment(evidence, base_dir=research_dir)
-        stability_inputs = pd.DataFrame([
-            {
-                "strategy": evidence.spec.strategy_name,
-                "total_return": part.total_return,
-                "max_drawdown": part.max_drawdown,
-                "sharpe_ratio": part.sharpe_ratio,
-                "positive_window_rate": 1.0 if part.total_return > 0 else 0.0,
-            }
-            for part in evidence.partitions
-        ])
-        stability_ranking = calculate_stability_score(stability_inputs)
-        assert not stability_ranking.empty
-        measured_stability = CanonicalStabilityEvidence(
-            strategy_name=evidence.spec.strategy_name,
-            stability_score=float(stability_ranking.iloc[0]["stability_score"]),
-        )
-        persist_promoted_candidate_binding(
-            candidate_id=candidate_id,
-            evidence=evidence,
-            canonical_stability=measured_stability,
-            robustness_assessment=robustness,
-            base_dir=research_dir,
-        )
+    # Persist the same canonical evidence/binding that passed qualification.
+    save_research_experiment(evidence, base_dir=research_dir)
+    stability_inputs = pd.DataFrame([
+        {
+            "strategy": evidence.spec.strategy_name,
+            "total_return": part.total_return,
+            "max_drawdown": part.max_drawdown,
+            "sharpe_ratio": part.sharpe_ratio,
+            "positive_window_rate": 1.0 if part.total_return > 0 else 0.0,
+        }
+        for part in evidence.partitions
+    ])
+    stability_ranking = calculate_stability_score(stability_inputs)
+    assert not stability_ranking.empty
+    measured_stability = CanonicalStabilityEvidence(
+        strategy_name=evidence.spec.strategy_name,
+        stability_score=float(stability_ranking.iloc[0]["stability_score"]),
+    )
+    persist_promoted_candidate_binding(
+        candidate_id=candidate_id,
+        evidence=evidence,
+        canonical_stability=measured_stability,
+        robustness_assessment=robustness,
+        base_dir=research_dir,
+    )
 
     # Resolve the persisted binding and execute the real authorization gate.
     promoted = resolve_promoted_candidate(
