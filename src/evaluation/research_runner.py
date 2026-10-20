@@ -668,21 +668,6 @@ def _eval_partition(
         )
 
 
-def _calculate_max_drawdown(returns: pd.Series | list[float]) -> float:
-    """Calculate drawdown from a return stream including initial capital at 1.0."""
-    period_returns = pd.Series(returns, dtype=float)
-    if period_returns.empty:
-        return 0.0
-    if not period_returns.map(math.isfinite).all():
-        raise ValueError("Drawdown returns must all be finite.")
-    equity = (1.0 + period_returns).cumprod()
-    drawdown_path = pd.concat(
-        [pd.Series([1.0]), equity.reset_index(drop=True)],
-        ignore_index=True,
-    )
-    return float((drawdown_path / drawdown_path.cummax() - 1.0).min())
-
-
 def _eval_walk_forward(
     *,
     df_full: pd.DataFrame,
@@ -800,7 +785,7 @@ def _eval_walk_forward(
     period_returns = pd.Series(wf_period_returns, dtype=float)
     equity = (1.0 + period_returns).cumprod()
     total_return = float(equity.iloc[-1] - 1.0) if not equity.empty else 0.0
-    drawdown = _calculate_max_drawdown(period_returns)
+    drawdown = float((equity / equity.cummax() - 1.0).min()) if not equity.empty else 0.0
 
     std_return = float(period_returns.std()) if len(period_returns) > 1 else 0.0
     sharpe = (

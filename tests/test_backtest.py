@@ -312,4 +312,3 @@ def test_run_backtest_rejects_invalid_ohlc_geometry():
     })
     with pytest.raises(ValueError, match="geometry"):
         run_backtest(df, stop_loss_pct=0.02, take_profit_pct=0.03)
-

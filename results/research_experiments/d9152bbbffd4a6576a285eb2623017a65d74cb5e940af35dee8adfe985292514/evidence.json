@@ -1,0 +1,307 @@
+{
+  "evidence_id": "ev_cf2bb2dffa44c4e3",
+  "experiment_fingerprint": "d9152bbbffd4a6576a285eb2623017a65d74cb5e940af35dee8adfe985292514",
+  "spec": {
+    "hypothesis": "Moving Average 20/50 with explicit wider risk barriers on verified XAUUSD daily data",
+    "methodology_version": "1.0",
+    "strategy_name": "moving_average",
+    "strategy_version": "1.0",
+    "dataset_scope": {
+      "dataset_id": "xauusd_daily_2025",
+      "symbol": "XAUUSD",
+      "timeframe": "1D",
+      "start_date": "2025-01-01",
+      "end_date": "2025-12-31"
+    },
+    "execution_assumptions": {
+      "transaction_cost": 0.0001,
+      "slippage": 0.0001,
+      "latency_ms": 10.0
+    },
+    "code_provenance": {
+      "commit_sha": "2b54cd857636cc6d8aae35e2c3a9ed312a00d764",
+      "repository_status": "clean",
+      "author": ""
+    },
+    "benchmark_reference": "buy_and_hold",
+    "parameters": {
+      "fast_window": 20,
+      "slow_window": 50,
+      "stop_loss_pct": 0.05,
+      "take_profit_pct": 0.1
+    },
+    "random_seed": null,
+    "walk_forward_protocol": {
+      "train_size": 150,
+      "test_size": 30
+    },
+    "fingerprint": "d9152bbbffd4a6576a285eb2623017a65d74cb5e940af35dee8adfe985292514"
+  },
+  "partitions": [
+    {
+      "role": "IN_SAMPLE",
+      "start_date": "2025-01-01",
+      "end_date": "2025-07-02",
+      "total_return": 0.14591304832674745,
+      "max_drawdown": -0.07370705189886306,
+      "sharpe_ratio": 0.0960173620659679,
+      "win_rate": 0.5327102803738317,
+      "profit_factor": 1.3507986909673797,
+      "observations": 156,
+      "additional_metrics": {
+        "latency_ms": 10.0,
+        "transaction_cost": 0.0001,
+        "slippage": 0.000101
+      },
+      "start_timestamp_utc": "2025-01-01T00:00:00+00:00",
+      "end_timestamp_utc": "2025-07-02T00:00:00+00:00"
+    },
+    {
+      "role": "VALIDATION",
+      "start_date": "2025-07-03",
+      "end_date": "2025-09-12",
+      "total_return": 0.056958269256410565,
+      "max_drawdown": -0.0035887924317085096,
+      "sharpe_ratio": 0.29056687045989843,
+      "win_rate": 0.6923076923076923,
+      "profit_factor": 10.06612274922238,
+      "observations": 62,
+      "additional_metrics": {
+        "latency_ms": 10.0,
+        "transaction_cost": 0.0001,
+        "slippage": 0.000101
+      },
+      "start_timestamp_utc": "2025-07-03T00:00:00+00:00",
+      "end_timestamp_utc": "2025-09-12T00:00:00+00:00"
+    },
+    {
+      "role": "OUT_OF_SAMPLE",
+      "start_date": "2025-09-14",
+      "end_date": "2025-12-31",
+      "total_return": 0.037508153666123256,
+      "max_drawdown": -0.056434077115608994,
+      "sharpe_ratio": 0.05707992264709296,
+      "win_rate": 0.5777777777777777,
+      "profit_factor": 1.3158283873216872,
+      "observations": 94,
+      "additional_metrics": {
+        "latency_ms": 10.0,
+        "transaction_cost": 0.0001,
+        "slippage": 0.000101
+      },
+      "start_timestamp_utc": "2025-09-14T00:00:00+00:00",
+      "end_timestamp_utc": "2025-12-31T00:00:00+00:00"
+    },
+    {
+      "role": "WALK_FORWARD",
+      "start_date": "2025-06-26",
+      "end_date": "2025-12-17",
+      "total_return": 0.243414,
+      "max_drawdown": -0.108858,
+      "sharpe_ratio": 0.149732,
+      "win_rate": 0.59854,
+      "profit_factor": 1.613971,
+      "observations": 150,
+      "additional_metrics": {
+        "walk_forward_windows": 5.0,
+        "test_period_observations": 150.0,
+        "mean_window_return": 0.04557485581806766,
+        "positive_window_ratio": 0.8,
+        "latency_ms": 10.0,
+        "transaction_cost": 0.0001,
+        "slippage": 0.000101,
+        "train_size": 150.0,
+        "test_size": 30.0
+      },
+      "start_timestamp_utc": "2025-06-26T00:00:00+00:00",
+      "end_timestamp_utc": "2025-12-17T00:00:00+00:00"
+    }
+  ],
+  "robustness_verdict": {
+    "candidate_id": "cand_moving_average_f41aeadfe1b1",
+    "is_robust": true,
+    "rejection_reasons": [],
+    "parameter_sensitivity": {
+      "passed": true,
+      "perturbations_tested": 8,
+      "passed_count": 8,
+      "pass_rate": 1.0,
+      "details": [
+        {
+          "candidate_id": "cand_moving_average_11cd50bbde64",
+          "parameters": {
+            "fast_window": 18,
+            "slow_window": 50,
+            "stop_loss_pct": 0.05,
+            "take_profit_pct": 0.1
+          },
+          "sharpe_ratio": 0.10315142709754134,
+          "total_return": 0.2081269933768981,
+          "passed": true
+        },
+        {
+          "candidate_id": "cand_moving_average_229c2531e34a",
+          "parameters": {
+            "fast_window": 22,
+            "slow_window": 50,
+            "stop_loss_pct": 0.05,
+            "take_profit_pct": 0.1
+          },
+          "sharpe_ratio": 0.11046341705377057,
+          "total_return": 0.2199607812355735,
+          "passed": true
+        },
+        {
+          "candidate_id": "cand_moving_average_e5a459cf2ce0",
+          "parameters": {
+            "fast_window": 20,
+            "slow_window": 45,
+            "stop_loss_pct": 0.05,
+            "take_profit_pct": 0.1
+          },
+          "sharpe_ratio": 0.11124597592422876,
+          "total_return": 0.21984915797346227,
+          "passed": true
+        },
+        {
+          "candidate_id": "cand_moving_average_cdc995571064",
+          "parameters": {
+            "fast_window": 20,
+            "slow_window": 55,
+            "stop_loss_pct": 0.05,
+            "take_profit_pct": 0.1
+          },
+          "sharpe_ratio": 0.08947063266588995,
+          "total_return": 0.17691511485393718,
+          "passed": true
+        },
+        {
+          "candidate_id": "cand_moving_average_29be7b11c90c",
+          "parameters": {
+            "fast_window": 20,
+            "slow_window": 50,
+            "stop_loss_pct": 0.045000000000000005,
+            "take_profit_pct": 0.1
+          },
+          "sharpe_ratio": 0.11782211755292867,
+          "total_return": 0.23685204577384278,
+          "passed": true
+        },
+        {
+          "candidate_id": "cand_moving_average_3e825cf093c6",
+          "parameters": {
+            "fast_window": 20,
+            "slow_window": 50,
+            "stop_loss_pct": 0.05500000000000001,
+            "take_profit_pct": 0.1
+          },
+          "sharpe_ratio": 0.09840729439334564,
+          "total_return": 0.19200102920332185,
+          "passed": true
+        },
+        {
+          "candidate_id": "cand_moving_average_f53a8bfb2b43",
+          "parameters": {
+            "fast_window": 20,
+            "slow_window": 50,
+            "stop_loss_pct": 0.05,
+            "take_profit_pct": 0.09000000000000001
+          },
+          "sharpe_ratio": 0.12124812051397678,
+          "total_return": 0.25108717159414007,
+          "passed": true
+        },
+        {
+          "candidate_id": "cand_moving_average_6eb58aee0fe0",
+          "parameters": {
+            "fast_window": 20,
+            "slow_window": 50,
+            "stop_loss_pct": 0.05,
+            "take_profit_pct": 0.11000000000000001
+          },
+          "sharpe_ratio": 0.11312960885143786,
+          "total_return": 0.2288634203243911,
+          "passed": true
+        }
+      ]
+    },
+    "subsample_stability": {
+      "passed": true,
+      "slices_tested": 3,
+      "passed_count": 3,
+      "pass_rate": 1.0,
+      "details": [
+        {
+          "slice_index": 0,
+          "observations": 72,
+          "total_return": 0.05019502758359007,
+          "sharpe_ratio": 0.18535680197437318,
+          "passed": true
+        },
+        {
+          "slice_index": 1,
+          "observations": 72,
+          "total_return": 0.005513698446212523,
+          "sharpe_ratio": 0.016590986789159618,
+          "passed": true
+        },
+        {
+          "slice_index": 2,
+          "observations": 74,
+          "total_return": 0.10214407532583847,
+          "sharpe_ratio": 0.355304441557867,
+          "passed": true
+        }
+      ]
+    },
+    "execution_cost_stress": {
+      "passed": true,
+      "scenarios_tested": 2,
+      "passed_count": 2,
+      "pass_rate": 1.0,
+      "details": [
+        {
+          "multiplier": 1.5,
+          "transaction_cost": 0.00015000000000000001,
+          "slippage": 0.00015000000000000001,
+          "total_return": 0.2223425984484133,
+          "sharpe_ratio": 0.11165147557921469,
+          "passed": true
+        },
+        {
+          "multiplier": 2.0,
+          "transaction_cost": 0.0002,
+          "slippage": 0.0002,
+          "total_return": 0.22075055838572033,
+          "sharpe_ratio": 0.11092632827010371,
+          "passed": true
+        }
+      ]
+    },
+    "statistical_validation": {
+      "observation_count": 217,
+      "mean_return": 0.00096847,
+      "std_return": 0.00861809,
+      "t_statistic": 1.655404,
+      "p_value": 0.048921,
+      "is_valid": true,
+      "methodology_version": "stat_t_test_robustness_v1.0"
+    },
+    "anti_overfitting_verdict": {
+      "passed": true,
+      "reference_end": "2025-09-12 00:00:00+00:00",
+      "oos_start": "2025-09-14 00:00:00+00:00",
+      "notes": "Strict temporal separation confirmed."
+    },
+    "verdict_summary": "Candidate 'cand_moving_average_f41aeadfe1b1' robustness: PASS; ParamSensitivity=True; CostStress=True; SliceStability=True; StatValid=True (obs=217, t_stat=1.66)"
+  },
+  "benchmark_comparison": {
+    "benchmark_reference": "buy_and_hold",
+    "benchmark_total_return": 0.276548,
+    "outperformed_benchmark": false
+  },
+  "promotion_status": "PROMOTABLE",
+  "rejection_reasons": [],
+  "critique_notes": "Canonical research experiment execution completed.",
+  "created_at_utc": "2026-10-20T17:01:58.037894+00:00"
+}
