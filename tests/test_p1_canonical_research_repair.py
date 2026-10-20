@@ -842,8 +842,11 @@ def test_e2e_1d_moving_average_signal_generation_and_publication(tmp_path):
 
     assert publisher_transport.call_count == 1
     assert len(delivered_payloads) == 1
-    assert delivered_payloads[0]["symbol"] == "XAUUSD"
-    assert delivered_payloads[0]["timeframe"] == "1D"
+    assert delivered_payloads[0]["contract_version"] == "1.0"
+    assert delivered_payloads[0]["instrument"]["symbol"] == "XAUUSD"
+    assert delivered_payloads[0]["instrument"]["interval"] == "1D"
+    assert delivered_payloads[0]["signal"]["decision"] == "BUY"
+    assert delivered_payloads[0]["signal"]["candidate_id"] == "cand_moving_average_1d"
     assert res["blocked"] is False
     assert res["decision"] == "BUY"
     assert res["publish_result"]["published"] is True
