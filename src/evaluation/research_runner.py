@@ -714,21 +714,35 @@ def _eval_walk_forward(
     positive_windows = 0
 
     for w in windows:
-        df_test = df_full.iloc[w.test_start : w.test_end]
-        if df_test.empty:
+        # Include the preceding training window when evaluating indicators so
+        # rolling features have their required history. Score ONLY the test
+        # segment below; never include training-period performance in WF results.
+        df_window = df_full.iloc[w.train_start : w.test_end]
+        if df_window.empty:
             rejections.append(RejectionReason.FAILED_WALK_FORWARD)
             return None, rejections
 
+        test_offset = w.test_start - w.train_start
         try:
             eval_res = evaluate_strategy(
-                df=df_test,
+                df=df_window,
                 name=spec.strategy_name,
                 registry=registry,
                 strategy_kwargs=spec.parameters,
                 transaction_cost=transaction_cost,
                 slippage=slippage,
             )
-            ret = eval_res.total_return
+            if eval_res.returns is None:
+                raise ValueError("Strategy evaluation did not return per-period strategy returns.")
+            test_returns = eval_res.returns.iloc[test_offset:]
+            if test_returns.empty:
+                raise ValueError("Walk-forward test segment produced no returns.")
+            numeric_returns = [float(value) for value in test_returns]
+            if not all(math.isfinite(value) for value in numeric_returns):
+                raise ValueError("Walk-forward test segment contains non-finite strategy returns.")
+            ret = math.prod(1.0 + value for value in numeric_returns) - 1.0
+            if not math.isfinite(ret):
+                raise ValueError("Walk-forward test return is non-finite.")
             wf_returns.append(ret)
             if ret > 0:
                 positive_windows += 1
