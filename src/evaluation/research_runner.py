@@ -785,7 +785,15 @@ def _eval_walk_forward(
     period_returns = pd.Series(wf_period_returns, dtype=float)
     equity = (1.0 + period_returns).cumprod()
     total_return = float(equity.iloc[-1] - 1.0) if not equity.empty else 0.0
-    drawdown = float((equity / equity.cummax() - 1.0).min()) if not equity.empty else 0.0
+    drawdown_path = pd.concat(
+        [pd.Series([1.0]), equity.reset_index(drop=True)],
+        ignore_index=True,
+    )
+    drawdown = (
+        float((drawdown_path / drawdown_path.cummax() - 1.0).min())
+        if not equity.empty
+        else 0.0
+    )
 
     std_return = float(period_returns.std()) if len(period_returns) > 1 else 0.0
     sharpe = (
