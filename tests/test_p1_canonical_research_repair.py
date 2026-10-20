@@ -920,3 +920,70 @@ def test_seven_canonical_timeframes_independent_resolution():
             )
             with pytest.raises(FileNotFoundError):
                 resolve_historical_dataset(ds)
+
+def test_real_manifest_backed_15m_research_qualification(tmp_path):
+    """Evaluate the repository's real 15m dataset with unchanged production criteria."""
+    from datetime import datetime, timezone
+    from src.data.ingest_xauusd_15m import verify_dataset_and_manifest_integrity
+    from src.evaluation.research_constitution import (
+        ResearchHypothesis,
+        ExecutionAssumptions,
+        CodeProvenance,
+        WalkForwardProtocol,
+        HypothesisStatus,
+    )
+    from src.evaluation.research_runner import run_research_experiment, validate_and_prepare_dataset
+    from src.evaluation.research_robustness import assess_research_robustness
+    from src.evaluation.research_qualification import qualify_research_evidence
+
+    data_dir = Path("data/raw/xauusd_15m")
+    csv_path = data_dir / "ds_moving_average_15m.csv"
+    manifest_path = data_dir / "ds_moving_average_15m.manifest.json"
+    commit_path = data_dir / "ds_moving_average_15m.commit.json"
+    raw_df, manifest = verify_dataset_and_manifest_integrity(csv_path, manifest_path, commit_path)
+
+    scope = DatasetScope(
+        dataset_id="ds_moving_average_15m",
+        symbol="XAUUSD",
+        timeframe="15m",
+        start_date=manifest["start_timestamp_utc"][:10],
+        end_date=manifest["end_timestamp_utc"][:10],
+    )
+    df = validate_and_prepare_dataset(raw_df, scope)
+    hypothesis = ResearchHypothesis(
+        statement="Moving Average 20/50 on the canonical manifest-backed XAUUSD 15m dataset",
+        methodology_version="1.0",
+        strategy_name="moving_average",
+        strategy_version="1.0",
+        dataset_scope=scope,
+        execution_assumptions=ExecutionAssumptions(0.0001, 0.0001, 10.0),
+        code_provenance=CodeProvenance("f121f56d42d90ba0b77898f033d1aafba5452707"),
+        benchmark_reference="buy_and_hold",
+        parameters={
+            "fast_window": 20,
+            "slow_window": 50,
+            "stop_loss_pct": 0.01,
+            "take_profit_pct": 0.02,
+        },
+        walk_forward_protocol=WalkForwardProtocol(train_size=1000, test_size=250),
+        status=HypothesisStatus.ACCEPTED_FOR_RESEARCH,
+    )
+    evidence = run_research_experiment(
+        hypothesis,
+        df=df,
+        persist_evidence=True,
+        base_dir=tmp_path / "research",
+    )
+    robustness = assess_research_robustness(evidence)
+    qualification = qualify_research_evidence(
+        evidence,
+        robustness_assessment=robustness,
+    )
+    assert qualification.qualified, (
+        "The real 15m dataset did not qualify under unchanged production policy: "
+        f"promotion_status={evidence.promotion_status.value}; "
+        f"rejection_reasons={[r.value for r in evidence.rejection_reasons]}; "
+        f"qualification_notes={qualification.qualification_notes}; "
+        f"robustness={robustness!r}"
+    )
+
