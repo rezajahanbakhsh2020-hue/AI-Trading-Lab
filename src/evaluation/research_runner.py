@@ -22,7 +22,6 @@ from typing import Any, Mapping, Sequence
 
 import pandas as pd
 
-from src.data.loader import load_csv
 from src.evaluation.candidate_generator import CandidateSpec
 from src.evaluation.hypothesis_generator import UnacceptedHypothesisError
 from src.evaluation.metrics import max_drawdown, profit_factor, sharpe_ratio, total_return, win_rate
@@ -99,41 +98,46 @@ def resolve_historical_dataset(dataset_scope: DatasetScope) -> pd.DataFrame:
     def _load_and_verify_csv(p: Path) -> pd.DataFrame:
         man_p = p.with_suffix(".manifest.json")
         commit_p = p.with_suffix(".commit.json")
-        if man_p.exists():
-            from src.data.ingest_xauusd_15m import verify_dataset_and_manifest_integrity
-            df, manifest_dict = verify_dataset_and_manifest_integrity(p, man_p, commit_p if commit_p.exists() else None)
+        if not man_p.exists():
+            raise FileNotFoundError(
+                f"Dataset manifest missing for CSV artifact '{p.name}' at '{man_p}'. "
+                f"Manifest-backed provenance is strictly required for all resolved dataset artifacts."
+            )
 
-            ts_unit = manifest_dict.get("timestamp_unit")
-            if "dataset_id" in manifest_dict and manifest_dict["dataset_id"].strip().lower() != dataset_scope.dataset_id.strip().lower():
-                raise ValueError(
-                    f"Dataset artifact '{p.name}' dataset_id '{manifest_dict['dataset_id']}' mismatches requested "
-                    f"DatasetScope dataset_id '{dataset_scope.dataset_id}'."
-                )
-            if "symbol" in manifest_dict and manifest_dict["symbol"].upper() != dataset_scope.symbol.upper():
-                raise ValueError(
-                    f"Dataset artifact '{p.name}' symbol '{manifest_dict['symbol']}' mismatches requested "
-                    f"DatasetScope symbol '{dataset_scope.symbol}'."
-                )
-            if "timeframe" in manifest_dict:
-                from src.evaluation.mtf_intelligence import CanonicalTimeframe
-                try:
-                    m_tf = CanonicalTimeframe.from_str(manifest_dict["timeframe"]).value
-                    s_tf = CanonicalTimeframe.from_str(dataset_scope.timeframe).value
-                    if m_tf != s_tf:
-                        raise ValueError(
-                            f"Dataset artifact '{p.name}' timeframe '{manifest_dict['timeframe']}' mismatches requested "
-                            f"DatasetScope timeframe '{dataset_scope.timeframe}'."
-                        )
-                except (ValueError, TypeError):
-                    if manifest_dict["timeframe"].lower() != dataset_scope.timeframe.lower():
-                        raise ValueError(
-                            f"Dataset artifact '{p.name}' timeframe '{manifest_dict['timeframe']}' mismatches requested "
-                            f"DatasetScope timeframe '{dataset_scope.timeframe}'."
-                        )
-            if ts_unit:
-                df.attrs["timestamp_unit"] = ts_unit
-            return df
-        return load_csv(p)
+        from src.data.ingest_xauusd_15m import verify_dataset_and_manifest_integrity
+        df, manifest_dict = verify_dataset_and_manifest_integrity(
+            p, man_p, commit_p if commit_p.exists() else None
+        )
+
+        m_dataset_id = manifest_dict["dataset_id"].strip()
+        s_dataset_id = dataset_scope.dataset_id.strip()
+        if m_dataset_id.lower() != s_dataset_id.lower():
+            raise ValueError(
+                f"Dataset artifact '{p.name}' dataset_id '{manifest_dict['dataset_id']}' "
+                f"mismatches requested DatasetScope dataset_id '{dataset_scope.dataset_id}'."
+            )
+
+        m_symbol = manifest_dict["symbol"].strip()
+        s_symbol = dataset_scope.symbol.strip()
+        if m_symbol.upper() != s_symbol.upper():
+            raise ValueError(
+                f"Dataset artifact '{p.name}' symbol '{manifest_dict['symbol']}' "
+                f"mismatches requested DatasetScope symbol '{dataset_scope.symbol}'."
+            )
+
+        from src.evaluation.mtf_intelligence import CanonicalTimeframe
+        m_tf = CanonicalTimeframe.from_str(manifest_dict["timeframe"]).value
+        s_tf = CanonicalTimeframe.from_str(dataset_scope.timeframe).value
+        if m_tf != s_tf:
+            raise ValueError(
+                f"Dataset artifact '{p.name}' timeframe '{manifest_dict['timeframe']}' "
+                f"mismatches requested DatasetScope timeframe '{dataset_scope.timeframe}'."
+            )
+
+        ts_unit = manifest_dict.get("timestamp_unit")
+        if ts_unit:
+            df.attrs["timestamp_unit"] = ts_unit
+        return df
 
     for p in search_paths:
         if p.exists() and p.is_file():

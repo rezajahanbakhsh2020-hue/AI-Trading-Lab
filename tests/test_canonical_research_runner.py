@@ -282,11 +282,24 @@ def test_M_existing_production_invariants_unaffected():
 
 def test_N_resolver_exact_dataset_artifact_resolves_successfully(tmp_path, monkeypatch):
     """Test A: Exact dataset artifact resolves successfully when present."""
+    import json, hashlib
     data_dir = tmp_path / "data" / "raw" / "xauusd"
     data_dir.mkdir(parents=True, exist_ok=True)
     target_csv = data_dir / "xauusd_requested_2025.csv"
+    manifest_json = data_dir / "xauusd_requested_2025.manifest.json"
     df = make_sample_data(20)
     df.to_csv(target_csv, index=False)
+
+    actual_sha = hashlib.sha256(target_csv.read_bytes()).hexdigest()
+    manifest_data = {
+        "manifest_version": "1.0",
+        "dataset_id": "xauusd_requested_2025",
+        "symbol": "XAUUSD",
+        "timeframe": "1D",
+        "output_sha256": actual_sha,
+        "row_count": len(df),
+    }
+    manifest_json.write_text(json.dumps(manifest_data), encoding="utf-8")
 
     # Monkeypatch repo_root in resolve_historical_dataset or test via scope
     ds = DatasetScope(
@@ -333,11 +346,24 @@ def test_O_resolver_missing_dataset_with_unrelated_same_symbol_fails_closed(tmp_
 
 def test_P_resolver_exact_dataset_id_glob_match(tmp_path, monkeypatch):
     """Test C: File containing exact dataset_id resolves properly."""
+    import json, hashlib
     data_dir = tmp_path / "data" / "custom_dir"
     data_dir.mkdir(parents=True, exist_ok=True)
     target_csv = data_dir / "ds_xauusd_requested_2025_full.csv"
+    manifest_json = data_dir / "ds_xauusd_requested_2025_full.manifest.json"
     df = make_sample_data(20)
     df.to_csv(target_csv, index=False)
+
+    actual_sha = hashlib.sha256(target_csv.read_bytes()).hexdigest()
+    manifest_data = {
+        "manifest_version": "1.0",
+        "dataset_id": "xauusd_requested_2025",
+        "symbol": "XAUUSD",
+        "timeframe": "1D",
+        "output_sha256": actual_sha,
+        "row_count": len(df),
+    }
+    manifest_json.write_text(json.dumps(manifest_data), encoding="utf-8")
 
     ds = DatasetScope(
         dataset_id="xauusd_requested_2025",

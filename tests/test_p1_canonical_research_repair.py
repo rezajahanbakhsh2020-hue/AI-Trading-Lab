@@ -273,6 +273,208 @@ def test_manifest_output_sha256_mismatch_fails_closed(tmp_path):
         verify_dataset_and_manifest_integrity(csv_file, manifest_file)
 
 
+def test_manifest_missing_all_three_identity_fields_rejected(tmp_path):
+    csv_file = tmp_path / "ds_test.csv"
+    manifest_file = tmp_path / "ds_test.manifest.json"
+
+    df_sample = sample_daily_df_iso_strings()
+    df_sample.to_csv(csv_file, index=False)
+
+    import hashlib
+    actual_sha = hashlib.sha256(csv_file.read_bytes()).hexdigest()
+
+    manifest_data = {
+        "manifest_version": "1.0",
+        "output_sha256": actual_sha,
+        "row_count": len(df_sample),
+    }
+    manifest_file.write_text(json.dumps(manifest_data), encoding="utf-8")
+
+    from src.data.ingest_xauusd_15m import verify_dataset_and_manifest_integrity
+    with pytest.raises(ValueError, match="missing required identity field"):
+        verify_dataset_and_manifest_integrity(csv_file, manifest_file)
+
+
+def test_manifest_identity_fields_missing_individually_rejected(tmp_path):
+    csv_file = tmp_path / "ds_test.csv"
+    manifest_file = tmp_path / "ds_test.manifest.json"
+
+    df_sample = sample_daily_df_iso_strings()
+    df_sample.to_csv(csv_file, index=False)
+
+    import hashlib
+    actual_sha = hashlib.sha256(csv_file.read_bytes()).hexdigest()
+
+    base_manifest = {
+        "manifest_version": "1.0",
+        "dataset_id": "ds_test",
+        "symbol": "XAUUSD",
+        "timeframe": "1D",
+        "output_sha256": actual_sha,
+        "row_count": len(df_sample),
+    }
+
+    from src.data.ingest_xauusd_15m import verify_dataset_and_manifest_integrity
+
+    for field in ("dataset_id", "symbol", "timeframe"):
+        bad_manifest = dict(base_manifest)
+        del bad_manifest[field]
+        manifest_file.write_text(json.dumps(bad_manifest), encoding="utf-8")
+
+        with pytest.raises(ValueError, match=f"missing required identity field '{field}'"):
+            verify_dataset_and_manifest_integrity(csv_file, manifest_file)
+
+
+def test_manifest_identity_fields_null_blank_whitespace_rejected(tmp_path):
+    csv_file = tmp_path / "ds_test.csv"
+    manifest_file = tmp_path / "ds_test.manifest.json"
+
+    df_sample = sample_daily_df_iso_strings()
+    df_sample.to_csv(csv_file, index=False)
+
+    import hashlib
+    actual_sha = hashlib.sha256(csv_file.read_bytes()).hexdigest()
+
+    base_manifest = {
+        "manifest_version": "1.0",
+        "dataset_id": "ds_test",
+        "symbol": "XAUUSD",
+        "timeframe": "1D",
+        "output_sha256": actual_sha,
+        "row_count": len(df_sample),
+    }
+
+    from src.data.ingest_xauusd_15m import verify_dataset_and_manifest_integrity
+
+    invalid_values = [None, 123, "", "   ", "\t\n"]
+
+    for field in ("dataset_id", "symbol", "timeframe"):
+        for inv in invalid_values:
+            bad_manifest = dict(base_manifest)
+            bad_manifest[field] = inv
+            manifest_file.write_text(json.dumps(bad_manifest), encoding="utf-8")
+
+            with pytest.raises((TypeError, ValueError)):
+                verify_dataset_and_manifest_integrity(csv_file, manifest_file)
+
+
+def test_incorrect_dataset_id_symbol_or_timeframe_rejected(tmp_path):
+    csv_file = tmp_path / "ds_test.csv"
+    manifest_file = tmp_path / "ds_test.manifest.json"
+
+    df_sample = sample_daily_df_iso_strings()
+    df_sample.to_csv(csv_file, index=False)
+
+    import hashlib
+    actual_sha = hashlib.sha256(csv_file.read_bytes()).hexdigest()
+
+    manifest_data = {
+        "manifest_version": "1.0",
+        "dataset_id": "ds_test",
+        "symbol": "XAUUSD",
+        "timeframe": "1D",
+        "output_sha256": actual_sha,
+        "row_count": len(df_sample),
+    }
+    manifest_file.write_text(json.dumps(manifest_data), encoding="utf-8")
+
+    from src.evaluation.research_runner import DatasetScope, run_research_experiment, ResearchHypothesis, ExecutionAssumptions, CodeProvenance, WalkForwardProtocol, HypothesisStatus
+
+    # Test via research experiment execution or dataset scope resolution with mismatched scope
+    bad_scopes = [
+        DatasetScope("wrong_id", "XAUUSD", "1D", "2025-01-01", "2025-01-10"),
+        DatasetScope("ds_test", "EURUSD", "1D", "2025-01-01", "2025-01-10"),
+        DatasetScope("ds_test", "XAUUSD", "1H", "2025-01-01", "2025-01-10"),
+    ]
+
+    for scope in bad_scopes:
+        hyp = ResearchHypothesis(
+            statement="Test scope mismatch",
+            methodology_version="1.0",
+            strategy_name="moving_average",
+            strategy_version="1.0",
+            dataset_scope=scope,
+            execution_assumptions=ExecutionAssumptions(0.0001, 0.0001, 10.0),
+            code_provenance=CodeProvenance("sha123"),
+            benchmark_reference="buy_and_hold",
+            parameters={"fast_window": 2, "slow_window": 4},
+            walk_forward_protocol=WalkForwardProtocol(4, 2),
+            status=HypothesisStatus.ACCEPTED_FOR_RESEARCH,
+        )
+
+        with pytest.raises(ValueError):
+            # _load_and_verify_csv or run_research_experiment with custom df_path raises ValueError
+            from src.evaluation.research_runner import validate_and_prepare_dataset
+            # Calling verify via research_runner
+            from src.evaluation.research_runner import resolve_historical_dataset
+            # Let's test _load_and_verify_csv directly or through path resolution mock
+            from unittest.mock import patch
+            with patch("src.evaluation.research_runner.Path.exists", return_value=True), \
+                 patch("src.evaluation.research_runner.Path.is_file", return_value=True), \
+                 patch("src.data.ingest_xauusd_15m.verify_dataset_and_manifest_integrity", return_value=(df_sample, manifest_data)):
+                resolve_historical_dataset(scope)
+
+
+def test_missing_manifest_on_csv_rejected(tmp_path):
+    csv_file = tmp_path / "ds_no_manifest.csv"
+    df_sample = sample_daily_df_iso_strings()
+    df_sample.to_csv(csv_file, index=False)
+
+    from src.evaluation.research_runner import DatasetScope, resolve_historical_dataset
+    from unittest.mock import patch
+
+    scope_match = DatasetScope("ds_no_manifest", "XAUUSD", "1D", "2025-01-01", "2025-01-10")
+    scope_mismatch = DatasetScope("ds_no_manifest", "EURUSD", "1H", "2025-01-01", "2025-01-10")
+
+    for scope in (scope_match, scope_mismatch):
+        def mock_exists(self):
+            # Return True for the CSV file itself so it is found, but False for the .manifest.json
+            if self.name.endswith(".manifest.json"):
+                return False
+            return True
+
+        with patch("src.evaluation.research_runner.Path.exists", autospec=True, side_effect=mock_exists), \
+             patch("src.evaluation.research_runner.Path.is_file", return_value=True):
+            with pytest.raises(FileNotFoundError, match="Dataset manifest missing for CSV artifact"):
+                resolve_historical_dataset(scope)
+
+
+def test_commit_marker_identity_mismatch_rejected(tmp_path):
+    csv_file = tmp_path / "ds_test.csv"
+    manifest_file = tmp_path / "ds_test.manifest.json"
+    commit_file = tmp_path / "ds_test.commit.json"
+
+    df_sample = sample_daily_df_iso_strings()
+    df_sample.to_csv(csv_file, index=False)
+
+    import hashlib
+    actual_sha = hashlib.sha256(csv_file.read_bytes()).hexdigest()
+
+    manifest_data = {
+        "manifest_version": "1.0",
+        "dataset_id": "ds_test",
+        "symbol": "XAUUSD",
+        "timeframe": "1D",
+        "output_sha256": actual_sha,
+        "row_count": len(df_sample),
+    }
+    manifest_file.write_text(json.dumps(manifest_data), encoding="utf-8")
+
+    # Commit marker with mismatched dataset_id
+    commit_data = {
+        "commit_version": "1.0",
+        "dataset_id": "mismatched_id",
+        "symbol": "XAUUSD",
+        "timeframe": "1D",
+        "output_sha256": actual_sha,
+    }
+    commit_file.write_text(json.dumps(commit_data), encoding="utf-8")
+
+    from src.data.ingest_xauusd_15m import verify_dataset_and_manifest_integrity
+    with pytest.raises(ValueError, match="conflicts with manifest"):
+        verify_dataset_and_manifest_integrity(csv_file, manifest_file, commit_file)
+
+
 # -----------------------------------------------------------------------------
 # 4. Intrabar OHLC Risk Execution Tests
 # -----------------------------------------------------------------------------
