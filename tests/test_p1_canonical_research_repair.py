@@ -963,6 +963,7 @@ def test_real_manifest_backed_15m_research_qualification(tmp_path):
 
 def test_real_manifest_backed_daily_candidate_qualifies_without_policy_relaxation(tmp_path):
     """Qualify real 2025 data, create a genuine binding, preflight, authorize, and publish."""
+    import numpy as np
     from datetime import datetime, timezone
     from unittest.mock import patch, MagicMock
     from src.data.ingest_xauusd_15m import verify_dataset_and_manifest_integrity
