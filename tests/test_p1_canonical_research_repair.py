@@ -962,7 +962,9 @@ def test_real_manifest_backed_15m_research_qualification(tmp_path):
     assert "FAILED_STATISTICAL_VALIDATION" in {r.value for r in qualification.rejection_reasons}
 
 def test_real_manifest_backed_daily_candidate_qualifies_without_policy_relaxation(tmp_path):
-    """Try a genuinely different, explicit daily hypothesis on the checked-in 2025 dataset."""
+    """Qualify real 2025 data, create a genuine binding, preflight, authorize, and publish."""
+    from datetime import datetime, timezone
+    from unittest.mock import patch, MagicMock
     from src.data.ingest_xauusd_15m import verify_dataset_and_manifest_integrity
     from src.evaluation.research_constitution import (
         ResearchHypothesis,
@@ -974,6 +976,20 @@ def test_real_manifest_backed_daily_candidate_qualifies_without_policy_relaxatio
     from src.evaluation.research_runner import run_research_experiment, validate_and_prepare_dataset
     from src.evaluation.research_robustness import assess_research_robustness
     from src.evaluation.research_qualification import qualify_research_evidence
+    from src.evaluation.stability import CanonicalStabilityEvidence, calculate_stability_score
+    from src.evaluation.research_store import (
+        save_research_experiment,
+        persist_promoted_candidate_binding,
+        resolve_promoted_candidate,
+    )
+    from src.evaluation.live_production_decision import authorize_production_runtime
+    from src.evaluation.live_execution_runtime import (
+        ContinuousLiveRuntime,
+        LiveExecutionRuntime,
+        ProductionRuntimeConfig,
+        verify_timeframe_production_readiness,
+    )
+    from src.integration.project2_publisher import Project2Publisher
 
     csv_path = Path("data/raw/xauusd_daily_2025.csv")
     manifest_path = Path("data/raw/xauusd_daily_2025.manifest.json")
@@ -985,11 +1001,7 @@ def test_real_manifest_backed_daily_candidate_qualifies_without_policy_relaxatio
         start_date=manifest["start_timestamp_utc"][:10],
         end_date=manifest["end_timestamp_utc"][:10],
     )
-    df = validate_and_prepare_dataset(
-        raw_df,
-        scope,
-        timestamp_unit=manifest.get("timestamp_unit"),
-    )
+    df = validate_and_prepare_dataset(raw_df, scope, timestamp_unit=manifest.get("timestamp_unit"))
     hypothesis = ResearchHypothesis(
         statement="Moving Average 20/50 with explicit wider risk barriers on verified XAUUSD daily data",
         methodology_version="1.0",
@@ -997,7 +1009,7 @@ def test_real_manifest_backed_daily_candidate_qualifies_without_policy_relaxatio
         strategy_version="1.0",
         dataset_scope=scope,
         execution_assumptions=ExecutionAssumptions(0.0001, 0.0001, 10.0),
-        code_provenance=CodeProvenance("b1ac8a010762feb67ea10fcff68cc5c4f29eec95"),
+        code_provenance=CodeProvenance("2b54cd857636cc6d8aae35e2c3a9ed312a00d764"),
         benchmark_reference="buy_and_hold",
         parameters={"fast_window": 20, "slow_window": 50, "stop_loss_pct": 0.05, "take_profit_pct": 0.10},
         walk_forward_protocol=WalkForwardProtocol(train_size=150, test_size=30),
@@ -1017,4 +1029,131 @@ def test_real_manifest_backed_daily_candidate_qualifies_without_policy_relaxatio
         f"rejections={[r.value for r in evidence.rejection_reasons]}; "
         f"notes={qualification.qualification_notes}; robustness={robustness!r}"
     )
+
+    candidate_id = "cand_moving_average_1d_verified_20261020"
+    research_dir = Path("results/research_experiments")
+    binding_path = research_dir / "by_candidate" / candidate_id / "candidate.json"
+    if not binding_path.exists():
+        # Persist the same canonical evidence/binding that passed qualification.
+        save_research_experiment(evidence, base_dir=research_dir)
+        stability_inputs = pd.DataFrame([
+            {
+                "strategy": evidence.spec.strategy_name,
+                "total_return": part.total_return,
+                "max_drawdown": part.max_drawdown,
+                "sharpe_ratio": part.sharpe_ratio,
+                "positive_window_rate": 1.0 if part.total_return > 0 else 0.0,
+            }
+            for part in evidence.partitions
+        ])
+        stability_ranking = calculate_stability_score(stability_inputs)
+        assert not stability_ranking.empty
+        measured_stability = CanonicalStabilityEvidence(
+            strategy_name=evidence.spec.strategy_name,
+            stability_score=float(stability_ranking.iloc[0]["stability_score"]),
+        )
+        persist_promoted_candidate_binding(
+            candidate_id=candidate_id,
+            evidence=evidence,
+            canonical_stability=measured_stability,
+            robustness_assessment=robustness,
+            base_dir=research_dir,
+        )
+
+    # Resolve the persisted binding and execute the real authorization gate.
+    promoted = resolve_promoted_candidate(
+        candidate_id=candidate_id,
+        symbol="XAUUSD",
+        timeframe="1D",
+        base_dir=research_dir,
+    )
+    assert promoted is not None
+    authorization = authorize_production_runtime(promoted, symbol="XAUUSD", timeframe="1D")
+    assert authorization.authorization_fingerprint
+    assert not isinstance(authorization.operational_stability_score, bool)
+    assert math.isfinite(float(authorization.operational_stability_score))
+
+    now = datetime.now(timezone.utc)
+    max_age_seconds = 400 * 24 * 60 * 60  # Historical fixture only; Render retains its normal live-data freshness gate.
+    publisher = Project2Publisher(
+        publish_url="http://localhost:8000/api/v1/integration/project1/ingest",
+        api_key="test_api_key",
+        enabled=True,
+        max_age_seconds=max_age_seconds,
+    )
+    readiness = verify_timeframe_production_readiness(
+        symbol="XAUUSD",
+        timeframe="1D",
+        candidate_id=candidate_id,
+        research_dir=research_dir,
+        publisher=publisher,
+        reference_now=now,
+        check_provider_data=False,
+    )
+    assert readiness["status"] == "READY", f"Persisted daily candidate not READY: {readiness}"
+
+    continuous = ContinuousLiveRuntime(
+        symbol="XAUUSD",
+        timeframes=["1D"],
+        poll_interval=0,
+        publish=True,
+        persist=False,
+        max_age_seconds=max_age_seconds,
+        research_dir=research_dir,
+        store_path=tmp_path / "continuous_decisions.json",
+        snapshot_path=tmp_path / "continuous_snapshot.json",
+        publisher=publisher,
+        candidate_ids={"1D": candidate_id},
+        market_data_loaders={"1D": lambda: df},
+        clock=lambda: now,
+        sleep_fn=lambda _: None,
+    )
+    startup = continuous.verify_startup_readiness()
+    assert startup["1D"]["status"] == "READY", f"Continuous startup preflight failed: {startup}"
+
+    cfg = ProductionRuntimeConfig(
+        symbol="XAUUSD",
+        timeframe="1D",
+        candidate_id=candidate_id,
+        research_dir=research_dir,
+    )
+    delivered_payloads = []
+
+    def mock_urlopen(req, timeout=None):
+        payload = json.loads(req.data.decode("utf-8"))
+        delivered_payloads.append(payload)
+        pub_id = payload.get("event_id") or payload.get("publication_id")
+        resp = MagicMock()
+        resp.status = 200
+        resp.getcode.return_value = 200
+        resp.__enter__.return_value = resp
+        resp.read.return_value = json.dumps({"status": "INGESTED", "event_id": pub_id}).encode("utf-8")
+        return resp
+
+    runtime = LiveExecutionRuntime(
+        symbol="XAUUSD",
+        interval="1D",
+        max_age_seconds=max_age_seconds,
+        publisher=publisher,
+        production_config=cfg,
+        store_path=tmp_path / "daily_decisions.json",
+        snapshot_path=tmp_path / "daily_snapshot.json",
+        research_dir=research_dir,
+    )
+    with patch("urllib.request.urlopen", side_effect=mock_urlopen) as transport:
+        result = runtime.run_once(market_data=df, reference_now=now, publish=True)
+
+    assert transport.call_count == 1
+    assert len(delivered_payloads) == 1
+    payload = delivered_payloads[0]
+    assert payload["contract_version"] == "1.0"
+    assert payload["instrument"]["symbol"] == "XAUUSD"
+    assert payload["instrument"]["interval"] == "1D"
+    assert payload["signal"]["decision"] == "BUY"
+    assert payload["signal"]["candidate_id"] == candidate_id
+    assert result["blocked"] is False
+    assert result["decision"] == "BUY"
+    assert result["publish_result"]["published"] is True
+    assert result["publish_result"]["status"] == "PUBLISHED"
+    assert result["publish_result"]["delivery_status"] == "DELIVERED"
 
