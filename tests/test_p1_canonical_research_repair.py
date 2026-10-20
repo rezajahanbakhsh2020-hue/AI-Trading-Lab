@@ -31,6 +31,7 @@ from src.evaluation.research_runner import (
     resolve_historical_dataset,
     run_research_experiment,
     validate_and_prepare_dataset,
+    _calculate_max_drawdown,
 )
 from src.evaluation.evidence_integrity import ResearchEvidenceIntegrityGate
 from src.evaluation.research_qualification import qualify_research_evidence
@@ -39,6 +40,13 @@ from src.evaluation.strategy_evaluator import (
     evaluate_strategy,
     validate_and_separate_strategy_kwargs,
 )
+
+
+def test_walk_forward_drawdown_includes_initial_capital():
+    # A loss on the first OOS period is a drawdown from starting equity 1.0.
+    assert _calculate_max_drawdown([-0.05, 0.02]) == pytest.approx(-0.05)
+    assert _calculate_max_drawdown([0.10, -0.05]) == pytest.approx(-0.05)
+    assert _calculate_max_drawdown([]) == 0.0
 
 
 def sample_daily_df_numeric_seconds() -> pd.DataFrame:
