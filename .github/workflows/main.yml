@@ -41,3 +41,12 @@ jobs:
       - name: Run production pipeline
         run: |
           PYTHONPATH=. python run_production.py
+
+      - name: Upload canonical research artifacts for promotion review
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: p1-canonical-research-artifacts
+          path: results/research_experiments/**
+          if-no-files-found: ignore
+          retention-days: 7
