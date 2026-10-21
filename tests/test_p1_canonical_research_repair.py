@@ -1204,3 +1204,69 @@ def test_real_manifest_backed_daily_candidate_qualifies_without_policy_relaxatio
     assert result["publish_result"]["published"] is True
     assert result["publish_result"]["status"] == "PUBLISHED"
     assert result["publish_result"]["delivery_status"] == "DELIVERED"
+
+
+def test_historical_5m_candidate_artifact_rejection():
+    """Verify that historical 5m candidate artifact fails canonical resolution closed."""
+    from src.evaluation.research_store import resolve_promoted_candidate, PromotionEligibilityError
+
+    with pytest.raises(PromotionEligibilityError) as exc_info:
+        resolve_promoted_candidate(
+            candidate_id="cand_moving_average_5m",
+            symbol="XAUUSD",
+            timeframe="5m",
+        )
+
+    err_msg = str(exc_info.value)
+    assert "missing required exact UTC timestamps" in err_msg
+    assert "Partition date overlap or reversal" in err_msg
+    assert "PARTIALLY_EVALUATED" in err_msg
+    for dim in (
+        "parameter_sensitivity",
+        "subsample_stability",
+        "execution_cost_stress",
+        "statistical_validation",
+        "anti_overfitting",
+    ):
+        assert dim in err_msg, f"Expected unevaluated dimension '{dim}' in error message"
+
+
+def test_5m_dataset_resolution_fails_closed_without_substitution():
+    """Verify missing 5m dataset fails closed without fallback or substitution."""
+    from src.evaluation.research_constitution import DatasetScope
+    from src.evaluation.research_runner import resolve_historical_dataset
+
+    ds_5m = DatasetScope(
+        dataset_id="ds_moving_average_5m",
+        symbol="XAUUSD",
+        timeframe="5m",
+        start_date="2025-01-01",
+        end_date="2025-12-31",
+    )
+    with pytest.raises(FileNotFoundError, match="Unable to resolve exact approved dataset artifact"):
+        resolve_historical_dataset(ds_5m)
+
+
+def test_timeframe_independence_1d_valid_and_5m_blocked_negative_control():
+    """Negative control: 1D candidate resolves and authorizes cleanly while 5m remains blocked."""
+    from src.evaluation.research_store import resolve_promoted_candidate, PromotionEligibilityError
+    from src.evaluation.live_production_decision import authorize_production_runtime
+
+    # 1D candidate resolves cleanly
+    daily_candidate = resolve_promoted_candidate(
+        candidate_id="cand_moving_average_1d_verified_20261020",
+        symbol="XAUUSD",
+        timeframe="1D",
+    )
+    assert daily_candidate is not None
+    assert daily_candidate.candidate_id == "cand_moving_average_1d_verified_20261020"
+    daily_auth = authorize_production_runtime(daily_candidate, symbol="XAUUSD", timeframe="1D")
+    assert daily_auth.authorization_fingerprint
+
+    # 5m candidate fails resolution closed
+    with pytest.raises(PromotionEligibilityError):
+        resolve_promoted_candidate(
+            candidate_id="cand_moving_average_5m",
+            symbol="XAUUSD",
+            timeframe="5m",
+        )
