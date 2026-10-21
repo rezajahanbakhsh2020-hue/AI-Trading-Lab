@@ -115,6 +115,21 @@ def verify_dataset_and_manifest_integrity(
     except Exception as exc:
         raise RuntimeError(f"Corrupt manifest JSON at {man_p}: {exc}") from exc
 
+    if not isinstance(manifest_data, dict):
+        raise ValueError(
+            f"Manifest JSON at {man_p} must be an object (dict), got {type(manifest_data).__name__}."
+        )
+
+    required_identity_fields = ("dataset_id", "symbol", "timeframe")
+    for field in required_identity_fields:
+        if field not in manifest_data:
+            raise ValueError(f"Manifest at {man_p} is missing required identity field '{field}'.")
+        val = manifest_data[field]
+        if not isinstance(val, str):
+            raise TypeError(f"Manifest identity field '{field}' must be a string, got {type(val).__name__}.")
+        if not val.strip():
+            raise ValueError(f"Manifest identity field '{field}' cannot be empty or whitespace-only.")
+
     expected_sha = manifest_data.get("output_sha256")
     if not expected_sha or actual_sha != expected_sha:
         raise RuntimeError(
@@ -127,10 +142,31 @@ def verify_dataset_and_manifest_integrity(
         if com_p.exists():
             try:
                 commit_data = json.loads(com_p.read_text(encoding="utf-8"))
-                if commit_data.get("output_sha256") != actual_sha:
-                    raise RuntimeError("Commit marker output SHA256 mismatch!")
             except Exception as exc:
                 raise RuntimeError(f"Corrupt commit marker at {com_p}: {exc}") from exc
+
+            if not isinstance(commit_data, dict):
+                raise ValueError(
+                    f"Commit marker JSON at {com_p} must be an object (dict), got {type(commit_data).__name__}."
+                )
+
+            if commit_data.get("output_sha256") != actual_sha:
+                raise RuntimeError("Commit marker output SHA256 mismatch!")
+
+            for field in required_identity_fields:
+                if field not in commit_data:
+                    raise ValueError(f"Commit marker at {com_p} is missing required identity field '{field}'.")
+                val = commit_data[field]
+                if not isinstance(val, str):
+                    raise TypeError(f"Commit marker identity field '{field}' must be a string, got {type(val).__name__}.")
+                if not val.strip():
+                    raise ValueError(f"Commit marker identity field '{field}' cannot be empty or whitespace-only.")
+
+                man_val = manifest_data[field]
+                if val.strip() != man_val.strip():
+                    raise ValueError(
+                        f"Commit marker identity field '{field}' ('{val}') conflicts with manifest '{field}' ('{man_val}')."
+                    )
 
     df = pd.read_csv(io.BytesIO(csv_bytes))
     if len(df) != manifest_data.get("row_count"):

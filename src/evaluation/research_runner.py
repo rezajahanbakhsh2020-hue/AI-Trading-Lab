@@ -22,7 +22,6 @@ from typing import Any, Mapping, Sequence
 
 import pandas as pd
 
-from src.data.loader import load_csv
 from src.evaluation.candidate_generator import CandidateSpec
 from src.evaluation.hypothesis_generator import UnacceptedHypothesisError
 from src.evaluation.metrics import max_drawdown, profit_factor, sharpe_ratio, total_return, win_rate
@@ -99,11 +98,46 @@ def resolve_historical_dataset(dataset_scope: DatasetScope) -> pd.DataFrame:
     def _load_and_verify_csv(p: Path) -> pd.DataFrame:
         man_p = p.with_suffix(".manifest.json")
         commit_p = p.with_suffix(".commit.json")
-        if man_p.exists():
-            from src.data.ingest_xauusd_15m import verify_dataset_and_manifest_integrity
-            df, _ = verify_dataset_and_manifest_integrity(p, man_p, commit_p if commit_p.exists() else None)
-            return df
-        return load_csv(p)
+        if not man_p.exists():
+            raise FileNotFoundError(
+                f"Dataset manifest missing for CSV artifact '{p.name}' at '{man_p}'. "
+                f"Manifest-backed provenance is strictly required for all resolved dataset artifacts."
+            )
+
+        from src.data.ingest_xauusd_15m import verify_dataset_and_manifest_integrity
+        df, manifest_dict = verify_dataset_and_manifest_integrity(
+            p, man_p, commit_p if commit_p.exists() else None
+        )
+
+        m_dataset_id = manifest_dict["dataset_id"].strip()
+        s_dataset_id = dataset_scope.dataset_id.strip()
+        if m_dataset_id.lower() != s_dataset_id.lower():
+            raise ValueError(
+                f"Dataset artifact '{p.name}' dataset_id '{manifest_dict['dataset_id']}' "
+                f"mismatches requested DatasetScope dataset_id '{dataset_scope.dataset_id}'."
+            )
+
+        m_symbol = manifest_dict["symbol"].strip()
+        s_symbol = dataset_scope.symbol.strip()
+        if m_symbol.upper() != s_symbol.upper():
+            raise ValueError(
+                f"Dataset artifact '{p.name}' symbol '{manifest_dict['symbol']}' "
+                f"mismatches requested DatasetScope symbol '{dataset_scope.symbol}'."
+            )
+
+        from src.evaluation.mtf_intelligence import CanonicalTimeframe
+        m_tf = CanonicalTimeframe.from_str(manifest_dict["timeframe"]).value
+        s_tf = CanonicalTimeframe.from_str(dataset_scope.timeframe).value
+        if m_tf != s_tf:
+            raise ValueError(
+                f"Dataset artifact '{p.name}' timeframe '{manifest_dict['timeframe']}' "
+                f"mismatches requested DatasetScope timeframe '{dataset_scope.timeframe}'."
+            )
+
+        ts_unit = manifest_dict.get("timestamp_unit")
+        if ts_unit:
+            df.attrs["timestamp_unit"] = ts_unit
+        return df
 
     for p in search_paths:
         if p.exists() and p.is_file():
@@ -130,12 +164,15 @@ def resolve_historical_dataset(dataset_scope: DatasetScope) -> pd.DataFrame:
 
 
 def validate_and_prepare_dataset(
-    df: pd.DataFrame, dataset_scope: DatasetScope
+    df: pd.DataFrame,
+    dataset_scope: DatasetScope,
+    timestamp_unit: str | None = None,
 ) -> pd.DataFrame:
     """Validate DataFrame schema, timestamp ordering, and DatasetScope boundaries.
 
     Fails closed on missing columns, non-chronological order, duplicate timestamps,
     invalid timestamps, or date scope mismatches. Inspects source order BEFORE any sorting.
+    Requires explicit timestamp_unit for numeric Unix timestamps.
     """
     if not isinstance(df, pd.DataFrame):
         raise TypeError("df must be a pandas DataFrame.")
@@ -144,11 +181,27 @@ def validate_and_prepare_dataset(
 
     data = df.copy()
 
+    eff_unit = timestamp_unit or getattr(df, "attrs", {}).get("timestamp_unit")
+
     if "timestamp" in data.columns:
-        try:
-            parsed_ts = pd.to_datetime(data["timestamp"], utc=True)
-        except Exception as exc:
-            raise ValueError(f"Invalid/unparseable timestamp in dataset: {exc}") from exc
+        ts_col = data["timestamp"]
+        is_numeric = pd.api.types.is_numeric_dtype(ts_col)
+
+        if is_numeric:
+            if not eff_unit or not str(eff_unit).strip():
+                raise ValueError(
+                    "Numeric Unix timestamp detected in dataset without an explicitly established timestamp_unit contract. "
+                    "Guessing timestamp units from magnitude is strictly forbidden."
+                )
+            try:
+                parsed_ts = pd.to_datetime(ts_col, unit=eff_unit.strip(), utc=True)
+            except Exception as exc:
+                raise ValueError(f"Invalid/unparseable numeric timestamp in dataset using unit '{eff_unit}': {exc}") from exc
+        else:
+            try:
+                parsed_ts = pd.to_datetime(ts_col, utc=True)
+            except Exception as exc:
+                raise ValueError(f"Invalid/unparseable timestamp in dataset: {exc}") from exc
 
         if parsed_ts.isna().any():
             raise ValueError("Invalid/unparseable timestamp found in dataset.")
@@ -193,6 +246,33 @@ def validate_and_prepare_dataset(
         data.index = parsed_idx
         ts_series = pd.Series(data.index, index=data.index)
 
+    elif pd.api.types.is_numeric_dtype(data.index):
+        if not eff_unit or not str(eff_unit).strip():
+            raise ValueError(
+                "Numeric Unix timestamp detected in DatetimeIndex without an explicitly established timestamp_unit contract. "
+                "Guessing timestamp units from magnitude is strictly forbidden."
+            )
+        try:
+            parsed_idx = pd.to_datetime(data.index, unit=eff_unit.strip(), utc=True)
+        except Exception as exc:
+            raise ValueError(f"Invalid/unparseable numeric timestamp in DatetimeIndex using unit '{eff_unit}': {exc}") from exc
+
+        if parsed_idx.isna().any():
+            raise ValueError("Invalid/unparseable timestamp found in DatetimeIndex.")
+
+        if not parsed_idx.is_monotonic_increasing:
+            raise ValueError(
+                "Time-order violation: DatetimeIndex is non-monotonic in source order."
+            )
+
+        if not parsed_idx.is_unique:
+            raise ValueError(
+                "Time-order violation: duplicate timestamps detected in DatetimeIndex."
+            )
+
+        data.index = parsed_idx
+        ts_series = pd.Series(data.index, index=data.index)
+
     else:
         raise ValueError("df must contain a 'timestamp' column or a DatetimeIndex.")
 
@@ -205,17 +285,22 @@ def validate_and_prepare_dataset(
     df_start_str = df_start_dt.strftime("%Y-%m-%d")
     df_end_str = df_end_dt.strftime("%Y-%m-%d")
 
-    scope_start = dataset_scope.start_date[:10]
-    scope_end = dataset_scope.end_date[:10]
+    scope_start = dataset_scope.start_date.strip()
+    scope_end = dataset_scope.end_date.strip()
 
-    if scope_start < df_start_str or scope_end > df_end_str:
+    if scope_start[:10] < df_start_str or scope_end[:10] > df_end_str:
         raise ValueError(
-            f"DatasetScope dates [{scope_start}, {scope_end}] extend beyond actual "
+            f"DatasetScope dates [{scope_start[:10]}, {scope_end[:10]}] extend beyond actual "
             f"data boundaries [{df_start_str}, {df_end_str}]."
         )
 
-    scope_start_dt = pd.to_datetime(dataset_scope.start_date, utc=True)
-    scope_end_dt = pd.to_datetime(dataset_scope.end_date, utc=True)
+    scope_start_dt = pd.to_datetime(scope_start, utc=True)
+    if len(scope_end) == 10:
+        # Date-only bound: include full final UTC day
+        scope_end_dt = pd.to_datetime(f"{scope_end}T23:59:59.999999", utc=True)
+    else:
+        # Timestamp-valued bound: preserve exact instant semantics
+        scope_end_dt = pd.to_datetime(scope_end, utc=True)
 
     if "timestamp" in data.columns:
         mask = (data["timestamp"] >= scope_start_dt) & (
@@ -626,25 +711,41 @@ def _eval_walk_forward(
                 return None, rejections
 
     wf_returns: list[float] = []
+    wf_period_returns: list[float] = []
     positive_windows = 0
 
     for w in windows:
-        df_test = df_full.iloc[w.test_start : w.test_end]
-        if df_test.empty:
+        # Include the preceding training window when evaluating indicators so
+        # rolling features have their required history. Score ONLY the test
+        # segment below; never include training-period performance in WF results.
+        df_window = df_full.iloc[w.train_start : w.test_end]
+        if df_window.empty:
             rejections.append(RejectionReason.FAILED_WALK_FORWARD)
             return None, rejections
 
+        test_offset = w.test_start - w.train_start
         try:
             eval_res = evaluate_strategy(
-                df=df_test,
+                df=df_window,
                 name=spec.strategy_name,
                 registry=registry,
                 strategy_kwargs=spec.parameters,
                 transaction_cost=transaction_cost,
                 slippage=slippage,
             )
-            ret = eval_res.total_return
+            if eval_res.returns is None:
+                raise ValueError("Strategy evaluation did not return per-period strategy returns.")
+            test_returns = eval_res.returns.iloc[test_offset:]
+            if test_returns.empty:
+                raise ValueError("Walk-forward test segment produced no returns.")
+            numeric_returns = [float(value) for value in test_returns]
+            if not all(math.isfinite(value) for value in numeric_returns):
+                raise ValueError("Walk-forward test segment contains non-finite strategy returns.")
+            ret = math.prod(1.0 + value for value in numeric_returns) - 1.0
+            if not math.isfinite(ret):
+                raise ValueError("Walk-forward test return is non-finite.")
             wf_returns.append(ret)
+            wf_period_returns.extend(numeric_returns)
             if ret > 0:
                 positive_windows += 1
         except Exception:
@@ -679,18 +780,47 @@ def _eval_walk_forward(
     start_ts_utc = min_ts.isoformat()
     end_ts_utc = max_ts.isoformat()
 
-    mean_ret = sum(wf_returns) / len(wf_returns)
+    # Report metrics from the concatenated, disjoint test periods only.
+    # Fold-level returns remain separately available for positive-window ratio.
+    period_returns = pd.Series(wf_period_returns, dtype=float)
+    equity = (1.0 + period_returns).cumprod()
+    total_return = float(equity.iloc[-1] - 1.0) if not equity.empty else 0.0
+    drawdown = float((equity / equity.cummax() - 1.0).min()) if not equity.empty else 0.0
+
+    std_return = float(period_returns.std()) if len(period_returns) > 1 else 0.0
+    sharpe = (
+        float(period_returns.mean() / std_return)
+        if std_return > 0.0 and math.isfinite(std_return)
+        else 0.0
+    )
+    active_returns = period_returns[period_returns != 0.0]
+    win_rate_value = (
+        float((active_returns > 0.0).sum() / len(active_returns))
+        if not active_returns.empty
+        else 0.0
+    )
+    gross_profit = float(period_returns[period_returns > 0.0].sum())
+    gross_loss = float(abs(period_returns[period_returns < 0.0].sum()))
+    profit_factor_value = (
+        gross_profit / gross_loss
+        if gross_profit > 0.0 and gross_loss > 0.0
+        else 0.0
+    )
 
     wf_partition = EvidencePartition(
         role=EvidencePartitionRole.WALK_FORWARD,
         start_date=start_str,
         end_date=end_str,
-        total_return=round(mean_ret, 6),
-        max_drawdown=0.0,
-        sharpe_ratio=0.0,
-        observations=len(wf_returns),
+        total_return=round(total_return, 6),
+        max_drawdown=round(drawdown, 6),
+        sharpe_ratio=round(sharpe, 6),
+        win_rate=round(win_rate_value, 6),
+        profit_factor=round(profit_factor_value, 6),
+        observations=len(wf_period_returns),
         additional_metrics={
             "walk_forward_windows": float(len(wf_returns)),
+            "test_period_observations": float(len(wf_period_returns)),
+            "mean_window_return": float(sum(wf_returns) / len(wf_returns)),
             "positive_window_ratio": float(pos_ratio),
             "latency_ms": latency_ms,
             "transaction_cost": transaction_cost,

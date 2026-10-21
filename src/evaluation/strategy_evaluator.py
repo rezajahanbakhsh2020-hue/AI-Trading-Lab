@@ -1,9 +1,100 @@
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
-from typing import Mapping
+from typing import Any, Mapping
 
 import pandas as pd
+
+STRATEGY_PARAMETER_CONTRACTS: dict[str, dict[str, set[str]]] = {
+    "baseline": {
+        "signal": {"fast_window", "slow_window"},
+        "risk": {"stop_loss_pct", "take_profit_pct", "tp1_multiplier", "tp2_multiplier", "tp3_multiplier"},
+    },
+    "moving_average": {
+        "signal": {"fast_window", "slow_window"},
+        "risk": {"stop_loss_pct", "take_profit_pct", "tp1_multiplier", "tp2_multiplier", "tp3_multiplier"},
+    },
+    "momentum": {
+        "signal": {"window", "momentum_window"},
+        "risk": {"stop_loss_pct", "take_profit_pct", "tp1_multiplier", "tp2_multiplier", "tp3_multiplier"},
+    },
+    "breakout": {
+        "signal": {"window", "breakout_window"},
+        "risk": {"stop_loss_pct", "take_profit_pct", "tp1_multiplier", "tp2_multiplier", "tp3_multiplier"},
+    },
+}
+
+
+def validate_and_separate_strategy_kwargs(
+    strategy_name: str,
+    strategy_kwargs: Mapping | None = None,
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Validate strategy parameters, separate signal kwargs from risk kwargs, and reject unsupported parameters.
+
+    Returns (signal_kwargs, risk_kwargs).
+    Raises ValueError on unrecognized parameters or invalid parameter types/bounds.
+    """
+    kwargs = dict(strategy_kwargs or {})
+    norm_name = strategy_name.strip().lower()
+
+    if norm_name not in STRATEGY_PARAMETER_CONTRACTS:
+        return kwargs, {}
+
+    contract = STRATEGY_PARAMETER_CONTRACTS[norm_name]
+    allowed_signal = contract["signal"]
+    allowed_risk = contract["risk"]
+    all_allowed = allowed_signal | allowed_risk
+
+    unsupported = set(kwargs.keys()) - all_allowed
+    if unsupported:
+        raise ValueError(
+            f"Strategy '{strategy_name}' received unsupported parameter(s): {sorted(unsupported)}. "
+            f"Allowed parameters are: {sorted(all_allowed)}."
+        )
+
+    signal_kwargs: dict[str, Any] = {}
+    risk_kwargs: dict[str, Any] = {}
+
+    for k, v in kwargs.items():
+        if k in allowed_signal:
+            signal_kwargs[k] = v
+        if k in allowed_risk:
+            risk_kwargs[k] = v
+
+    # Validate signal parameters
+    if "fast_window" in signal_kwargs:
+        fw = signal_kwargs["fast_window"]
+        if not isinstance(fw, int) or isinstance(fw, bool) or fw <= 0:
+            raise ValueError(f"fast_window must be a positive integer, got: {fw}")
+    if "slow_window" in signal_kwargs:
+        sw = signal_kwargs["slow_window"]
+        if not isinstance(sw, int) or isinstance(sw, bool) or sw <= 0:
+            raise ValueError(f"slow_window must be a positive integer, got: {sw}")
+    if "fast_window" in signal_kwargs and "slow_window" in signal_kwargs:
+        if signal_kwargs["fast_window"] >= signal_kwargs["slow_window"]:
+            raise ValueError("fast_window must be smaller than slow_window.")
+
+    for w_param in ("window", "momentum_window", "breakout_window"):
+        if w_param in signal_kwargs:
+            w = signal_kwargs[w_param]
+            if not isinstance(w, int) or isinstance(w, bool) or w <= 0:
+                raise ValueError(f"{w_param} must be a positive integer, got: {w}")
+
+    # Validate risk parameters
+    for pct_param in ("stop_loss_pct", "take_profit_pct"):
+        if pct_param in risk_kwargs:
+            val = risk_kwargs[pct_param]
+            if not isinstance(val, (int, float)) or isinstance(val, bool) or not math.isfinite(val) or val <= 0:
+                raise ValueError(f"{pct_param} must be a positive finite float, got: {val}")
+
+    for mult_param in ("tp1_multiplier", "tp2_multiplier", "tp3_multiplier"):
+        if mult_param in risk_kwargs:
+            val = risk_kwargs[mult_param]
+            if not isinstance(val, (int, float)) or isinstance(val, bool) or not math.isfinite(val) or val <= 0:
+                raise ValueError(f"{mult_param} must be a positive finite float, got: {val}")
+
+    return signal_kwargs, risk_kwargs
 
 from src.backtest.engine import run_backtest
 from src.evaluation.metrics import (
@@ -150,12 +241,15 @@ def evaluate_strategy(
     if "return" not in data.columns:
         data = add_returns(data)
 
-    kwargs = dict(strategy_kwargs or {})
+    signal_kwargs, risk_kwargs = validate_and_separate_strategy_kwargs(
+        strategy.name,
+        strategy_kwargs,
+    )
 
     strategy_result = registry.run(
         strategy.name,
         data,
-        **kwargs,
+        **signal_kwargs,
     )
 
     if "signal" not in strategy_result.columns:
@@ -168,6 +262,7 @@ def evaluate_strategy(
         strategy_result,
         transaction_cost=transaction_cost,
         slippage=slippage,
+        **risk_kwargs,
     )
 
     total = _safe(total_return(backtest_result))

@@ -66,6 +66,10 @@ def test_evaluate_all_returns_all_registered_strategies():
                 "fast_window": 5,
                 "slow_window": 20,
             },
+            "moving_average": {
+                "fast_window": 5,
+                "slow_window": 20,
+            },
             "breakout": {"window": 10},
         },
     )
@@ -74,9 +78,10 @@ def test_evaluate_all_returns_all_registered_strategies():
         "baseline",
         "breakout",
         "momentum",
+        "moving_average",
     }
 
-    assert len(result) == 3
+    assert len(result) == 4
 
 
 def test_evaluation_is_ranked_by_score():
@@ -87,6 +92,10 @@ def test_evaluation_is_ranked_by_score():
         strategy_kwargs={
             "momentum": {"window": 5},
             "baseline": {
+                "fast_window": 5,
+                "slow_window": 20,
+            },
+            "moving_average": {
                 "fast_window": 5,
                 "slow_window": 20,
             },
@@ -121,7 +130,7 @@ def test_select_top_three_returns_at_most_three():
 
     assert len(selected) == 3
     assert list(selected["ranking_score"]) == list(
-        evaluations["ranking_score"]
+        evaluations["ranking_score"].head(3)
     )
 
 

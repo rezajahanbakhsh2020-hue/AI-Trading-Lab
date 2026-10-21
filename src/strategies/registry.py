@@ -5,7 +5,7 @@ from typing import Callable, Dict, Iterable
 
 import pandas as pd
 
-from .baseline import baseline_signal
+from .baseline import baseline_signal, moving_average_signal
 from .breakout import breakout_signal
 from .momentum import momentum_signal
 
@@ -186,6 +186,14 @@ def build_default_registry() -> StrategyRegistry:
                 category="momentum",
                 function=momentum_signal,
                 description="Positive percentage-change momentum strategy.",
+                supports_long=True,
+                supports_short=False,
+            ),
+            StrategySpec(
+                name="moving_average",
+                category="trend",
+                function=moving_average_signal,
+                description="Fast/slow moving-average trend strategy.",
                 supports_long=True,
                 supports_short=False,
             ),

@@ -1,0 +1,18 @@
+{
+  "candidate_id": "cand_moving_average_1d_verified_20261020",
+  "strategy_name": "moving_average",
+  "strategy_version": "1.0",
+  "experiment_fingerprint": "d9152bbbffd4a6576a285eb2623017a65d74cb5e940af35dee8adfe985292514",
+  "evidence_id": "ev_cf2bb2dffa44c4e3",
+  "symbol": "XAUUSD",
+  "timeframe": "1D",
+  "parameters": {
+    "fast_window": 20,
+    "slow_window": 50,
+    "stop_loss_pct": 0.05,
+    "take_profit_pct": 0.1
+  },
+  "governance_decision_fingerprint": "3e77dbc9867bb6406cf19c1ce36afd3782d0d0b54298d9e5f7b5edd67d6514d3",
+  "campaign_selection_decision_fingerprint": null,
+  "operational_stability_score": 0.5418264967501166
+}

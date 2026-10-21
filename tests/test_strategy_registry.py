@@ -29,6 +29,7 @@ def test_default_registry_contains_existing_strategies():
         "baseline",
         "breakout",
         "momentum",
+        "moving_average",
     )
 
 
