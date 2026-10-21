@@ -1206,15 +1206,118 @@ def test_real_manifest_backed_daily_candidate_qualifies_without_policy_relaxatio
     assert result["publish_result"]["delivery_status"] == "DELIVERED"
 
 
-def test_historical_5m_candidate_artifact_rejection():
-    """Verify that historical 5m candidate artifact fails canonical resolution closed."""
+def test_historical_5m_candidate_artifact_rejection(tmp_path):
+    """Verify explicit canonical qualification rejection of malformed 5m evidence artifacts using isolated fixtures."""
+    import json
     from src.evaluation.research_store import resolve_promoted_candidate, PromotionEligibilityError
+
+    exp_fp_5m = "01d76b46bc2b30a779fe365c3f521a6e248f435901a9af761eec124301ec8d4b"
+
+    # 1. Test isolated deterministic fixture with malformed evidence shape
+    res_dir = tmp_path / "research"
+    exp_dir = res_dir / exp_fp_5m
+    exp_dir.mkdir(parents=True, exist_ok=True)
+    cand_dir = res_dir / "by_candidate" / "cand_moving_average_5m"
+    cand_dir.mkdir(parents=True, exist_ok=True)
+
+    malformed_evidence_data = {
+        "evidence_id": "ev_13efb1ed9af06cee",
+        "experiment_fingerprint": exp_fp_5m,
+        "spec": {
+            "fingerprint": exp_fp_5m,
+            "hypothesis": "Moving Average on 5m",
+            "statement": "Moving Average on 5m",
+            "methodology_version": "1.0",
+            "strategy_name": "moving_average",
+            "strategy_version": "1.0",
+            "dataset_scope": {
+                "dataset_id": "ds_moving_average_5m",
+                "symbol": "XAUUSD",
+                "timeframe": "5m",
+                "start_date": "2025-01-01",
+                "end_date": "2025-12-31",
+            },
+            "execution_assumptions": {"slippage": 0.0001, "transaction_cost": 0.0001, "latency_ms": 10.0},
+            "code_provenance": {"commit_sha": "sha123"},
+            "benchmark_reference": "buy_and_hold",
+            "parameters": {"fast_window": 20, "slow_window": 50},
+            "walk_forward_protocol": {"train_size": 100, "test_size": 20},
+            "hypothesis_id": "hyp_5m",
+            "status": "ACCEPTED_FOR_RESEARCH",
+            "created_at_utc": "2025-01-01T00:00:00+00:00",
+        },
+        "partitions": [
+            {
+                "role": "OUT_OF_SAMPLE",
+                "start_date": "2025-01-01",
+                "end_date": "2025-12-31",
+                "total_return": 0.15,
+                "max_drawdown": 0.05,
+                "sharpe_ratio": 1.8,
+                "win_rate": 0.0,
+                "profit_factor": 0.0,
+                "observations": 30,
+                "additional_metrics": {},
+            },
+            {
+                "role": "IN_SAMPLE",
+                "start_date": "2025-01-01",
+                "end_date": "2025-12-31",
+                "total_return": 0.2,
+                "max_drawdown": 0.05,
+                "sharpe_ratio": 2.0,
+                "win_rate": 0.6,
+                "profit_factor": 1.5,
+                "observations": 50,
+                "additional_metrics": {},
+            },
+            {
+                "role": "WALK_FORWARD",
+                "start_date": "2025-01-01",
+                "end_date": "2025-12-31",
+                "total_return": 0.1,
+                "max_drawdown": 0.05,
+                "sharpe_ratio": 1.5,
+                "win_rate": 0.55,
+                "profit_factor": 1.3,
+                "observations": 30,
+                "additional_metrics": {},
+            },
+        ],
+        "robustness_verdict": {
+            "passed": False,
+            "status": "PARTIALLY_EVALUATED",
+            "reasons": ["UNEVALUATED_DIMENSIONS"],
+            "metrics": {},
+        },
+        "benchmark_comparison": {},
+        "promotion_status": "REJECTED",
+        "rejection_reasons": ["FAILED_ROBUSTNESS"],
+        "critique_notes": "",
+        "created_at_utc": "",
+    }
+    (exp_dir / "evidence.json").write_text(json.dumps(malformed_evidence_data), encoding="utf-8")
+
+    malformed_binding_data = {
+        "candidate_id": "cand_moving_average_5m",
+        "strategy_name": "moving_average",
+        "strategy_version": "1.0",
+        "experiment_fingerprint": exp_fp_5m,
+        "evidence_id": "ev_13efb1ed9af06cee",
+        "symbol": "XAUUSD",
+        "timeframe": "5m",
+        "parameters": {"fast_window": 20, "slow_window": 50},
+        "governance_decision_fingerprint": "gov_dec_cand_moving_average_5m_v1",
+        "operational_stability_score": 0.74,
+    }
+    (cand_dir / "candidate.json").write_text(json.dumps(malformed_binding_data), encoding="utf-8")
 
     with pytest.raises(PromotionEligibilityError) as exc_info:
         resolve_promoted_candidate(
             candidate_id="cand_moving_average_5m",
             symbol="XAUUSD",
             timeframe="5m",
+            base_dir=res_dir,
         )
 
     err_msg = str(exc_info.value)
@@ -1229,6 +1332,16 @@ def test_historical_5m_candidate_artifact_rejection():
         "anti_overfitting",
     ):
         assert dim in err_msg, f"Expected unevaluated dimension '{dim}' in error message"
+
+    # 2. Also verify repo candidate if present
+    repo_cand_file = Path("results/research_experiments/by_candidate/cand_moving_average_5m/candidate.json")
+    if repo_cand_file.exists():
+        with pytest.raises(PromotionEligibilityError):
+            resolve_promoted_candidate(
+                candidate_id="cand_moving_average_5m",
+                symbol="XAUUSD",
+                timeframe="5m",
+            )
 
 
 def test_5m_dataset_resolution_fails_closed_without_substitution():
@@ -1247,26 +1360,135 @@ def test_5m_dataset_resolution_fails_closed_without_substitution():
         resolve_historical_dataset(ds_5m)
 
 
-def test_timeframe_independence_1d_valid_and_5m_blocked_negative_control():
-    """Negative control: 1D candidate resolves and authorizes cleanly while 5m remains blocked."""
-    from src.evaluation.research_store import resolve_promoted_candidate, PromotionEligibilityError
+def test_timeframe_independence_1d_valid_and_5m_blocked_negative_control(tmp_path):
+    """Negative control: 1D candidate resolves and authorizes cleanly while 5m remains blocked using isolated fixtures."""
+    import json
+    import numpy as np
+    from src.evaluation.research_constitution import (
+        CodeProvenance,
+        DatasetScope,
+        ExecutionAssumptions,
+        HypothesisStatus,
+        ResearchHypothesis,
+        WalkForwardProtocol,
+    )
+    from src.evaluation.research_runner import run_research_experiment, validate_and_prepare_dataset
+    from src.evaluation.research_robustness import assess_research_robustness
+    from src.evaluation.stability import CanonicalStabilityEvidence
+    from src.evaluation.research_store import (
+        persist_promoted_candidate_binding,
+        resolve_promoted_candidate,
+        PromotionEligibilityError,
+    )
     from src.evaluation.live_production_decision import authorize_production_runtime
 
-    # 1D candidate resolves cleanly
+    res_dir = tmp_path / "research"
+
+    # 1. Create a valid 1D candidate fixture in res_dir
+    dates = pd.date_range("2024-01-01", "2025-12-31", freq="D", tz="UTC")
+    idx = np.arange(len(dates), dtype=float)
+    close = 2000.0 * np.exp(0.0012 * idx + 0.001 * np.sin(idx * 0.07))
+    open_prices = np.concatenate(([close[0] / np.exp(0.0012)], close[:-1]))
+    fixture_df = pd.DataFrame({
+        "timestamp": dates.astype(str),
+        "open": open_prices,
+        "high": np.maximum(open_prices, close) * 1.0015,
+        "low": np.minimum(open_prices, close) * 0.9985,
+        "close": close,
+    })
+    ds_1d = DatasetScope("fixture_1d", "XAUUSD", "1D", "2024-01-01", "2025-12-31")
+    df_1d = validate_and_prepare_dataset(fixture_df, ds_1d)
+    hyp_1d = ResearchHypothesis(
+        statement="Valid 1D hypothesis for timeframe independence test",
+        methodology_version="1.0",
+        strategy_name="moving_average",
+        strategy_version="1.0",
+        dataset_scope=ds_1d,
+        execution_assumptions=ExecutionAssumptions(0.0001, 0.0001, 10.0),
+        code_provenance=CodeProvenance("sha12345"),
+        benchmark_reference="buy_and_hold",
+        parameters={"fast_window": 5, "slow_window": 20, "stop_loss_pct": 0.02, "take_profit_pct": 0.04},
+        walk_forward_protocol=WalkForwardProtocol(train_size=150, test_size=30),
+        status=HypothesisStatus.ACCEPTED_FOR_RESEARCH,
+    )
+    evidence_1d = run_research_experiment(hyp_1d, df=df_1d, persist_evidence=True, base_dir=res_dir)
+    robustness_1d = assess_research_robustness(evidence_1d)
+    stability_1d = CanonicalStabilityEvidence(strategy_name="moving_average", stability_score=0.85)
+    persist_promoted_candidate_binding(
+        candidate_id="cand_valid_1d_fixture",
+        evidence=evidence_1d,
+        canonical_stability=stability_1d,
+        robustness_assessment=robustness_1d,
+        base_dir=res_dir,
+    )
+
+    # 2. Create an unqualified 5m candidate fixture in res_dir
+    exp_fp_5m = "7700f41068eea06a9219be1e0382fcd4eb3b15cb27b9350c65a411b3264a05f6"
+    exp_dir_5m = res_dir / exp_fp_5m
+    exp_dir_5m.mkdir(parents=True, exist_ok=True)
+    cand_dir_5m = res_dir / "by_candidate" / "cand_blocked_5m_fixture"
+    cand_dir_5m.mkdir(parents=True, exist_ok=True)
+
+    unqualified_evidence_5m = {
+        "evidence_id": "ev_74f03b8b5de356d5",
+        "experiment_fingerprint": exp_fp_5m,
+        "spec": {
+            "fingerprint": exp_fp_5m,
+            "hypothesis": "Unqualified 5m hypothesis",
+            "statement": "Unqualified 5m hypothesis",
+            "methodology_version": "1.0",
+            "strategy_name": "moving_average",
+            "strategy_version": "1.0",
+            "dataset_scope": {"dataset_id": "ds_5m", "symbol": "XAUUSD", "timeframe": "5m", "start_date": "2025-01-01", "end_date": "2025-12-31"},
+            "execution_assumptions": {"slippage": 0.0001, "transaction_cost": 0.0001, "latency_ms": 10.0},
+            "code_provenance": {"commit_sha": "sha123"},
+            "benchmark_reference": "buy_and_hold",
+            "parameters": {"fast_window": 20, "slow_window": 50},
+            "walk_forward_protocol": {"train_size": 100, "test_size": 20},
+            "hypothesis_id": "hyp_5m",
+            "status": "ACCEPTED_FOR_RESEARCH",
+            "created_at_utc": "2025-01-01T00:00:00+00:00",
+        },
+        "partitions": [],
+        "robustness_verdict": {"passed": False, "status": "PARTIALLY_EVALUATED", "reasons": ["UNEVALUATED_DIMENSIONS"], "metrics": {}},
+        "benchmark_comparison": {},
+        "promotion_status": "REJECTED",
+        "rejection_reasons": ["FAILED_ROBUSTNESS"],
+        "critique_notes": "",
+        "created_at_utc": "",
+    }
+    (exp_dir_5m / "evidence.json").write_text(json.dumps(unqualified_evidence_5m), encoding="utf-8")
+    unqualified_binding_5m = {
+        "candidate_id": "cand_blocked_5m_fixture",
+        "strategy_name": "moving_average",
+        "strategy_version": "1.0",
+        "experiment_fingerprint": exp_fp_5m,
+        "evidence_id": "ev_74f03b8b5de356d5",
+        "symbol": "XAUUSD",
+        "timeframe": "5m",
+        "parameters": {"fast_window": 20, "slow_window": 50},
+        "governance_decision_fingerprint": "gov_dec_blocked_5m",
+        "operational_stability_score": 0.50,
+    }
+    (cand_dir_5m / "candidate.json").write_text(json.dumps(unqualified_binding_5m), encoding="utf-8")
+
+    # 3. Assert 1D candidate resolves & authorizes cleanly
     daily_candidate = resolve_promoted_candidate(
-        candidate_id="cand_moving_average_1d_verified_20261020",
+        candidate_id="cand_valid_1d_fixture",
         symbol="XAUUSD",
         timeframe="1D",
+        base_dir=res_dir,
     )
     assert daily_candidate is not None
-    assert daily_candidate.candidate_id == "cand_moving_average_1d_verified_20261020"
+    assert daily_candidate.candidate_id == "cand_valid_1d_fixture"
     daily_auth = authorize_production_runtime(daily_candidate, symbol="XAUUSD", timeframe="1D")
     assert daily_auth.authorization_fingerprint
 
-    # 5m candidate fails resolution closed
+    # 4. Assert 5m candidate resolution fails closed
     with pytest.raises(PromotionEligibilityError):
         resolve_promoted_candidate(
-            candidate_id="cand_moving_average_5m",
+            candidate_id="cand_blocked_5m_fixture",
             symbol="XAUUSD",
             timeframe="5m",
+            base_dir=res_dir,
         )
