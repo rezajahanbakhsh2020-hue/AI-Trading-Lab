@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import io
 import json
+import math
 from pathlib import Path
 
 import pandas as pd
@@ -55,6 +56,23 @@ def validate_market_data(df: pd.DataFrame) -> None:
 
     if (df["high"] < df["low"]).any():
         raise ValueError("High price cannot be lower than low price.")
+
+
+def validate_numeric_series(series: pd.Series, name: str) -> pd.Series:
+    """Ensure all values in a numeric series are finite float numbers.
+
+    Raises ValueError on NaN, unparseable numeric values, or non-finite infinity values.
+    """
+    converted = pd.to_numeric(series, errors="coerce")
+
+    if converted.isna().any():
+        raise ValueError(f"Column '{name}' contains NaN or unparseable numeric values.")
+
+    is_inf = converted.apply(lambda x: math.isinf(x) if isinstance(x, (int, float)) else True)
+    if is_inf.any():
+        raise ValueError(f"Column '{name}' contains non-finite infinity values.")
+
+    return converted
 
 
 def verify_dataset_and_manifest_integrity(

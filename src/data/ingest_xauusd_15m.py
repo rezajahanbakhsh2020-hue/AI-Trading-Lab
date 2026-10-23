@@ -27,18 +27,9 @@ DEFAULT_OUTPUT_DIR = Path(__file__).resolve().parents[2] / "data" / "raw" / "xau
 DEFAULT_OUTPUT_FILE = DEFAULT_OUTPUT_DIR / "ds_moving_average_15m.csv"
 
 
-def _validate_numeric_series(series: pd.Series, name: str) -> pd.Series:
-    """Ensure all values in a numeric series are finite float numbers."""
-    converted = pd.to_numeric(series, errors="coerce")
+from src.data.validation import validate_numeric_series
 
-    if converted.isna().any():
-        raise ValueError(f"Column '{name}' contains NaN or unparseable numeric values.")
-
-    is_inf = converted.apply(lambda x: math.isinf(x) if isinstance(x, (int, float)) else True)
-    if is_inf.any():
-        raise ValueError(f"Column '{name}' contains non-finite infinity values.")
-
-    return converted
+_validate_numeric_series = validate_numeric_series
 
 
 def analyze_temporal_gaps(timestamps: pd.Series) -> dict:
@@ -251,13 +242,28 @@ def download_and_validate_xauusd_15m(
     }
     commit_json_str = json.dumps(commit_data, indent=2)
 
-    # Unique PID/UUID staging paths to prevent concurrent worker collision
+    # Unique PID/UUID staging and backup paths
     run_id = f"{os.getpid()}_{uuid.uuid4().hex[:8]}"
     tmp_csv = out_p.with_suffix(f".tmp.{run_id}.csv")
     tmp_json = manifest_p.with_suffix(f".tmp.{run_id}.manifest.json")
     tmp_commit = commit_p.with_suffix(f".tmp.{run_id}.commit.json")
 
+    bak_csv = out_p.with_suffix(f".bak.{run_id}.csv")
+    bak_json = manifest_p.with_suffix(f".bak.{run_id}.manifest.json")
+    bak_commit = commit_p.with_suffix(f".bak.{run_id}.commit.json")
+
+    backups = {
+        out_p: bak_csv,
+        manifest_p: bak_json,
+        commit_p: bak_commit,
+    }
+
     try:
+        # Create byte-level backups of existing destination files before starting replacements
+        for dest, bak in backups.items():
+            if dest.exists():
+                bak.write_bytes(dest.read_bytes())
+
         # Write staged temporary files
         tmp_csv.write_bytes(output_csv_bytes)
         tmp_json.write_text(manifest_json_str, encoding="utf-8")
@@ -290,8 +296,25 @@ def download_and_validate_xauusd_15m(
         # Step 3: Replace Commit Marker
         os.replace(tmp_commit, commit_p)
 
+        # On full success, clean up temporary backup files
+        for bak in backups.values():
+            if bak.exists():
+                try:
+                    bak.unlink()
+                except OSError:
+                    pass
+
     except Exception as exc:
-        # Clean up temporary staged files on error
+        # Rollback: restore destination files from backups byte-for-byte on failure
+        for dest, bak in backups.items():
+            if bak.exists():
+                try:
+                    dest.write_bytes(bak.read_bytes())
+                    bak.unlink()
+                except OSError:
+                    pass
+
+        # Clean up temporary staged files
         for p in (tmp_csv, tmp_json, tmp_commit):
             if p.exists():
                 try:

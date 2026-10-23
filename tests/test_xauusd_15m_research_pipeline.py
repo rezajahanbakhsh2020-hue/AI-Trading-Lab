@@ -146,6 +146,7 @@ def test_fault_injection_interrupted_publication(tmp_path: Path, mock_15m_csv_by
     assert manifest_file.read_bytes() == initial_manifest
 
     # Case B: Interrupted publication step (after CSV replace but before manifest replace)
+    # Rollback protocol restores all files byte-for-byte to initial generation
     with pytest.raises(RuntimeError, match="Atomic dataset persistence failed"):
         download_and_validate_xauusd_15m(
             output_path=out_file,
@@ -154,10 +155,8 @@ def test_fault_injection_interrupted_publication(tmp_path: Path, mock_15m_csv_by
             raw_data_bytes=valid_replacement_payload,
             simulate_failure_step="before_manifest_replace",
         )
-
-    # Verify reader detects generation mismatch between CSV and manifest, and fails closed
-    with pytest.raises(RuntimeError, match="Mismatched dataset/manifest generation detected"):
-        verify_dataset_and_manifest_integrity(out_file, manifest_file, commit_file)
+    assert out_file.read_bytes() == initial_csv
+    assert manifest_file.read_bytes() == initial_manifest
 
 
 def test_non_finite_numeric_and_volume_rejected(tmp_path: Path) -> None:

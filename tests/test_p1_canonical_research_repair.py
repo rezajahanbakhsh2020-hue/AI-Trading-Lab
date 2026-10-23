@@ -39,6 +39,7 @@ from src.evaluation.strategy_evaluator import (
     evaluate_strategy,
     validate_and_separate_strategy_kwargs,
 )
+from src.data.validation import validate_numeric_series
 
 
 def sample_daily_df_numeric_seconds() -> pd.DataFrame:
@@ -68,6 +69,33 @@ def sample_daily_df_iso_strings() -> pd.DataFrame:
             "close": [2605.0 + i for i in range(10)],
         }
     )
+
+
+# -----------------------------------------------------------------------------
+# 0. Numeric Series Validation Tests
+# -----------------------------------------------------------------------------
+
+def test_validate_numeric_series_passes_on_valid_numbers():
+    s = pd.Series([100.0, 101.5, 102.3, 99.8])
+    res = validate_numeric_series(s, "close")
+    assert len(res) == 4
+    assert res.iloc[0] == 100.0
+
+
+def test_validate_numeric_series_rejects_nan_and_unparseable():
+    s_nan = pd.Series([100.0, None, 102.3])
+    with pytest.raises(ValueError, match="contains NaN or unparseable numeric values"):
+        validate_numeric_series(s_nan, "open")
+
+    s_str = pd.Series([100.0, "invalid_str", 102.3])
+    with pytest.raises(ValueError, match="contains NaN or unparseable numeric values"):
+        validate_numeric_series(s_str, "high")
+
+
+def test_validate_numeric_series_rejects_infinity():
+    s_inf = pd.Series([100.0, float("inf"), 102.3])
+    with pytest.raises(ValueError, match="contains non-finite infinity values"):
+        validate_numeric_series(s_inf, "low")
 
 
 # -----------------------------------------------------------------------------
@@ -196,6 +224,74 @@ def test_timestamp_valued_end_bound_preserves_exact_instant():
 # -----------------------------------------------------------------------------
 # 3. Exact Dataset Identity & Manifest Integrity Tests
 # -----------------------------------------------------------------------------
+
+# -----------------------------------------------------------------------------
+# 0.1 Ingestion Rollback & Persistence Boundary Tests
+# -----------------------------------------------------------------------------
+
+def test_ingestion_persistence_boundary_failure_injection_rolls_back_byte_for_byte(tmp_path):
+    """Verify that simulated persistence failure at any boundary restores previous generation byte-for-byte."""
+    from src.data.ingest_xauusd_5m import download_and_validate_xauusd_5m
+    from src.data.validation import verify_dataset_and_manifest_integrity
+
+    out_csv = tmp_path / "ds_test.csv"
+    manifest_file = tmp_path / "ds_test.manifest.json"
+    commit_file = tmp_path / "ds_test.commit.json"
+
+    # Seed generation 1 initial files
+    g1_csv_bytes = b"datetime,open,high,low,close,volume\n2026-03-26T02:30:00+00:00,100,105,95,102,100\n"
+    import hashlib
+    g1_sha = hashlib.sha256(g1_csv_bytes).hexdigest()
+
+    g1_manifest = {
+        "manifest_version": "1.0",
+        "dataset_id": "ds_test",
+        "symbol": "XAUUSD",
+        "timeframe": "5m",
+        "output_sha256": g1_sha,
+        "row_count": 1,
+    }
+    g1_manifest_bytes = json.dumps(g1_manifest, indent=2).encode("utf-8")
+
+    g1_commit = {
+        "commit_version": "1.0",
+        "dataset_id": "ds_test",
+        "symbol": "XAUUSD",
+        "timeframe": "5m",
+        "output_sha256": g1_sha,
+    }
+    g1_commit_bytes = json.dumps(g1_commit, indent=2).encode("utf-8")
+
+    # Generation 2 payload (to be attempted)
+    g2_csv_bytes = b"datetime,open,high,low,close,volume\n2026-03-26T02:30:00+00:00,200,205,195,202,200\n2026-03-26T02:35:00+00:00,202,208,201,207,250\n"
+
+    boundaries = ["before_csv_replace", "before_manifest_replace", "before_commit_replace"]
+
+    for failure_boundary in boundaries:
+        # Seed files with generation 1
+        out_csv.write_bytes(g1_csv_bytes)
+        manifest_file.write_bytes(g1_manifest_bytes)
+        commit_file.write_bytes(g1_commit_bytes)
+
+        with pytest.raises(RuntimeError, match="Atomic dataset persistence failed"):
+            download_and_validate_xauusd_5m(
+                output_path=out_csv,
+                manifest_path=manifest_file,
+                commit_path=commit_file,
+                raw_data_bytes=g2_csv_bytes,
+                simulate_failure_step=failure_boundary,
+            )
+
+        # Assert byte-for-byte restoration of generation 1
+        assert out_csv.read_bytes() == g1_csv_bytes
+        assert manifest_file.read_bytes() == g1_manifest_bytes
+        assert commit_file.read_bytes() == g1_commit_bytes
+
+        # Confirm verify_dataset_and_manifest_integrity passes cleanly on generation 1
+        df_read, meta_read = verify_dataset_and_manifest_integrity(out_csv, manifest_file, commit_file)
+        assert len(df_read) == 1
+        assert meta_read["output_sha256"] == g1_sha
+
 
 def test_missing_dataset_resolution_fails_closed_without_substitution():
     missing_timeframes = ["1m", "1d"]

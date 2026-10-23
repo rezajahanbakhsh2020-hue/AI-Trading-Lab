@@ -17,11 +17,8 @@ import uuid
 
 import pandas as pd
 
-from src.data.ingest_xauusd_15m import (
-    _validate_numeric_series,
-    analyze_temporal_gaps,
-)
-from src.data.validation import verify_dataset_and_manifest_integrity
+from src.data.ingest_xauusd_15m import analyze_temporal_gaps
+from src.data.validation import validate_numeric_series, verify_dataset_and_manifest_integrity
 
 DEFAULT_15M_CSV = Path(__file__).resolve().parents[2] / "data" / "raw" / "xauusd_15m" / "ds_moving_average_15m.csv"
 DEFAULT_15M_MANIFEST = Path(__file__).resolve().parents[2] / "data" / "raw" / "xauusd_15m" / "ds_moving_average_15m.manifest.json"
@@ -124,10 +121,10 @@ def resample_xauusd_timeframe(
         raise ValueError(f"Resampled {timeframe} dataset contains timestamps off the {timeframe} grid.")
 
     # Validate numeric OHLC series and candle geometry
-    open_s = _validate_numeric_series(resampled_df["open"], "open")
-    high_s = _validate_numeric_series(resampled_df["high"], "high")
-    low_s = _validate_numeric_series(resampled_df["low"], "low")
-    close_s = _validate_numeric_series(resampled_df["close"], "close")
+    open_s = validate_numeric_series(resampled_df["open"], "open")
+    high_s = validate_numeric_series(resampled_df["high"], "high")
+    low_s = validate_numeric_series(resampled_df["low"], "low")
+    close_s = validate_numeric_series(resampled_df["close"], "close")
 
     invalid_high = (high_s < open_s) | (high_s < close_s) | (high_s < low_s)
     invalid_low = (low_s > open_s) | (low_s > close_s) | (low_s > high_s)

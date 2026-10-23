@@ -18,8 +18,7 @@ import urllib.request
 
 import pandas as pd
 
-from src.data.ingest_xauusd_15m import _validate_numeric_series
-from src.data.validation import verify_dataset_and_manifest_integrity
+from src.data.validation import validate_numeric_series, verify_dataset_and_manifest_integrity
 
 DEFAULT_SOURCE_URL = (
     "https://raw.githubusercontent.com/getdata-finance/"
@@ -150,10 +149,10 @@ def download_and_validate_xauusd_5m(
         raise ValueError("Source CSV contains timestamps off the 5-minute grid.")
 
     # Validate OHLC values and finite float numbers
-    open_s = _validate_numeric_series(df["open"], "open")
-    high_s = _validate_numeric_series(df["high"], "high")
-    low_s = _validate_numeric_series(df["low"], "low")
-    close_s = _validate_numeric_series(df["close"], "close")
+    open_s = validate_numeric_series(df["open"], "open")
+    high_s = validate_numeric_series(df["high"], "high")
+    low_s = validate_numeric_series(df["low"], "low")
+    close_s = validate_numeric_series(df["close"], "close")
 
     # Validate explicit candle geometry invariants
     invalid_high = (high_s < open_s) | (high_s < close_s) | (high_s < low_s)
@@ -240,7 +239,21 @@ def download_and_validate_xauusd_5m(
     tmp_json = manifest_p.with_suffix(f".tmp.{run_id}.manifest.json")
     tmp_commit = commit_p.with_suffix(f".tmp.{run_id}.commit.json")
 
+    bak_csv = out_p.with_suffix(f".bak.{run_id}.csv")
+    bak_json = manifest_p.with_suffix(f".bak.{run_id}.manifest.json")
+    bak_commit = commit_p.with_suffix(f".bak.{run_id}.commit.json")
+
+    backups = {
+        out_p: bak_csv,
+        manifest_p: bak_json,
+        commit_p: bak_commit,
+    }
+
     try:
+        for dest, bak in backups.items():
+            if dest.exists():
+                bak.write_bytes(dest.read_bytes())
+
         tmp_csv.write_bytes(output_csv_bytes)
         tmp_json.write_text(manifest_json_str, encoding="utf-8")
         tmp_commit.write_text(commit_json_str, encoding="utf-8")
@@ -268,7 +281,22 @@ def download_and_validate_xauusd_5m(
 
         os.replace(tmp_commit, commit_p)
 
+        for bak in backups.values():
+            if bak.exists():
+                try:
+                    bak.unlink()
+                except OSError:
+                    pass
+
     except Exception as exc:
+        for dest, bak in backups.items():
+            if bak.exists():
+                try:
+                    dest.write_bytes(bak.read_bytes())
+                    bak.unlink()
+                except OSError:
+                    pass
+
         for p in (tmp_csv, tmp_json, tmp_commit):
             if p.exists():
                 try:
