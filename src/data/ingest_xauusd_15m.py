@@ -27,18 +27,9 @@ DEFAULT_OUTPUT_DIR = Path(__file__).resolve().parents[2] / "data" / "raw" / "xau
 DEFAULT_OUTPUT_FILE = DEFAULT_OUTPUT_DIR / "ds_moving_average_15m.csv"
 
 
-def _validate_numeric_series(series: pd.Series, name: str) -> pd.Series:
-    """Ensure all values in a numeric series are finite float numbers."""
-    converted = pd.to_numeric(series, errors="coerce")
+from src.data.validation import validate_numeric_series
 
-    if converted.isna().any():
-        raise ValueError(f"Column '{name}' contains NaN or unparseable numeric values.")
-
-    is_inf = converted.apply(lambda x: math.isinf(x) if isinstance(x, (int, float)) else True)
-    if is_inf.any():
-        raise ValueError(f"Column '{name}' contains non-finite infinity values.")
-
-    return converted
+_validate_numeric_series = validate_numeric_series
 
 
 def analyze_temporal_gaps(timestamps: pd.Series) -> dict:
@@ -89,90 +80,7 @@ def analyze_temporal_gaps(timestamps: pd.Series) -> dict:
     }
 
 
-def verify_dataset_and_manifest_integrity(
-    csv_path: str | Path,
-    manifest_path: str | Path,
-    commit_path: str | Path | None = None,
-) -> tuple[pd.DataFrame, dict]:
-    """Verify that published CSV and Manifest belong to the exact same generation.
-
-    Fails closed if hashes, row counts, or metadata mismatch.
-    """
-    csv_p = Path(csv_path)
-    man_p = Path(manifest_path)
-
-    if not csv_p.exists():
-        raise FileNotFoundError(f"Dataset CSV not found at {csv_p}")
-
-    if not man_p.exists():
-        raise FileNotFoundError(f"Dataset Manifest not found at {man_p}")
-
-    csv_bytes = csv_p.read_bytes()
-    actual_sha = hashlib.sha256(csv_bytes).hexdigest()
-
-    try:
-        manifest_data = json.loads(man_p.read_text(encoding="utf-8"))
-    except Exception as exc:
-        raise RuntimeError(f"Corrupt manifest JSON at {man_p}: {exc}") from exc
-
-    if not isinstance(manifest_data, dict):
-        raise ValueError(
-            f"Manifest JSON at {man_p} must be an object (dict), got {type(manifest_data).__name__}."
-        )
-
-    required_identity_fields = ("dataset_id", "symbol", "timeframe")
-    for field in required_identity_fields:
-        if field not in manifest_data:
-            raise ValueError(f"Manifest at {man_p} is missing required identity field '{field}'.")
-        val = manifest_data[field]
-        if not isinstance(val, str):
-            raise TypeError(f"Manifest identity field '{field}' must be a string, got {type(val).__name__}.")
-        if not val.strip():
-            raise ValueError(f"Manifest identity field '{field}' cannot be empty or whitespace-only.")
-
-    expected_sha = manifest_data.get("output_sha256")
-    if not expected_sha or actual_sha != expected_sha:
-        raise RuntimeError(
-            f"Mismatched dataset/manifest generation detected! "
-            f"Actual CSV SHA256 ({actual_sha[:12]}) != Manifest output SHA256 ({str(expected_sha)[:12]})."
-        )
-
-    if commit_path:
-        com_p = Path(commit_path)
-        if com_p.exists():
-            try:
-                commit_data = json.loads(com_p.read_text(encoding="utf-8"))
-            except Exception as exc:
-                raise RuntimeError(f"Corrupt commit marker at {com_p}: {exc}") from exc
-
-            if not isinstance(commit_data, dict):
-                raise ValueError(
-                    f"Commit marker JSON at {com_p} must be an object (dict), got {type(commit_data).__name__}."
-                )
-
-            if commit_data.get("output_sha256") != actual_sha:
-                raise RuntimeError("Commit marker output SHA256 mismatch!")
-
-            for field in required_identity_fields:
-                if field not in commit_data:
-                    raise ValueError(f"Commit marker at {com_p} is missing required identity field '{field}'.")
-                val = commit_data[field]
-                if not isinstance(val, str):
-                    raise TypeError(f"Commit marker identity field '{field}' must be a string, got {type(val).__name__}.")
-                if not val.strip():
-                    raise ValueError(f"Commit marker identity field '{field}' cannot be empty or whitespace-only.")
-
-                man_val = manifest_data[field]
-                if val.strip() != man_val.strip():
-                    raise ValueError(
-                        f"Commit marker identity field '{field}' ('{val}') conflicts with manifest '{field}' ('{man_val}')."
-                    )
-
-    df = pd.read_csv(io.BytesIO(csv_bytes))
-    if len(df) != manifest_data.get("row_count"):
-        raise RuntimeError(f"Row count mismatch: CSV ({len(df)}) != Manifest ({manifest_data.get('row_count')}).")
-
-    return df, manifest_data
+from src.data.validation import verify_dataset_and_manifest_integrity
 
 
 def download_and_validate_xauusd_15m(
@@ -334,13 +242,28 @@ def download_and_validate_xauusd_15m(
     }
     commit_json_str = json.dumps(commit_data, indent=2)
 
-    # Unique PID/UUID staging paths to prevent concurrent worker collision
+    # Unique PID/UUID staging and backup paths
     run_id = f"{os.getpid()}_{uuid.uuid4().hex[:8]}"
     tmp_csv = out_p.with_suffix(f".tmp.{run_id}.csv")
     tmp_json = manifest_p.with_suffix(f".tmp.{run_id}.manifest.json")
     tmp_commit = commit_p.with_suffix(f".tmp.{run_id}.commit.json")
 
+    bak_csv = out_p.with_suffix(f".bak.{run_id}.csv")
+    bak_json = manifest_p.with_suffix(f".bak.{run_id}.manifest.json")
+    bak_commit = commit_p.with_suffix(f".bak.{run_id}.commit.json")
+
+    backups = {
+        out_p: bak_csv,
+        manifest_p: bak_json,
+        commit_p: bak_commit,
+    }
+
     try:
+        # Create byte-level backups of existing destination files before starting replacements
+        for dest, bak in backups.items():
+            if dest.exists():
+                bak.write_bytes(dest.read_bytes())
+
         # Write staged temporary files
         tmp_csv.write_bytes(output_csv_bytes)
         tmp_json.write_text(manifest_json_str, encoding="utf-8")
@@ -373,8 +296,25 @@ def download_and_validate_xauusd_15m(
         # Step 3: Replace Commit Marker
         os.replace(tmp_commit, commit_p)
 
+        # On full success, clean up temporary backup files
+        for bak in backups.values():
+            if bak.exists():
+                try:
+                    bak.unlink()
+                except OSError:
+                    pass
+
     except Exception as exc:
-        # Clean up temporary staged files on error
+        # Rollback: restore destination files from backups byte-for-byte on failure
+        for dest, bak in backups.items():
+            if bak.exists():
+                try:
+                    dest.write_bytes(bak.read_bytes())
+                    bak.unlink()
+                except OSError:
+                    pass
+
+        # Clean up temporary staged files
         for p in (tmp_csv, tmp_json, tmp_commit):
             if p.exists():
                 try:
