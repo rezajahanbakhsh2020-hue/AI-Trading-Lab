@@ -104,7 +104,7 @@ def resolve_historical_dataset(dataset_scope: DatasetScope) -> pd.DataFrame:
                 f"Manifest-backed provenance is strictly required for all resolved dataset artifacts."
             )
 
-        from src.data.ingest_xauusd_15m import verify_dataset_and_manifest_integrity
+        from src.data.validation import verify_dataset_and_manifest_integrity
         df, manifest_dict = verify_dataset_and_manifest_integrity(
             p, man_p, commit_p if commit_p.exists() else None
         )

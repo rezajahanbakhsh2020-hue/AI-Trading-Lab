@@ -20,8 +20,8 @@ import pandas as pd
 from src.data.ingest_xauusd_15m import (
     _validate_numeric_series,
     analyze_temporal_gaps,
-    verify_dataset_and_manifest_integrity,
 )
+from src.data.validation import verify_dataset_and_manifest_integrity
 
 DEFAULT_15M_CSV = Path(__file__).resolve().parents[2] / "data" / "raw" / "xauusd_15m" / "ds_moving_average_15m.csv"
 DEFAULT_15M_MANIFEST = Path(__file__).resolve().parents[2] / "data" / "raw" / "xauusd_15m" / "ds_moving_average_15m.manifest.json"

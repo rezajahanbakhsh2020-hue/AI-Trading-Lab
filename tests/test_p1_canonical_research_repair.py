@@ -411,7 +411,7 @@ def test_incorrect_dataset_id_symbol_or_timeframe_rejected(tmp_path):
             from unittest.mock import patch
             with patch("src.evaluation.research_runner.Path.exists", return_value=True), \
                  patch("src.evaluation.research_runner.Path.is_file", return_value=True), \
-                 patch("src.data.ingest_xauusd_15m.verify_dataset_and_manifest_integrity", return_value=(df_sample, manifest_data)):
+                 patch("src.data.validation.verify_dataset_and_manifest_integrity", return_value=(df_sample, manifest_data)):
                 resolve_historical_dataset(scope)
 
 
@@ -877,6 +877,13 @@ def test_unauthorized_runtime_publishes_nothing(tmp_path):
     assert res["blocked"] is True
     assert res["publish_result"]["published"] is False
     assert res["publish_result"]["status"] == "SKIPPED_BLOCKED"
+
+
+def test_5m_resampling_prohibited_and_timeframe_isolation_enforced():
+    """Verify 5m dataset resampling from 15m is rejected and common-path validation is clean."""
+    from src.data.resample_mtf_datasets import resample_xauusd_timeframe
+    with pytest.raises(ValueError, match="Unsupported timeframe for resampling: 5m"):
+        resample_xauusd_timeframe("5m")
 
 
 def test_seven_canonical_timeframes_independent_resolution():
