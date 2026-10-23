@@ -198,7 +198,7 @@ def test_timestamp_valued_end_bound_preserves_exact_instant():
 # -----------------------------------------------------------------------------
 
 def test_missing_dataset_resolution_fails_closed_without_substitution():
-    missing_timeframes = ["1m", "5m", "1d"]
+    missing_timeframes = ["1m", "1d"]
     for tf in missing_timeframes:
         ds = DatasetScope(
             dataset_id=f"ds_moving_average_{tf.lower()}",
@@ -209,6 +209,18 @@ def test_missing_dataset_resolution_fails_closed_without_substitution():
         )
         with pytest.raises(FileNotFoundError, match="Unable to resolve exact approved dataset artifact"):
             resolve_historical_dataset(ds)
+
+    # 5m dataset exists for 2026; requesting 2025 scope fails closed on date boundaries
+    ds_5m_2025 = DatasetScope(
+        dataset_id="ds_moving_average_5m",
+        symbol="XAUUSD",
+        timeframe="5m",
+        start_date="2025-01-01",
+        end_date="2025-12-31",
+    )
+    with pytest.raises(ValueError, match="DatasetScope dates"):
+        df = resolve_historical_dataset(ds_5m_2025)
+        validate_and_prepare_dataset(df, ds_5m_2025)
 
 
 def test_tracked_daily_2025_resolves_with_manifest_integrity():
@@ -886,9 +898,71 @@ def test_5m_resampling_prohibited_and_timeframe_isolation_enforced():
         resample_xauusd_timeframe("5m")
 
 
+def test_authentic_5m_dataset_manifest_integrity_and_resolution():
+    """Verify authentic 5m dataset resolution and manifest integrity in data/raw/xauusd_5m."""
+    ds = DatasetScope(
+        dataset_id="ds_moving_average_5m",
+        symbol="XAUUSD",
+        timeframe="5m",
+        start_date="2026-03-26",
+        end_date="2026-09-25",
+    )
+    df = resolve_historical_dataset(ds)
+    assert len(df) == 35954
+    prepared_ts = pd.to_datetime(df["timestamp"], utc=True)
+    assert prepared_ts.min().isoformat() == "2026-03-26T02:30:00+00:00"
+    assert prepared_ts.max().isoformat() == "2026-09-25T20:40:00+00:00"
+
+
+def test_canonical_research_runner_executes_on_authentic_5m_dataset(tmp_path):
+    """Execute research runner on authentic 5m dataset and evaluate qualification."""
+    from src.evaluation.research_robustness import assess_research_robustness
+
+    ds = DatasetScope(
+        dataset_id="ds_moving_average_5m",
+        symbol="XAUUSD",
+        timeframe="5m",
+        start_date="2026-03-26",
+        end_date="2026-09-25",
+    )
+    df = resolve_historical_dataset(ds)
+    prepared = validate_and_prepare_dataset(df, ds)
+
+    hyp = ResearchHypothesis(
+        statement="Moving Average 20/50 on authentic 5m data",
+        methodology_version="1.0",
+        strategy_name="moving_average",
+        strategy_version="1.0",
+        dataset_scope=ds,
+        execution_assumptions=ExecutionAssumptions(0.0001, 0.0001, 10.0),
+        code_provenance=CodeProvenance("7b34bdf4f81d40abd4274ac41ebfe9f2b6222255"),
+        benchmark_reference="buy_and_hold",
+        parameters={"fast_window": 20, "slow_window": 50, "stop_loss_pct": 0.01, "take_profit_pct": 0.02},
+        walk_forward_protocol=WalkForwardProtocol(train_size=2000, test_size=500),
+        status=HypothesisStatus.ACCEPTED_FOR_RESEARCH,
+    )
+
+    evidence = run_research_experiment(hyp, df=prepared, persist_evidence=True, base_dir=tmp_path / "research")
+    assert evidence.created_at_utc != ""
+    assert len(evidence.partitions) == 4
+
+    for part in evidence.partitions:
+        assert part.start_timestamp_utc != ""
+        assert part.end_timestamp_utc != ""
+        assert part.observations > 0
+
+    robustness = assess_research_robustness(evidence)
+    qualification = qualify_research_evidence(evidence, robustness_assessment=robustness)
+
+    # Simple moving average 20/50 fails robustness and walk-forward qualification on this sample
+    assert qualification.qualified is False
+    assert "FAILED_ROBUSTNESS" in {r.value for r in qualification.rejection_reasons}
+
+
 def test_seven_canonical_timeframes_independent_resolution():
     canonical_timeframes = ["1m", "5m", "15m", "30m", "1H", "4H", "1D"]
     available_datasets = {
+        "5m": "ds_moving_average_5m",
         "15m": "ds_moving_average_15m",
         "30m": "ds_moving_average_30m",
         "1H": "ds_moving_average_1h",
