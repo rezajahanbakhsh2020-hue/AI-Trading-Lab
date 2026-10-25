@@ -47,9 +47,29 @@ def test_build_live_risk_levels_for_buy_signal():
     assert result["take_profit_pct"] == pytest.approx(0.02)
 
 
-def test_build_live_risk_levels_returns_no_levels_for_no_trade():
+def test_build_live_risk_levels_returns_levels_for_sell_signal():
     data = make_market_data(
         [6, 5, 4, 3, 2, 1]
+    )
+
+    result = live_risk_levels.build_live_risk_levels(
+        data,
+        momentum_window=2,
+        stop_loss_pct=0.01,
+        take_profit_pct=0.02,
+    )
+
+    assert result["signal"] == -1
+    assert result["signal_label"] == "SELL"
+    assert result["entry_price"] == 1.0
+    assert result["stop_loss"] == pytest.approx(1.0 * 1.01)
+    assert result["take_profit"] == pytest.approx(1.0 * 0.98)
+    assert result["risk_reward_ratio"] == pytest.approx(2.0)
+
+
+def test_build_live_risk_levels_returns_no_levels_for_no_trade():
+    data = make_market_data(
+        [1, 1, 1, 1, 1, 1]
     )
 
     result = live_risk_levels.build_live_risk_levels(

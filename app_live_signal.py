@@ -66,6 +66,12 @@ def signal_description(snapshot: dict) -> str:
             f"The existing momentum strategy currently produces BUY "
             f"at {close:,.2f}."
         )
+    elif signal == "SELL":
+        return (
+            f"Momentum is negative ({momentum:+.4%}). "
+            f"The existing momentum strategy currently produces SELL "
+            f"at {close:,.2f}."
+        )
 
     return (
         f"Momentum is non-positive ({momentum:+.4%}). "
@@ -139,10 +145,12 @@ def render_signal_dashboard(
 
     if signal == "BUY":
         st.success("BUY signal from the existing Momentum strategy.")
+    elif signal == "SELL":
+        st.info("SELL signal from the existing Momentum strategy.")
     else:
         st.info(
             "NO TRADE: the existing Momentum strategy "
-            "does not currently produce a BUY signal."
+            "does not currently produce an active signal."
         )
 
     st.subheader("Market Chart")

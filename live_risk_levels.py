@@ -42,14 +42,13 @@ def build_live_risk_levels(
     """
     Build risk levels from the existing live momentum signal.
 
-    The current project strategy exposes BUY (1) and NO TRADE (0).
-    Therefore SL/TP/TP1/TP2/TP3 levels are only produced for an active BUY signal.
+    Supports BUY (1), SELL (-1), and NO TRADE (0).
     When signal is 0 (NO TRADE), stop_loss, take_profit, and risk_reward_ratio return None,
     while entry_price reflects the close price.
 
     Parameters are proportional decimal distances:
-        stop_loss_pct=0.01  -> 1% below entry
-        take_profit_pct=0.02 -> 2% above entry
+        stop_loss_pct=0.01   -> 1% risk distance
+        take_profit_pct=0.02 -> 2% reward distance
     """
     if not isinstance(data, pd.DataFrame):
         raise ValueError("data must be a pandas DataFrame.")
@@ -88,6 +87,17 @@ def build_live_risk_levels(
         tp1 = entry_price + (risk_distance * tp1_multiplier)
         tp2 = entry_price + (risk_distance * tp2_multiplier)
         tp3 = entry_price + (risk_distance * tp3_multiplier)
+    elif signal == -1:
+        stop_loss = entry_price * (1.0 + stop_loss_pct)
+        take_profit = entry_price * (1.0 - take_profit_pct)
+
+        risk_distance = stop_loss - entry_price
+        reward_distance = entry_price - take_profit
+
+        risk_reward_ratio = reward_distance / risk_distance
+        tp1 = entry_price - (risk_distance * tp1_multiplier)
+        tp2 = entry_price - (risk_distance * tp2_multiplier)
+        tp3 = entry_price - (risk_distance * tp3_multiplier)
     else:
         stop_loss = None
         take_profit = None
