@@ -246,6 +246,35 @@ def test_moving_average_sell_when_in_downtrend():
     assert result["signal_label"] == "SELL"
 
 
+def test_moving_average_no_trade_when_trend_is_neutral():
+    """Proves moving_average returns NO_TRADE when moving averages are equal or insufficient data."""
+    rows = 80
+    now_dt = pd.Timestamp.now(tz="UTC")
+    dates = [now_dt - pd.Timedelta(minutes=5 * i) for i in range(rows)]
+    dates.reverse()
+
+    closes = [100.0] * rows
+
+    data = pd.DataFrame({
+        "timestamp": dates,
+        "open": closes,
+        "high": [c + 1.0 for c in closes],
+        "low": [c - 1.0 for c in closes],
+        "close": closes,
+    })
+
+    result = build_live_production_decision(
+        data,
+        reference_now=dates[-1] + pd.Timedelta(minutes=5),
+        stable_strategy="moving_average",
+        stability_score=0.7458282289664787,
+    )
+
+    assert result["decision"] == "NO TRADE"
+    assert result["signal"] == 0
+    assert result["signal_label"] == "NO TRADE"
+
+
 def test_candidate_windows_are_authoritative(monkeypatch):
     """Proves candidate's real fast_window/slow_window parameters are consumed over caller wrapper defaults."""
     data = make_rising_market()

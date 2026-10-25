@@ -38,7 +38,7 @@ def test_baseline_signal_calculates_moving_averages():
     assert result["slow_ma"].iloc[3] == pytest.approx(3.0)
 
 
-def test_baseline_signal_generates_signal():
+def test_baseline_signal_generates_buy_and_sell_signals():
     df = pd.DataFrame({
         "close": [5, 4, 3, 4, 5, 6],
     })
@@ -57,6 +57,20 @@ def test_baseline_signal_generates_signal():
         1,
         1,
     ]
+
+
+def test_baseline_signal_generates_no_trade_for_flat_prices():
+    df = pd.DataFrame({
+        "close": [100, 100, 100, 100, 100],
+    })
+
+    result = baseline_signal(
+        df,
+        fast_window=2,
+        slow_window=3,
+    )
+
+    assert result["signal"].tolist() == [0, 0, 0, 0, 0]
 
 
 def test_baseline_signal_does_not_modify_input():
@@ -101,20 +115,6 @@ def test_baseline_signal_requires_fast_window_smaller_than_slow():
             fast_window=50,
             slow_window=20,
         )
-
-
-def test_baseline_signal_accepts_equal_prices():
-    df = pd.DataFrame({
-        "close": [100, 100, 100, 100, 100],
-    })
-
-    result = baseline_signal(
-        df,
-        fast_window=2,
-        slow_window=3,
-    )
-
-    assert result["signal"].tolist() == [0, 0, 0, 0, 0]
 
 
 def test_baseline_signal_preserves_existing_columns():

@@ -20,6 +20,8 @@ from src.evaluation.live_runtime import evaluate_authorized_live_runtime
 from src.evaluation.live_decision_lifecycle import create_canonical_live_decision
 from src.evaluation.live_runtime_context import create_authorized_runtime_context
 from src.evaluation.live_market_evaluation import create_live_market_evaluation
+from src.evaluation.live_decision_store import append_live_decision_to_store, load_live_decision_history
+from src.evaluation.live_publication_store import publish_canonical_live_decision, load_publication_history
 from src.evaluation.mtf_intelligence import CanonicalTimeframe
 
 
@@ -44,8 +46,8 @@ def make_market_data_for_trend(trend: str = "UP", rows: int = 80) -> pd.DataFram
 
 
 @pytest.mark.parametrize("direction_type", ["BUY", "SELL", "NO_TRADE"])
-def test_end_to_end_direction_preservation(direction_type, monkeypatch):
-    """Verify that direction is perfectly preserved from strategy through decision, risk, runtime, and publication."""
+def test_end_to_end_direction_preservation(direction_type, tmp_path):
+    """Verify that direction is perfectly preserved from strategy through decision, risk, runtime, store persistence, and publication."""
     from tests.test_production_decision_integrity import make_promoted_evidence
     from src.evaluation.research_qualification import qualify_research_evidence
     from src.evaluation.research_robustness import assess_research_robustness
@@ -86,12 +88,16 @@ def test_end_to_end_direction_preservation(direction_type, monkeypatch):
     )
     eval_mkt = create_live_market_evaluation(data=data, context=ctx)
 
+    store_file = tmp_path / "decision_store.json"
+    pub_file = tmp_path / "publication_store.json"
+
     result = evaluate_authorized_live_runtime(
         data=data,
         evaluation=eval_mkt,
         context=ctx,
         stable_strategy="momentum",
-        persist=False,
+        store_path=store_file,
+        persist=True,
         publish=False,
     )
 
@@ -101,7 +107,22 @@ def test_end_to_end_direction_preservation(direction_type, monkeypatch):
     assert cld.risk_levels.direction == expected_dir
     assert result.decision["decision"] == expected_dir.value
 
-    # Publication contract payload conversion
+    # Read back from decision store file on disk and verify persisted direction
+    history = load_live_decision_history(store_file)
+    assert len(history) == 1
+    persisted_rec = history[0]
+    assert persisted_rec["signal_label"] == expected_dir.value
+    if expected_dir == Direction.BUY:
+        assert persisted_rec["signal"] == 1
+        assert persisted_rec["trend"] == "UP"
+    elif expected_dir == Direction.SELL:
+        assert persisted_rec["signal"] == -1
+        assert persisted_rec["trend"] == "DOWN"
+    else:
+        assert persisted_rec["signal"] == 0
+        assert persisted_rec["trend"] == "NEUTRAL"
+
+    # Publication contract payload conversion and boundary test
     pub = ProductionIntelligencePublication.from_artifacts(
         decision=cld.decision,
         signal=cld.signal,

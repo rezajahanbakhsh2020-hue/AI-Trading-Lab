@@ -56,7 +56,7 @@ def test_momentum_signal_generates_sell_signal_when_momentum_is_negative():
     ]
 
 
-def test_momentum_signal_zero_momentum_is_flat():
+def test_momentum_signal_zero_momentum_is_no_trade():
     df = pd.DataFrame({
         "close": [100, 100, 100, 100],
     })
