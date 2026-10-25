@@ -237,7 +237,7 @@ def test_10_no_hardcoded_buy_sell():
     data = make_market_data(trend="DOWN")
     dec = evaluate_production_decision(cand, data)
 
-    assert dec.direction == Direction.NO_TRADE
+    assert dec.direction == Direction.SELL
     assert dec.direction.value != "BUY"
 
 

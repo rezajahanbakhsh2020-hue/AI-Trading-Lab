@@ -91,7 +91,7 @@ def test_run_live_proof_completes_full_pipeline(tmp_path):
 
 def test_run_live_proof_persists_no_trade_state(tmp_path):
     data = make_market_data(
-        [6, 5, 4, 3, 2, 1]
+        [5, 5, 5, 5, 5, 5]
     )
 
     def fake_fetch_ohlc(**_kwargs):
@@ -121,7 +121,7 @@ def test_run_live_proof_persists_no_trade_state(tmp_path):
 
     assert snapshot["signal"] == 0
     assert snapshot["signal_label"] == "NO TRADE"
-    assert snapshot["trend"] == "DOWN"
+    assert snapshot["trend"] in ("INSUFFICIENT DATA", "NEUTRAL")
     assert snapshot["stop_loss"] is None
     assert snapshot["take_profit"] is None
     assert snapshot["risk_reward_ratio"] is None

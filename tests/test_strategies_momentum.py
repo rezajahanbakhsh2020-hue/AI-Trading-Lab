@@ -37,7 +37,7 @@ def test_momentum_signal_generates_positive_signal():
     ]
 
 
-def test_momentum_signal_generates_flat_signal_when_momentum_is_negative():
+def test_momentum_signal_generates_sell_signal_when_momentum_is_negative():
     df = pd.DataFrame({
         "close": [100, 99, 98, 97, 96],
     })
@@ -50,9 +50,9 @@ def test_momentum_signal_generates_flat_signal_when_momentum_is_negative():
     assert result["signal"].tolist() == [
         0,
         0,
-        0,
-        0,
-        0,
+        -1,
+        -1,
+        -1,
     ]
 
 

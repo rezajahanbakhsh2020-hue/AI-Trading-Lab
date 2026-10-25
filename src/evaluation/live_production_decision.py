@@ -881,6 +881,10 @@ def evaluate_production_decision(
             direction = Direction.BUY
             reason = "momentum_signal_1_and_trend_UP_confirmed"
             invalidation = "Close below stop_loss or trend turns DOWN"
+        elif sig_val == -1 and trend_val == "DOWN":
+            direction = Direction.SELL
+            reason = "momentum_signal_minus1_and_trend_DOWN_confirmed"
+            invalidation = "Close above stop_loss or trend turns UP"
         else:
             direction = Direction.NO_TRADE
             reason = f"signal={sig_val}, trend={trend_val} (unconfirmed setup)"
@@ -925,6 +929,10 @@ def evaluate_production_decision(
             direction = Direction.BUY
             reason = "moving_average_signal_1_and_trend_UP_confirmed"
             invalidation = "Close below stop_loss or trend turns DOWN"
+        elif sig_val == -1 and trend_val == "DOWN":
+            direction = Direction.SELL
+            reason = "moving_average_signal_minus1_and_trend_DOWN_confirmed"
+            invalidation = "Close above stop_loss or trend turns UP"
         else:
             direction = Direction.NO_TRADE
             reason = f"signal={sig_val}, trend={trend_val} (unconfirmed setup)"
@@ -1795,7 +1803,7 @@ def build_live_production_decision(
         "stability_score": stability_score,
         "min_stability_score": min_stability_score,
         "strategy_supported": strat_lower in ("momentum", "moving_average", "baseline"),
-        "signal": 1 if final_direction == Direction.BUY else 0,
+        "signal": 1 if final_direction == Direction.BUY else (-1 if final_direction == Direction.SELL else 0),
         "signal_label": final_direction.value,
         "trend": str(trend_snapshot["trend"]),
         "momentum": float(data["close"].iloc[-1]) if "close" in data.columns else None,

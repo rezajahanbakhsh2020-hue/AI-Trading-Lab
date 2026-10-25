@@ -156,7 +156,7 @@ def test_moving_average_supported_and_produces_buy_decision():
     assert result["trend"] == "UP"
 
 
-def test_downtrend_blocks_buy_decision():
+def test_downtrend_produces_sell_decision():
     data = make_rising_market()
 
     data["close"] = list(range(200, 120, -1))
@@ -171,10 +171,13 @@ def test_downtrend_blocks_buy_decision():
         stability_score=0.7458282289664787,
     )
 
-    assert result["decision"] == "NO TRADE"
-    assert "trend_not_confirmed" in result["reason"] or "unconfirmed setup" in result["reason"]
-    assert result["signal"] == 0
+    assert result["decision"] == "SELL"
+    assert "momentum_signal_minus1_and_trend_DOWN_confirmed" in result["reason"]
+    assert result["signal"] == -1
     assert result["trend"] == "DOWN"
+    assert result["entry_price"] > 0
+    assert result["stop_loss"] > result["entry_price"]
+    assert result["take_profit"] < result["entry_price"]
 
 
 def test_moving_average_buy_when_momentum_signal_is_zero():
@@ -212,15 +215,13 @@ def test_moving_average_buy_when_momentum_signal_is_zero():
     assert result["signal_label"] == "BUY"
 
 
-def test_moving_average_no_trade_when_momentum_is_active():
-    """Proves moving_average NO_TRADE is preserved even when momentum signal is 1."""
+def test_moving_average_sell_when_in_downtrend():
+    """Proves moving_average produces SELL when fast MA < slow MA in a downtrend."""
     rows = 80
     now_dt = pd.Timestamp.now(tz="UTC")
     dates = [now_dt - pd.Timedelta(minutes=5 * i) for i in range(rows)]
     dates.reverse()
 
-    # Falling market then sudden spike at the end: momentum window (10) is > 0 (signal=1),
-    # but fast MA (20) remains below slow MA (50) -> MA strategy returns NO_TRADE.
     closes = [200.0 - idx * 0.5 for idx in range(rows)]
     closes[-1] = closes[-11] + 5.0
 
@@ -239,10 +240,10 @@ def test_moving_average_no_trade_when_momentum_is_active():
         stability_score=0.7458282289664787,
     )
 
-    assert result["decision"] == "NO TRADE"
+    assert result["decision"] == "SELL"
     assert result["stable_strategy"] == "moving_average"
-    assert result["signal"] == 0
-    assert result["signal_label"] == "NO TRADE"
+    assert result["signal"] == -1
+    assert result["signal_label"] == "SELL"
 
 
 def test_candidate_windows_are_authoritative(monkeypatch):
@@ -321,7 +322,7 @@ def test_strict_window_validation_parameterized(fast, slow):
         validate_window_pair(fast, slow)
 
 
-def test_no_trade_signal_is_preserved_without_inventing_sell():
+def test_no_trade_signal_is_preserved_for_flat_prices():
     data = make_rising_market()
 
     data["close"] = [100.0] * len(data)

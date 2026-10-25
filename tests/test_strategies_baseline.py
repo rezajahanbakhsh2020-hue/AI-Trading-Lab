@@ -52,8 +52,8 @@ def test_baseline_signal_generates_signal():
     assert result["signal"].tolist() == [
         0,
         0,
-        0,
-        0,
+        -1,
+        -1,
         1,
         1,
     ]

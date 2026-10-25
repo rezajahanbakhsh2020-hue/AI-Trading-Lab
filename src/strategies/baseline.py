@@ -10,8 +10,9 @@ def baseline_signal(
     Generate a simple moving-average baseline signal.
 
     Signal:
-        1  -> fast MA above slow MA
-        0  -> otherwise
+        1  -> fast MA above slow MA (BUY)
+       -1  -> fast MA below slow MA (SELL)
+        0  -> otherwise (NO_TRADE)
     """
     result = df.copy()
 
@@ -24,9 +25,13 @@ def baseline_signal(
     result["fast_ma"] = result["close"].rolling(fast_window).mean()
     result["slow_ma"] = result["close"].rolling(slow_window).mean()
 
-    result["signal"] = (
-        result["fast_ma"] > result["slow_ma"]
-    ).astype(int)
+    valid_ma = result["fast_ma"].notna() & result["slow_ma"].notna()
+
+    signal = pd.Series(0, index=result.index, dtype=int)
+    signal.loc[valid_ma & (result["fast_ma"] > result["slow_ma"])] = 1
+    signal.loc[valid_ma & (result["fast_ma"] < result["slow_ma"])] = -1
+
+    result["signal"] = signal
 
     return result
 
@@ -40,7 +45,8 @@ def moving_average_signal(
     Generate a simple moving-average crossover signal for the moving_average candidate identity.
 
     Signal:
-        1  -> fast MA above slow MA
-        0  -> otherwise
+        1  -> fast MA above slow MA (BUY)
+       -1  -> fast MA below slow MA (SELL)
+        0  -> otherwise (NO_TRADE)
     """
     return baseline_signal(df, fast_window=fast_window, slow_window=slow_window)
