@@ -56,8 +56,8 @@ def test_build_signal_trend_snapshot_detects_downtrend():
         slow_window=4,
     )
 
-    assert snapshot["signal"] == 0
-    assert snapshot["signal_label"] == "NO TRADE"
+    assert snapshot["signal"] == -1
+    assert snapshot["signal_label"] == "SELL"
     assert snapshot["trend"] == "DOWN"
     assert snapshot["close"] == 1.0
     assert snapshot["momentum"] == pytest.approx((1.0 / 3.0) - 1.0)

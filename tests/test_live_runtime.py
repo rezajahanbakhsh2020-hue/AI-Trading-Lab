@@ -287,11 +287,11 @@ def test_live_runtime_preserves_moving_average_buy_when_momentum_inactive(tmp_pa
     assert result.display["decision"] == "BUY"
 
 
-def test_live_runtime_preserves_moving_average_no_trade_when_momentum_active(tmp_path):
+def test_live_runtime_preserves_moving_average_sell_when_momentum_active(tmp_path):
     rows = 80
     dates = pd.date_range("2026-01-01", periods=rows, freq="5min", tz="UTC")
     closes = [200.0 - i * 0.5 for i in range(rows)]
-    closes[-1] = closes[-11] + 5.0  # momentum signal is 1, but fast MA < slow MA
+    closes[-1] = closes[-11] + 5.0  # momentum signal is 1, but fast MA < slow MA (downtrend) -> SELL
 
     df = pd.DataFrame({
         "timestamp": dates,
@@ -313,9 +313,10 @@ def test_live_runtime_preserves_moving_average_no_trade_when_momentum_active(tmp
         store_path=tmp_path / "store.json",
     )
 
-    assert result.decision["decision"] == "NO TRADE"
-    assert result.decision["signal"] == 0
-    assert result.display["decision"] == "NO TRADE"
+    assert result.decision["decision"] == "SELL"
+    assert result.decision["signal"] == -1
+    assert result.decision["signal_label"] == "SELL"
+    assert result.display["decision"] == "SELL"
 
 
 def test_live_runtime_operational_veto_blocks_execution(tmp_path, monkeypatch):

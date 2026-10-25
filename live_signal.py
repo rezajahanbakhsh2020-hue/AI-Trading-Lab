@@ -20,10 +20,8 @@ def generate_live_signal(
 
     Signal:
         1 -> BUY
+       -1 -> SELL
         0 -> NO TRADE
-
-    No SELL signal is invented here because the existing momentum strategy
-    currently exposes only 1/0 semantics.
     """
 
     if not isinstance(data, pd.DataFrame):
@@ -49,6 +47,7 @@ def generate_live_signal(
     result["signal_label"] = result["signal"].map(
         {
             1: "BUY",
+            -1: "SELL",
             0: "NO TRADE",
         }
     )

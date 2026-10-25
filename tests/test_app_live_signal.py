@@ -52,10 +52,26 @@ def test_signal_description_for_buy():
     assert "3,500.00" in description
 
 
+def test_signal_description_for_sell():
+    snapshot = {
+        "signal_label": "SELL",
+        "momentum": -0.0125,
+        "close": 3500.0,
+    }
+
+    description = app_live_signal.signal_description(
+        snapshot
+    )
+
+    assert "negative" in description
+    assert "SELL" in description
+    assert "3,500.00" in description
+
+
 def test_signal_description_for_no_trade():
     snapshot = {
         "signal_label": "NO TRADE",
-        "momentum": -0.004,
+        "momentum": 0.0,
         "close": 3500.0,
     }
 
@@ -101,7 +117,7 @@ def test_dashboard_signal_uses_existing_strategy_snapshot():
     )
 
 
-def test_dashboard_signal_handles_no_trade():
+def test_dashboard_signal_handles_sell():
     data = make_market_data(
         [100.0, 102.0, 101.0, 99.0]
     )
@@ -111,4 +127,4 @@ def test_dashboard_signal_handles_no_trade():
         window=2,
     )
 
-    assert snapshot["signal_label"] == "NO TRADE"
+    assert snapshot["signal_label"] == "SELL"

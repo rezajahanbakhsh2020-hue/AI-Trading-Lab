@@ -185,7 +185,7 @@ def evaluate_authorized_live_runtime(
             reason = decision_obj.reason
             final_direction = decision_obj.direction
 
-        sig_val = 1 if final_direction == Direction.BUY else 0
+        sig_val = 1 if final_direction == Direction.BUY else (-1 if final_direction == Direction.SELL else 0)
 
         now_ts = decision_obj.decision_timestamp
         market_ts = decision_obj.market_timestamp
@@ -201,8 +201,8 @@ def evaluate_authorized_live_runtime(
             market_timestamp=market_ts,
             direction=final_direction,
             reason=reason,
-            entry_price=close_price if final_direction == Direction.BUY else None,
-            invalidation_condition=decision_obj.invalidation_condition if final_direction == Direction.BUY else None,
+            entry_price=close_price if final_direction in (Direction.BUY, Direction.SELL) else None,
+            invalidation_condition=decision_obj.invalidation_condition if final_direction in (Direction.BUY, Direction.SELL) else None,
             confidence=effective_stability_score,
             parameters=resolved_candidate.parameters,
         )
@@ -327,7 +327,7 @@ def evaluate_authorized_live_runtime(
             "stable_strategy": str(stable_strategy),
             "stability_score": effective_stability_score,
             "strategy_supported": str(stable_strategy).lower() in ("momentum", "moving_average", "baseline"),
-            "signal": sig_val if (evaluation.fresh and stable_strategy.lower() in ("momentum", "moving_average", "baseline") and final_direction == Direction.BUY) else 0,
+            "signal": sig_val if (evaluation.fresh and stable_strategy.lower() in ("momentum", "moving_average", "baseline") and final_direction in (Direction.BUY, Direction.SELL)) else 0,
             "signal_label": final_decision_obj.direction.value,
             "trend": str(trend_val),
             "momentum": float(data["close"].iloc[-1]) if (evaluation.fresh and "close" in data.columns) else None,
@@ -354,8 +354,8 @@ def evaluate_authorized_live_runtime(
         "stability_score": effective_stability_score,
         "min_stability_score": min_stability_score,
         "strategy_supported": stable_strategy.lower() in ("momentum", "moving_average", "baseline"),
-        "signal": sig_val if (evaluation.fresh and stable_strategy.lower() in ("momentum", "moving_average", "baseline") and final_direction == Direction.BUY) else 0,
-        "signal_label": "BUY" if (evaluation.fresh and sig_val == 1 and stable_strategy.lower() in ("momentum", "moving_average", "baseline") and final_direction == Direction.BUY) else "NO TRADE",
+        "signal": sig_val if (evaluation.fresh and stable_strategy.lower() in ("momentum", "moving_average", "baseline") and final_direction in (Direction.BUY, Direction.SELL)) else 0,
+        "signal_label": final_decision_obj.direction.value if (evaluation.fresh and final_direction in (Direction.BUY, Direction.SELL) and stable_strategy.lower() in ("momentum", "moving_average", "baseline")) else "NO TRADE",
         "trend": str(trend_val),
         "momentum": float(data["close"].iloc[-1]) if (evaluation.fresh and "close" in data.columns) else None,
         "entry_price": risk_obj.entry_price,

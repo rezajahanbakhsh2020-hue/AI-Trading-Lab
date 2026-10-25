@@ -9,8 +9,9 @@ def momentum_signal(
     Generate a simple momentum trading signal.
 
     Signal:
-        1 -> positive momentum
-        0 -> otherwise
+        1 -> positive momentum (BUY)
+       -1 -> negative momentum (SELL)
+        0 -> otherwise (NO TRADE)
 
     Momentum is calculated from the percentage change
     over the specified lookback window.
@@ -29,8 +30,12 @@ def momentum_signal(
 
     result["momentum"] = result["close"].pct_change(window)
 
-    result["signal"] = (
-        result["momentum"] > 0
-    ).astype(int)
+    valid_mom = result["momentum"].notna()
+
+    signal = pd.Series(0, index=result.index, dtype=int)
+    signal.loc[valid_mom & (result["momentum"] > 0)] = 1
+    signal.loc[valid_mom & (result["momentum"] < 0)] = -1
+
+    result["signal"] = signal
 
     return result

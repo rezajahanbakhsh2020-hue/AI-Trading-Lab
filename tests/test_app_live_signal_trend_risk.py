@@ -61,9 +61,36 @@ def test_build_signal_trend_risk_snapshot_combines_all_engines():
     assert snapshot["slow_window"] == 4
 
 
-def test_build_signal_trend_risk_snapshot_has_no_risk_levels_for_no_trade():
+def test_build_signal_trend_risk_snapshot_calculates_sell_risk_levels():
     data = make_market_data(
         [6, 5, 4, 3, 2, 1]
+    )
+
+    snapshot = (
+        app_live_signal_trend_risk
+        .build_signal_trend_risk_snapshot(
+            data,
+            momentum_window=2,
+            fast_window=2,
+            slow_window=4,
+            stop_loss_pct=0.01,
+            take_profit_pct=0.02,
+        )
+    )
+
+    assert snapshot["signal"] == -1
+    assert snapshot["signal_label"] == "SELL"
+    assert snapshot["trend"] == "DOWN"
+
+    assert snapshot["entry_price"] == 1.0
+    assert snapshot["stop_loss"] == pytest.approx(1.01)
+    assert snapshot["take_profit"] == pytest.approx(0.98)
+    assert snapshot["risk_reward_ratio"] == pytest.approx(2.0)
+
+
+def test_build_signal_trend_risk_snapshot_has_no_risk_levels_for_no_trade():
+    data = make_market_data(
+        [1, 1, 1, 1, 1, 1]
     )
 
     snapshot = (
@@ -78,7 +105,6 @@ def test_build_signal_trend_risk_snapshot_has_no_risk_levels_for_no_trade():
 
     assert snapshot["signal"] == 0
     assert snapshot["signal_label"] == "NO TRADE"
-    assert snapshot["trend"] == "DOWN"
 
     assert snapshot["entry_price"] == 1.0
     assert snapshot["stop_loss"] is None
