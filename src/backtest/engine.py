@@ -133,7 +133,7 @@ def run_backtest(
             prev_close = float(closes[i - 1])
 
             if in_position:
-                if prev_sig == 0:
+                if prev_sig <= 0:
                     # Signal-driven exit at bar i open!
                     exit_price = c_open
                     if sl_price is not None and c_open <= sl_price:
