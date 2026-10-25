@@ -3,6 +3,7 @@
 import json
 import pytest
 import pandas as pd
+from unittest.mock import MagicMock
 
 from src.strategies.baseline import baseline_signal
 from src.strategies.momentum import momentum_signal
@@ -47,7 +48,7 @@ def make_market_data_for_trend(trend: str = "UP", rows: int = 80) -> pd.DataFram
 
 @pytest.mark.parametrize("direction_type", ["BUY", "SELL", "NO_TRADE"])
 def test_end_to_end_direction_preservation(direction_type, tmp_path):
-    """Verify that direction is perfectly preserved from strategy through decision, risk, runtime, store persistence, and publication."""
+    """Verify that direction is perfectly preserved from strategy through decision, risk, runtime, store persistence, and publication boundary."""
     from tests.test_production_decision_integrity import make_promoted_evidence
     from src.evaluation.research_qualification import qualify_research_evidence
     from src.evaluation.research_robustness import assess_research_robustness
@@ -88,8 +89,19 @@ def test_end_to_end_direction_preservation(direction_type, tmp_path):
     )
     eval_mkt = create_live_market_evaluation(data=data, context=ctx)
 
-    store_file = tmp_path / "decision_store.json"
-    pub_file = tmp_path / "publication_store.json"
+    store_file = tmp_path / "decision_history.json"
+    pub_file = tmp_path / "publication_history.json"
+
+    # Setup mock publisher
+    mock_publisher = MagicMock()
+
+    def side_effect_publish(pub_artifact, skip_if_no_trade=False):
+        return {
+            "status": "INGESTED",
+            "ack_id": pub_artifact.publication_id,
+            "published": True,
+        }
+    mock_publisher.publish.side_effect = side_effect_publish
 
     result = evaluate_authorized_live_runtime(
         data=data,
@@ -97,8 +109,9 @@ def test_end_to_end_direction_preservation(direction_type, tmp_path):
         context=ctx,
         stable_strategy="momentum",
         store_path=store_file,
+        publisher=mock_publisher,
         persist=True,
-        publish=False,
+        publish=True,
     )
 
     cld = result.canonical_decision
@@ -122,7 +135,16 @@ def test_end_to_end_direction_preservation(direction_type, tmp_path):
         assert persisted_rec["signal"] == 0
         assert persisted_rec["trend"] == "NEUTRAL"
 
-    # Publication contract payload conversion and boundary test
+    # Verify publication store output file
+    pub_records = load_publication_history(pub_file)
+    assert len(pub_records) == 1
+    pub_rec = pub_records[0]
+    assert pub_rec["decision"] == expected_dir.value
+    assert pub_rec["symbol"] == "XAUUSD"
+    assert pub_rec["timeframe"] == "5m"
+    assert pub_rec["candidate_id"] == "cand_momentum_5m"
+
+    # Contract v1 payload check
     pub = ProductionIntelligencePublication.from_artifacts(
         decision=cld.decision,
         signal=cld.signal,
