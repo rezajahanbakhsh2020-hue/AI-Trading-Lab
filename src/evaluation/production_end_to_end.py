@@ -17,6 +17,7 @@ def run_production_end_to_end(
     data: pd.DataFrame,
     *,
     candidate_id: str | None = None,
+    strategy_id: str | None = None,
     results_dir: str | Path = "results/production",
     research_dir: Any | None = None,
     symbol: str = "XAUUSD",
@@ -31,7 +32,7 @@ def run_production_end_to_end(
     r_dir = research_dir if research_dir is not None else DEFAULT_RESEARCH_DIR
     resolved_candidate = resolve_promoted_candidate(
         candidate_id=candidate_id,
-        strategy_id="momentum",
+        strategy_id=strategy_id,
         symbol=symbol,
         timeframe=interval,
         base_dir=r_dir,
@@ -101,14 +102,17 @@ def load_production_market_data(
     data = data.copy()
 
     if pd.api.types.is_numeric_dtype(data["timestamp"]):
+        # Epoch seconds are absolute UTC instants; keep them tz-aware.
         data["timestamp"] = pd.to_datetime(
             data["timestamp"],
             unit="s",
+            utc=True,
             errors="coerce",
         )
     else:
         data["timestamp"] = pd.to_datetime(
             data["timestamp"],
+            utc=True,
             errors="coerce",
         )
 

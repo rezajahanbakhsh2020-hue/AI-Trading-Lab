@@ -46,7 +46,7 @@ def test_main_runs_complete_production_end_to_end(
     monkeypatch.setattr(
         run_production_end_to_end,
         "run_production_end_to_end",
-        lambda data, results_dir, symbol, interval: {
+        lambda data, **kwargs: {
             "end_to_end_ready": True,
             "decision": {
                 "decision": "BUY",
@@ -104,7 +104,7 @@ def test_main_fails_when_end_to_end_is_not_ready(
     monkeypatch.setattr(
         run_production_end_to_end,
         "run_production_end_to_end",
-        lambda data, results_dir, symbol, interval: {
+        lambda data, **kwargs: {
             "end_to_end_ready": False,
             "decision": {
                 "decision": "NO TRADE",
@@ -147,13 +147,9 @@ def test_main_uses_production_configuration(
 
     def fake_runner(
         data,
-        results_dir,
-        symbol,
-        interval,
+        **kwargs,
     ):
-        calls["results_dir"] = results_dir
-        calls["symbol"] = symbol
-        calls["interval"] = interval
+        calls.update(kwargs)
 
         return {
             "end_to_end_ready": True,
@@ -188,3 +184,5 @@ def test_main_uses_production_configuration(
     assert calls["results_dir"] == "results/production"
     assert calls["symbol"] == "XAUUSD"
     assert calls["interval"] == "1d"
+    assert calls["candidate_id"] == "cand_moving_average_1d_verified_20261020"
+    assert calls["strategy_id"] == "moving_average"

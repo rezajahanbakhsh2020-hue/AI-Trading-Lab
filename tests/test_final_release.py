@@ -12,9 +12,11 @@ def _valid_result() -> dict:
         "end_to_end_ready": True,
         "decision": {
             "decision": "BUY",
+            "stable_strategy": "momentum",
         },
         "display": {
             "decision": "BUY",
+            "stable_strategy": "momentum",
         },
         "overlay": {
             "decision": "BUY",
@@ -66,12 +68,16 @@ def test_final_release_requires_release_gate():
     assert result["checks"]["release_gate_ready"] is False
 
 
-def test_final_release_requires_momentum_strategy():
+def test_final_release_requires_strategy_consistency():
+    # Fixture is already consistent across selection/decision/display.
     payload = _valid_result()
-    payload["production_selection"][
-        "stable_strategy"
-    ] = "moving_average"
 
+    result = validate_final_release(payload)
+
+    assert result["final_release_ready"] is True
+
+    # Any inconsistency with the authorized binding blocks the release.
+    payload["display"]["stable_strategy"] = "moving_average"
     result = validate_final_release(payload)
 
     assert result["final_release_ready"] is False

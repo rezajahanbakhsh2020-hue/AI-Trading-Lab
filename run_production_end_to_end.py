@@ -12,6 +12,9 @@ DATA_PATH = "data/raw/xauusd_daily_2025.csv"
 RESULTS_DIR = "results/production"
 SYMBOL = "XAUUSD"
 INTERVAL = "1d"
+# Explicit canonical candidate binding (mirrors render.yaml: 1D mapping).
+CANDIDATE_ID = "cand_moving_average_1d_verified_20261020"
+STRATEGY_ID = "moving_average"
 
 
 def main() -> None:
@@ -22,6 +25,8 @@ def main() -> None:
         results_dir=RESULTS_DIR,
         symbol=SYMBOL,
         interval=INTERVAL,
+        candidate_id=CANDIDATE_ID,
+        strategy_id=STRATEGY_ID,
     )
 
     summary = {

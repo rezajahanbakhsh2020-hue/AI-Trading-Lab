@@ -4,7 +4,6 @@ from typing import Any
 
 
 REQUIRED_DECISION = "BUY"
-REQUIRED_STRATEGY = "momentum"
 MIN_STABILITY_SCORE = 0.50
 
 
@@ -50,8 +49,11 @@ def validate_final_release(
             decision.get("decision") == REQUIRED_DECISION
         ),
         "strategy_stable": (
-            selection.get("stable_strategy")
-            == REQUIRED_STRATEGY
+            # Strategy identity must be bound and consistent across the
+            # authorized selection, decision, and display — never hardcoded.
+            bool(str(selection.get("stable_strategy") or "").strip())
+            and selection.get("stable_strategy") == decision.get("stable_strategy")
+            and selection.get("stable_strategy") == display.get("stable_strategy")
         ),
         "stability_score_valid": (
             float(selection.get("stability_score", 0.0))

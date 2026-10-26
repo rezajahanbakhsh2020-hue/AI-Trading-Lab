@@ -10,9 +10,11 @@ from pathlib import Path
 from typing import Any, Optional
 
 from src.evaluation.live_decision_lifecycle import (
+    CANONICAL_VOLATILE_KEYS,
     CanonicalLiveDecision,
     LiveDecisionLifecycleError,
     LiveDecisionLifecycleState,
+    strip_volatile_canonical_fields,
     transition_live_decision,
     validate_live_decision_lifecycle,
 )
@@ -218,23 +220,17 @@ def append_live_decision_to_store(
                         )
 
                     # Compare canonical content
-                    # Exclude runtime volatile timestamps if present
-                    keys_to_compare = [k for k in new_record if k not in ("recorded_at", "created_at")]
-                    match_all = True
-                    for k in keys_to_compare:
-                        if existing.get(k) != new_record.get(k):
-                            match_all = False
-                            break
-
-                    if match_all:
+                    # Volatile wall-clock fields (recorded_at/created_at,
+                    # authorized_at_utc, transition timestamps) MUST NOT
+                    # converge two idempotent replays into a conflict.
+                    if strip_volatile_canonical_fields(new_record) == strip_volatile_canonical_fields(existing):
                         # Idempotent replay: record already exists identically
                         return history
-                    else:
-                        # Conflicting replay for same identity -> fail closed
-                        raise ValueError(
-                            f"Conflicting replay detected for decision/signal identity '{new_dec_id or new_sig_id}'. "
-                            "Existing record differs from new record."
-                        )
+                    # Conflicting replay for same identity -> fail closed
+                    raise ValueError(
+                        f"Conflicting replay detected for decision/signal identity '{new_dec_id or new_sig_id}'. "
+                        "Existing record differs from new record."
+                    )
 
         history.append(new_record)
         _atomic_write_json(history, target)
