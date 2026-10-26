@@ -1,0 +1,42 @@
+name: OpenCode Read-Only Test
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  inspect:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Inspect repository in read-only mode
+        uses: anomalyco/opencode/github@latest
+        with:
+          model: opencode/glm-5.3-flash-free
+          agent: plan
+          prompt: |
+            Perform a strictly read-only audit of this repository.
+
+            Identify the highest-priority blocking defect affecting
+            the canonical research and production-readiness pipeline.
+
+            Report:
+            1. The exact evidence and relevant file paths.
+            2. The root cause, separating verified facts from hypotheses.
+            3. The smallest appropriate corrective change.
+            4. Tests required to prove the correction.
+            5. Any missing evidence that prevents a reliable conclusion.
+
+            Do not modify files.
+            Do not create commits, branches, or pull requests.
+            Do not push changes or merge anything.
+            Do not modify repository settings or secrets.
+            Do not inspect or modify the separate P2 repository.
+            Do not claim a defect is fixed unless test evidence proves it.
