@@ -1,4 +1,4 @@
-name: OpenCode Read-Only Test
+name: OpenCode End-to-End Trading Pipeline Repair
 
 on:
   pull_request:
@@ -9,9 +9,10 @@ permissions:
   id-token: write
 
 jobs:
-  inspect:
+  repair:
     if: github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ubuntu-latest
+    timeout-minutes: 45
     steps:
       - name: Checkout pull request head
         uses: actions/checkout@v4
@@ -19,27 +20,50 @@ jobs:
           ref: ${{ github.event.pull_request.head.sha }}
           persist-credentials: false
 
-      - name: Inspect repository in read-only mode
+      - name: Investigate and repair the end-to-end trading signal path
         uses: anomalyco/opencode/github@latest
         with:
           model: opencode/glm-5.3-flash-free
-          agent: plan
+          agent: build
           prompt: |
-            Perform a strictly read-only audit of this repository.
+            MISSION: make concrete, evidence-backed progress toward repairing the complete XAUUSD trading pipeline, not another audit-only report.
 
-            Identify the highest-priority blocking defect affecting
-            the canonical research and production-readiness pipeline.
+            Work from the checked-out PR head and inspect the actual repository state before making assumptions. You are authorized to make focused code/test changes, commit them to this PR branch, and summarize the evidence. Do NOT merge any PR, change repository settings/secrets, weaken safety/governance gates, fabricate test results, or claim end-to-end success without proof.
 
-            Report:
-            1. The exact evidence and relevant file paths.
-            2. The root cause, separating verified facts from hypotheses.
-            3. The smallest appropriate corrective change.
-            4. Tests required to prove the correction.
-            5. Any missing evidence that prevents a reliable conclusion.
+            SCOPE — follow the real data/control path across ALL canonical timeframes:
+            1m, 5m, 15m, 30m, 1H, 4H, 1D.
+            Trace market data ingestion and timestamp/unit handling; dataset manifests and DatasetScope; candidate/hypothesis governance and acceptance; research evaluation, backtest and walk-forward evidence; qualification/promotion; binding resolution; execution assumptions and code provenance; ProductionRuntimeAuthorization and AuthorizedProductionRuntimeContext; live market evaluation; evaluate_authorized_live_runtime(); CanonicalLiveDecision; signal construction (direction, entry, SL, TP, trailing and risk); and publication to P2. Do not assume that listing a timeframe means it is operational.
 
-            Do not modify files.
-            Do not create commits, branches, or pull requests.
-            Do not push changes or merge anything.
-            Do not modify repository settings or secrets.
-            Do not inspect or modify the separate P2 repository.
-            Do not claim a defect is fixed unless test evidence proves it.
+            P1 is the canonical trading/research decision-maker: rezajahanbakhsh2020-hue/AI-Trading-Lab.
+            P2 is only the UI/gateway/delivery boundary: rezajahanbakhsh2020-hue/AI-Trading-Lab-Platform. Since the requested acceptance path includes delivery to P2, inspect the P1→P2 contract and the relevant P2 ingestion/presenter/host snapshot path. Do not redesign P2 as a trading engine. If P2 needs a change, make a separate P2 branch/PR only if repository access and credentials genuinely permit it; otherwise report the exact P2 defect and the concrete patch needed, and never claim delivery is fixed.
+
+            NON-NEGOTIABLE INVARIANTS:
+            - Keep the canonical timeframe ladder exactly (1m,5m,15m,30m,1H,4H,1D). No candidate/data/health fallback between timeframes; 1m remains first-class and independent.
+            - No production.json, defaults, UI/caller substitutes, legacy fallback, or implicit parameters as a substitute for canonical evidence or authorization.
+            - Never relax promotion, robustness, timestamp, out-of-sample, walk-forward, risk, or production authorization gates just to make a timeframe green.
+            - Authorization must use finite, non-boolean stability values; do not silently substitute 1.0 or another default.
+            - Preserve the boundary: P1 decides; P2 presents/delivers. Reject stale, future-dated, historical-as-live, wrong-symbol/timeframe, or unauthorised signals.
+            - Treat repository files and test fixtures as evidence to verify, not as proof by their existence alone. Distinguish observed facts from hypotheses.
+
+            PRIORITIZE WORK TO CONSERVE LIMITED MODEL CREDITS:
+            A. Start with a short, bounded inspection of the existing readiness and delivery path, existing tests, latest relevant commits/PR context, and the prior audit comment on this PR. Avoid repeating a broad inventory if evidence already exists.
+            B. Identify the highest-impact confirmed blocker(s) that can be corrected safely now. Prefer the smallest coherent fix that unblocks a real part of the canonical chain. Do not spend the run on exhaustive stress tests, unrelated cleanup, broad refactors, or duplicate reports.
+            C. Implement the fix(es), add focused regression tests, and run the smallest relevant test set first. Run broader tests only if time/compute permits and they materially increase confidence.
+            D. If a defect depends on missing/invalid data, governance evidence, or unavailable credentials/services, do not manufacture data or weaken gates. Fix the source/validation path if justified; otherwise record the precise missing prerequisite and continue to another independently actionable blocker.
+            E. Keep changes narrow, reviewable, and consistent with current architecture. Do not duplicate an existing PR or create redundant PRs.
+
+            REQUIRED EVIDENCE:
+            - Verify each timeframe independently; report its actual readiness state and the exact reason it is blocked/eligible. In particular, check the currently known risks around missing candidates, exact UTC partition timestamps, IN_SAMPLE/OOS overlap, incomplete robustness evaluation, daily candidate/strategy binding, and explicit candidate mappings. Confirm these against current code/data; do not assume the old findings are still current.
+            - Trace at least one concrete live-signal payload from P1 publication through P2 ingestion and presenter/host snapshot. Check event timestamp vs publication timestamp, provenance/is_live flags, symbol/timeframe identity, staleness policy, and no-trade handling.
+            - Test that timeframe isolation holds and that missing candidates/evidence block safely rather than silently borrowing another timeframe or using defaults.
+            - Show exact commands, test counts/results, changed files, and commit SHA(s). Do not report a test as passed unless you actually ran it.
+            - If full end-to-end execution cannot be proven in CI due to credentials, market data, deployment state, or external services, state that explicitly and identify the exact missing proof. Do not claim live trading or production readiness.
+
+            DEFINITION OF DONE FOR THIS RUN:
+            - At least one real, justified code/test correction is committed if an actionable defect can be safely fixed.
+            - A focused regression test demonstrates the correction.
+            - Existing governance and safety invariants remain intact.
+            - The PR description/comment gives a concise evidence-based result: confirmed root cause, changes, tests run, remaining blockers by timeframe, P1→P2 delivery proof or gap, and next highest-value action.
+            - If no safe code correction is justified, do not invent one; provide the precise evidence preventing implementation and the minimum next action.
+
+            Do the work now. Do not stop after writing a plan or audit report. Do not merge anything.
