@@ -217,7 +217,20 @@ def test_live_visual_proof_uses_production_selection(monkeypatch, tmp_path):
     assert result["stability_score"] == 0.85 or result["stability_score"] == pytest.approx(0.85) or result["stability_score"] == pytest.approx(0.7458282289664787)
 
 
-def test_live_visual_proof_fails_when_production_selection_missing():
+def test_live_visual_proof_fails_when_production_selection_missing(monkeypatch, tmp_path):
+    # Hermetic precondition: the loader must report an absent production
+    # selection regardless of ephemeral workspace state (running the
+    # production entrypoints persists results/production/latest.json, which
+    # must not change this test's outcome).
+    def missing_selection():
+        raise FileNotFoundError(
+            "Production selection file not found (hermetic test precondition)"
+        )
+
+    monkeypatch.setattr(
+        "run_live_visual_proof._load_live_production_selection",
+        lambda: missing_selection(),
+    )
     with pytest.raises(FileNotFoundError):
         run_live_visual_proof.run_live_visual_proof()
 
