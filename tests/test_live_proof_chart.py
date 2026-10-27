@@ -68,6 +68,55 @@ def test_live_proof_chart_contains_market_and_signal_context():
     assert "BUY Signal" in names
 
 
+def test_live_proof_chart_renders_sell_entry_marker():
+    figure = build_live_proof_chart(
+        _sample_data(),
+        {
+            "symbol": "XAUUSD",
+            "interval": "5m",
+            "signal": -1,
+            "signal_label": "SELL",
+            "trend": "DOWN",
+            "entry_price": 4408.0,
+            "stop_loss": 4452.08,
+            "take_profit": 4319.84,
+        },
+    )
+
+    names = {
+        trace.name
+        for trace in figure.data
+    }
+
+    assert "XAUUSD" in names
+    assert "Fast MA (20)" in names
+    assert "Slow MA (50)" in names
+    assert "SELL Signal" in names
+    assert "BUY Signal" not in names
+
+
+def test_live_proof_chart_renders_no_signal_marker_without_directional_signal():
+    figure = build_live_proof_chart(
+        _sample_data(),
+        {
+            "symbol": "XAUUSD",
+            "interval": "5m",
+            "signal": 0,
+            "signal_label": "NO TRADE",
+            "trend": "FLAT",
+            "entry_price": 4408.0,
+        },
+    )
+
+    names = {
+        trace.name
+        for trace in figure.data
+    }
+
+    assert "BUY Signal" not in names
+    assert "SELL Signal" not in names
+
+
 def test_live_proof_chart_contains_tp1_tp2_tp3():
     figure = build_live_proof_chart(
         _sample_data(),

@@ -148,6 +148,33 @@ def build_candlestick_chart(
     return figure
 
 
+def build_signal_status_message(signal: int) -> tuple[str, str]:
+    """Truthful per-signal status message for the dashboard.
+
+    Returns (message, streamlit_level) for BUY (1), SELL (-1), and NO TRADE (0).
+    Directional signals state that SL/TP levels are issued (they are displayed
+    alongside); NO TRADE states that no levels are issued. A live SELL must
+    never be reported as "NO TRADE".
+    """
+    if signal == 1:
+        return (
+            "BUY signal detected. Entry, stop-loss, and take-profit "
+            "levels are calculated from the configured risk parameters.",
+            "success",
+        )
+    if signal == -1:
+        return (
+            "SELL signal detected. Entry, stop-loss, and take-profit "
+            "levels are calculated from the configured risk parameters.",
+            "success",
+        )
+    return (
+        "NO TRADE signal. The existing strategy does not expose "
+        "an active directional condition, so SL/TP levels are not issued.",
+        "info",
+    )
+
+
 def _render_dashboard() -> None:
     st.set_page_config(
         page_title="XAU/USD Live Signal Trend Risk",
@@ -323,16 +350,13 @@ def _render_dashboard() -> None:
         ),
     )
 
-    if snapshot["signal"] == 1:
-        st.success(
-            "BUY signal detected. Entry, stop-loss, and take-profit "
-            "levels are calculated from the configured risk parameters."
-        )
+    status_message, status_level = build_signal_status_message(
+        int(snapshot["signal"])
+    )
+    if status_level == "success":
+        st.success(status_message)
     else:
-        st.info(
-            "NO TRADE signal. The existing strategy does not expose "
-            "an active BUY condition, so SL/TP levels are not issued."
-        )
+        st.info(status_message)
 
     st.caption(
         f"Signal strategy: {snapshot['strategy']} | "

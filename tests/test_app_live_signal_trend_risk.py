@@ -224,3 +224,38 @@ def test_build_candlestick_chart_rejects_empty_data():
         match="data must not be empty",
     ):
         app_live_signal_trend_risk.build_candlestick_chart(data)
+
+
+def test_status_message_reports_buy_with_issued_levels():
+    message, level = (
+        app_live_signal_trend_risk.build_signal_status_message(1)
+    )
+
+    assert "BUY" in message
+    assert "levels are calculated" in message
+    assert "NO TRADE" not in message
+    assert level == "success"
+
+
+def test_status_message_reports_sell_with_issued_levels():
+    message, level = (
+        app_live_signal_trend_risk.build_signal_status_message(-1)
+    )
+
+    assert "SELL" in message
+    assert "levels are calculated" in message
+    # A live SELL must never be reported as "NO TRADE" and must not
+    # claim that SL/TP levels are not issued while they are displayed.
+    assert "NO TRADE" not in message
+    assert "not issued" not in message
+    assert level == "success"
+
+
+def test_status_message_reports_no_trade_without_issued_levels():
+    message, level = (
+        app_live_signal_trend_risk.build_signal_status_message(0)
+    )
+
+    assert "NO TRADE" in message
+    assert "not issued" in message
+    assert level == "info"
