@@ -27,6 +27,27 @@ def buy_snapshot():
     }
 
 
+def sell_snapshot():
+    return {
+        "symbol": "XAUUSD",
+        "interval": "5m",
+        "signal": -1,
+        "signal_label": "SELL",
+        "trend": "DOWN",
+        "strategy": "momentum",
+        "entry_price": 4395.50,
+        "stop_loss": 4440.20,
+        "take_profit": 4308.90,
+        "tp1": 4308.90,
+        "tp2": 4265.00,
+        "tp3": 4222.00,
+        "market_state": "OPEN",
+        "quote_stale": False,
+        "candle_count": 201,
+        "timestamp": "2025-01-01T00:45:00+00:00",
+    }
+
+
 def test_buy_decision_board_contains_complete_visual_state():
     figure = build_live_decision_board(
         buy_snapshot()
@@ -121,10 +142,23 @@ def test_insufficient_data_state_is_supported():
 
 def test_invalid_signal_is_rejected():
     snapshot = buy_snapshot()
-    snapshot["signal_label"] = "SELL"
+    snapshot["signal_label"] = "HOLD"
 
     with pytest.raises(ValueError):
         build_live_decision_board(snapshot)
+
+
+def test_sell_signal_is_supported():
+    snapshot = sell_snapshot()
+
+    figure = build_live_decision_board(snapshot)
+
+    html = figure.to_html(
+        include_plotlyjs=False
+    )
+
+    # The em dash is JSON-escaped in the generated HTML.
+    assert '"SELL \\u2014 TRADE SETUP ACTIVE"' in html
 
 
 def test_invalid_trend_is_rejected():

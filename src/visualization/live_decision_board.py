@@ -5,7 +5,7 @@ from typing import Any, Mapping
 import plotly.graph_objects as go
 
 
-VALID_SIGNALS = {"BUY", "NO TRADE"}
+VALID_SIGNALS = {"BUY", "SELL", "NO TRADE"}
 VALID_TRENDS = {
     "UP",
     "DOWN",
@@ -62,7 +62,7 @@ def build_live_decision_board(
 
     if signal not in VALID_SIGNALS:
         raise ValueError(
-            "signal_label must be BUY or NO TRADE."
+            "signal_label must be BUY, SELL, or NO TRADE."
         )
 
     trend = _display(
@@ -130,6 +130,8 @@ def build_live_decision_board(
 
     if signal == "BUY":
         decision_text = "BUY — TRADE SETUP ACTIVE"
+    elif signal == "SELL":
+        decision_text = "SELL — TRADE SETUP ACTIVE"
     else:
         decision_text = "NO TRADE — WAIT"
 
@@ -247,21 +249,21 @@ def build_live_decision_board(
 
     if signal == "NO TRADE":
         explanation = (
-            "No active BUY setup. "
+            "No active trade setup. "
             "The system remains in observation mode."
         )
     elif quote_stale:
         explanation = (
-            "BUY detected, but quote freshness "
+            f"{signal} detected, but quote freshness "
             "requires attention before execution."
         )
     elif tp1 is None:
         explanation = (
-            "BUY detected, but TP1 is unavailable."
+            f"{signal} detected, but TP1 is unavailable."
         )
     else:
         explanation = (
-            "BUY setup contains an entry and "
+            f"{signal} setup contains an entry and "
             "available risk/target information."
         )
 

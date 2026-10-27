@@ -64,6 +64,56 @@ def _rising_data(rows: int = 80) -> pd.DataFrame:
     )
 
 
+def _falling_data(rows: int = 80) -> pd.DataFrame:
+    timestamps = pd.date_range(
+        "2026-01-01",
+        periods=rows,
+        freq="5min",
+        tz="UTC",
+    )
+
+    close = pd.Series(
+        [2100.0 - index for index in range(rows)],
+        dtype=float,
+    )
+
+    return pd.DataFrame(
+        {
+            "timestamp": timestamps,
+            "isOpen": False,
+            "open": close + 0.5,
+            "high": close + 1.0,
+            "low": close - 1.0,
+            "close": close,
+        }
+    )
+
+
+def _flat_data(rows: int = 80) -> pd.DataFrame:
+    timestamps = pd.date_range(
+        "2026-01-01",
+        periods=rows,
+        freq="5min",
+        tz="UTC",
+    )
+
+    close = pd.Series(
+        [2000.0 + 0.01 * (index % 2) for index in range(rows)],
+        dtype=float,
+    )
+
+    return pd.DataFrame(
+        {
+            "timestamp": timestamps,
+            "isOpen": False,
+            "open": close,
+            "high": close + 0.1,
+            "low": close - 0.1,
+            "close": close,
+        }
+    )
+
+
 from src.evaluation.live_runtime import build_live_runtime
 
 
@@ -201,13 +251,101 @@ def test_invalid_decision_is_rejected():
     )
     display = dict(runtime_res.display)
 
-    display["decision"] = "SELL"
+    display["decision"] = "HOLD"
 
     with pytest.raises(
         ValueError,
         match="decision must be",
     ):
         build_live_trade_overlay(data, display)
+
+
+def _sell_snapshot(ref_now=False):
+    data = _falling_data()
+    data["timestamp"] = pd.to_datetime(data["timestamp"], utc=True)
+    runtime_res = build_live_runtime(
+        data,
+        stable_strategy="momentum",
+        stability_score=None,
+        reference_now=(
+            data["timestamp"].iloc[-1].to_pydatetime()
+            + pd.Timedelta(minutes=5)
+            if ref_now
+            else None
+        ),
+        persist=False,
+    )
+    return data, runtime_res
+
+
+def test_sell_decision_overlay_is_supported_and_ordered():
+    data, runtime_res = _sell_snapshot(ref_now=True)
+
+    assert runtime_res.display["decision"] == "SELL"
+
+    overlay = build_live_trade_overlay(
+        data,
+        runtime_res.display,
+    )
+
+    levels = overlay["levels"]
+
+    assert levels["entry"] is not None
+    assert (
+        levels["tp3"]
+        < levels["tp2"]
+        < levels["tp1"]
+        < levels["entry"]
+        < levels["stop_loss"]
+    )
+
+
+def test_sell_level_order_violation_is_rejected():
+    data, runtime_res = _sell_snapshot(ref_now=True)
+    display = dict(runtime_res.display)
+
+    # Break SELL geometry: tp2 above tp1.
+    display["tp2"] = display["tp1"] + 1.0
+
+    with pytest.raises(
+        ValueError,
+        match="SELL levels must satisfy",
+    ):
+        build_live_trade_overlay(data, display)
+
+
+def test_no_trade_decision_overlay_has_no_levels():
+    data = _flat_data()
+    data["timestamp"] = pd.to_datetime(data["timestamp"], utc=True)
+
+    runtime_res = build_live_runtime(
+        data,
+        stable_strategy="momentum",
+        stability_score=None,
+        reference_now=data["timestamp"].iloc[-1].to_pydatetime()
+        + pd.Timedelta(minutes=5),
+        persist=False,
+    )
+
+    assert runtime_res.display["decision"] == "NO TRADE"
+
+    overlay = build_live_trade_overlay(
+        data,
+        runtime_res.display,
+    )
+
+    assert (
+        overlay["levels"]["entry"]
+        is None
+    )
+    assert (
+        overlay["levels"]["stop_loss"]
+        is None
+    )
+    assert (
+        overlay["lines"][0]["visible"]
+        is False
+    )
 
 
 def test_missing_timestamp_is_rejected():

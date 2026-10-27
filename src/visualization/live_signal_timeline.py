@@ -6,8 +6,12 @@ from typing import Any
 import plotly.graph_objects as go
 
 
-VALID_SIGNALS = {"BUY", "NO TRADE"}
+VALID_SIGNALS = {"BUY", "SELL", "NO TRADE"}
 VALID_TRENDS = {"UP", "DOWN", "FLAT", "INSUFFICIENT DATA"}
+
+
+# Deterministic numeric projection of each canonical signal state.
+SIGNAL_AXIS_VALUES = {"SELL": -1, "NO TRADE": 0, "BUY": 1}
 
 
 def _display(value: Any, default: str) -> str:
@@ -58,7 +62,7 @@ def build_live_signal_timeline(
     Build a visual timeline of live signal and trend decisions.
 
     Each snapshot becomes one timeline point. The chart shows:
-    - BUY / NO TRADE signal state
+    - BUY / SELL / NO TRADE signal state
     - market trend
     - snapshot timestamp
     - strategy
@@ -91,7 +95,7 @@ def build_live_signal_timeline(
 
     x_values = list(range(len(snapshots)))
     signal_values = [
-        1 if _snapshot_signal(snapshot) == "BUY" else 0
+        SIGNAL_AXIS_VALUES[_snapshot_signal(snapshot)]
         for snapshot in snapshots
     ]
 
@@ -174,9 +178,9 @@ def build_live_signal_timeline(
         ),
         yaxis=dict(
             title="Signal",
-            tickvals=[0, 1],
-            ticktext=["NO TRADE", "BUY"],
-            range=[-0.25, 1.25],
+            tickvals=[-1, 0, 1],
+            ticktext=["SELL", "NO TRADE", "BUY"],
+            range=[-1.25, 1.25],
         ),
         yaxis2=dict(
             title="Trend",

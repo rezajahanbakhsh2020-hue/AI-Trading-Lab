@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import Any
 
 
+VALID_RELEASE_DECISIONS = {"BUY", "SELL", "NO TRADE"}
 DEFAULT_MIN_STABILITY_SCORE = 0.50
 DEFAULT_REQUIRED_STRATEGY = "momentum"
 
@@ -58,7 +59,12 @@ def validate_live_release(
             + ", ".join(sorted(missing_display))
         )
 
+    release_decision = str(decision["decision"])
+
     checks: dict[str, bool] = {
+        "decision_supported": (
+            release_decision in VALID_RELEASE_DECISIONS
+        ),
         "decision_display_match": (
             decision["decision"] == display["decision"]
         ),
@@ -72,9 +78,16 @@ def validate_live_release(
             and float(display["stability_score"])
             >= min_stability_score
         ),
+        # Stale or invalid market data blocks the release for every
+        # decision outcome — NO TRADE must never be a vehicle for
+        # stale/invalid input concealment (fail closed when absent
+        # or the flag is missing).
+        "market_data_fresh": (
+            decision.get("quote_stale") is False
+        ),
     }
 
-    if decision["decision"] == "BUY":
+    if release_decision == "BUY":
         levels_valid = (
             decision.get("entry_price") is not None
             and decision.get("stop_loss") is not None
@@ -89,7 +102,23 @@ def validate_live_release(
             and display["tp1"] < display["tp2"]
             and display["tp2"] < display["tp3"]
         )
+    elif release_decision == "SELL":
+        levels_valid = (
+            decision.get("entry_price") is not None
+            and decision.get("stop_loss") is not None
+            and decision.get("take_profit") is not None
+            and display["entry_price"] is not None
+            and display["stop_loss"] is not None
+            and display["tp1"] is not None
+            and display["tp2"] is not None
+            and display["tp3"] is not None
+            and display["tp3"] < display["tp2"]
+            and display["tp2"] < display["tp1"]
+            and display["tp1"] < display["entry_price"]
+            and display["entry_price"] < display["stop_loss"]
+        )
     else:
+        # NO TRADE: no fabricated trade levels may be attached.
         levels_valid = all(
             display[field] is None
             for field in (

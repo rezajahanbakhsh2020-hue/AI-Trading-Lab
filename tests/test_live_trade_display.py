@@ -435,3 +435,58 @@ def test_missing_canonical_risk_field_fails_closed(missing_field):
     expected_match = "tp1, tp2, and tp3" if "tp" in missing_field else "risk_reward_ratio"
     with pytest.raises(ValueError, match=expected_match):
         build_live_trade_display(data, canonical_decision=custom_cld)
+
+
+def _falling_data(rows: int = 80) -> pd.DataFrame:
+    timestamps = pd.date_range(
+        end=pd.Timestamp.now(tz="UTC"),
+        periods=rows,
+        freq="5min",
+    )
+
+    close = pd.Series(
+        [2100.0 - index for index in range(rows)],
+        dtype=float,
+    )
+
+    return pd.DataFrame(
+        {
+            "timestamp": timestamps,
+            "isOpen": False,
+            "open": close + 0.5,
+            "high": close + 1.0,
+            "low": close - 1.0,
+            "close": close,
+        }
+    )
+
+
+def test_sell_trade_display_contains_entry_sl_and_three_targets():
+    data = _falling_data()
+    cld = _get_canonical_decision(data, strategy="momentum", score=None)
+
+    assert cld.decision.direction.value == "SELL"
+
+    result = build_live_trade_display(
+        data,
+        canonical_decision=cld,
+        stable_strategy="momentum",
+        stability_score=None,
+    )
+
+    assert result["decision"] == "SELL"
+    assert result["signal"] == -1
+    assert result["signal_label"] == "SELL"
+    assert (
+        result["tp3"]
+        < result["tp2"]
+        < result["tp1"]
+        < result["entry_price"]
+        < result["stop_loss"]
+    )
+    assert result["risk_distance"] == pytest.approx(
+        result["stop_loss"] - result["entry_price"]
+    )
+    assert result["risk_reward_tp1"] > 0
+    assert result["risk_reward_tp3"] > result["risk_reward_tp1"]
+    assert result["take_profit"] == result["tp2"]

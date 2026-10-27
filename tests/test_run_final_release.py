@@ -37,6 +37,7 @@ def _valid_result() -> dict:
         "decision": {
             "decision": "BUY",
             "stable_strategy": "momentum",
+            "quote_stale": False,
         },
         "display": {
             "decision": "BUY",

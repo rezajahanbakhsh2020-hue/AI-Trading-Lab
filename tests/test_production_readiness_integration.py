@@ -16,6 +16,7 @@ from src.evaluation.production_end_to_end import (
     load_production_market_data,
     run_production_end_to_end,
 )
+from src.evaluation.final_release import validate_final_release
 from src.evaluation.research_store import (
     DEFAULT_RESEARCH_DIR,
     resolve_promoted_candidate,
@@ -72,7 +73,11 @@ def test_hardcoded_strategy_identity_triggers_integrity_error():
         )
 
 
-def test_run_production_end_to_end_real_store_and_data(tmp_path):
+def test_run_production_end_to_end_stale_data_fails_closed(tmp_path):
+    """The committed dataset predates now: freshness must fail closed and the
+    runtime must refuse to trade historical data as live.  A NO TRADE produced
+    by stale inputs must NOT be releasable (owner contract: NO TRADE must not
+    bypass stale/invalid market data)."""
     data = _committed_data()
 
     result = run_production_end_to_end(
@@ -92,20 +97,97 @@ def test_run_production_end_to_end_real_store_and_data(tmp_path):
     assert isinstance(selection["stability_score"], float)
     assert selection["stability_score"] == pytest.approx(0.5418264967501166)
 
-    # The committed dataset predates now: freshness must fail closed and the
-    # runtime must refuse to trade historical data as live.
-    assert result["decision"]["decision"] == "NO TRADE"
+    decision = result["decision"]
+    assert decision["decision"] == "NO TRADE"
+    assert decision["quote_stale"] is True
+    assert decision["reason"] == "stale_market_data"
+    # Stale data must not fabricate trade levels.
     assert result["display"]["entry_price"] is None
     assert result["display"]["stop_loss"] is None
     assert result["display"]["tp1"] is None
     assert result["display"]["tp2"] is None
     assert result["display"]["tp3"] is None
 
-    assert result["end_to_end_ready"] is True
+    # Fail-closed: stale-data NO TRADE is not releasable.
+    assert result["release_gate"]["release_ready"] is False
+    assert result["release_gate"]["checks"]["market_data_fresh"] is False
+    assert result["end_to_end_ready"] is False
+
+    final_release = validate_final_release(result)
+    assert final_release["final_release_ready"] is False
+    assert final_release["checks"]["market_data_fresh"] is False
+    assert final_release["status"] == "RELEASE BLOCKED"
+
+
+def _fresh_reference_now(data: pd.DataFrame):
+    """Reference clock slightly after the CLOSE of the final 1D candle (opens at 00:00 UTC): deterministic freshness."""
+    last_ts = pd.to_datetime(data["timestamp"], utc=True).iloc[-1]
+    # Provider timestamps mark candle opens; a 1D candle closes one day later.
+    return last_ts.to_pydatetime() + pd.Timedelta(days=1) + pd.Timedelta(seconds=60)
+
+
+def test_run_production_end_to_end_fresh_data_releasable(tmp_path):
+    """With a deterministic fresh reference clock aligned to the committed
+    dataset, all mandatory gates must pass and the release must be READY for
+    whichever canonical decision the strategy legitimately produces —
+    BUY/SELL with ordered levels, or a legitimate NO TRADE with no levels."""
+    data = _committed_data()
+
+    result = run_production_end_to_end(
+        data,
+        candidate_id=COMMITTED_CANDIDATE_ID,
+        results_dir=tmp_path,
+        symbol="XAUUSD",
+        interval="1d",
+        reference_now=_fresh_reference_now(data),
+        store_path=tmp_path / "integration_store_fresh.json",
+    )
+
+    decision = result["decision"]
+    assert decision["quote_stale"] is False
     assert result["release_gate"]["release_ready"] is True
+    assert result["release_gate"]["checks"]["market_data_fresh"] is True
+    assert result["end_to_end_ready"] is True
+
+    release_decision = decision["decision"]
+    levels = result["overlay"]["levels"]
+
+    if release_decision == "NO TRADE":
+        assert levels["entry"] is None
+        assert levels["stop_loss"] is None
+        assert levels["tp1"] is None
+        assert levels["tp2"] is None
+        assert levels["tp3"] is None
+    else:
+        assert levels["entry"] is not None
+        assert all(
+            levels[k] is not None
+            for k in ("stop_loss", "tp1", "tp2", "tp3")
+        )
+        if release_decision == "BUY":
+            assert (
+                levels["stop_loss"]
+                < levels["entry"]
+                < levels["tp1"]
+                < levels["tp2"]
+                < levels["tp3"]
+            )
+        else:
+            assert (
+                levels["tp3"]
+                < levels["tp2"]
+                < levels["tp1"]
+                < levels["entry"]
+                < levels["stop_loss"]
+            )
+
+    final_release = validate_final_release(result)
+    assert final_release["final_release_ready"] is True
+    assert final_release["status"] == "RELEASE READY"
+    assert final_release["decision"] == release_decision
 
 
-def test_run_production_end_to_end_releases_and_replays_idempotently(tmp_path):
+def test_run_production_end_to_end_replays_idempotently(tmp_path):
     """Two consecutive executions (as CI steps on fresh stores) must both succeed:
     re-executing the same canonical decision after re-authorization is an
     idempotent no-op, not a conflicting replay (wall clock must not be identity)."""
@@ -118,7 +200,7 @@ def test_run_production_end_to_end_releases_and_replays_idempotently(tmp_path):
         results_dir=tmp_path,
         symbol="XAUUSD",
         interval="1d",
-        reference_now=pd.Timestamp("2026-10-26T05:00:00Z"),
+        reference_now=_fresh_reference_now(data),
         store_path=store_path,
     )
     assert first["end_to_end_ready"] is True
@@ -129,7 +211,7 @@ def test_run_production_end_to_end_releases_and_replays_idempotently(tmp_path):
         results_dir=tmp_path,
         symbol="XAUUSD",
         interval="1d",
-        reference_now=pd.Timestamp("2026-10-26T05:07:00Z"),
+        reference_now=_fresh_reference_now(data),
         store_path=store_path,
     )
     assert second["end_to_end_ready"] is True
