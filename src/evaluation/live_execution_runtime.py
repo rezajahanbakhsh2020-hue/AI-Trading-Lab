@@ -1989,19 +1989,11 @@ class ContinuousLiveRuntime:
 
                 canonical_tf = CanonicalTimeframe.from_str(tf).value
 
-                # Check preflight readiness if cached; if marked BLOCKED at startup preflight, skip execution safely
-                cached_readiness = getattr(self, "_timeframe_readiness", {}).get(canonical_tf)
-                if cached_readiness and cached_readiness.get("status") == "BLOCKED":
-                    tick_evaluations[canonical_tf] = {
-                        "blocked": True,
-                        "status": "BLOCKED",
-                        "reason": cached_readiness.get("reason_code") or "PREFLIGHT_BLOCKED",
-                        "detail": cached_readiness.get("detail") or "Timeframe blocked during startup preflight.",
-                        "candidate_id": cached_readiness.get("candidate_id"),
-                        "symbol": self.symbol,
-                        "timeframe": canonical_tf,
-                    }
-                    continue
+                # NOTE: no preflight-cache skip. Every configured timeframe is attempted
+                # independently on each tick so a blocked timeframe reports its own
+                # BLOCKED/NO-TRADE result here and automatically recovers when its
+                # prerequisite (qualified candidate) becomes available, without affecting
+                # any other timeframe's evaluation or publication.
 
                 # 1. Acquire market data snapshot for timeframe
                 try:
@@ -2177,6 +2169,26 @@ class ContinuousLiveRuntime:
             except Exception as exc:
                 logger.warning("Startup pending delivery recovery warning: %s", exc)
 
+        # Publish mode sanity: when publishing is requested, the publisher configuration
+        # itself must be usable; otherwise every timeframe would fail to deliver and the
+        # process should fail loudly for THIS reason (not because of candidate availability).
+        if self.publish and not (self.publisher is not None and getattr(self.publisher, "enabled", False)):
+            raise PromotionUnavailable(
+                "Publication requested (--publish) but the Project 2 publisher is disabled "
+                "or its configuration is unusable. The worker cannot deliver any timeframe's "
+                "decision and must fail closed for this process-level reason."
+            )
+        if self.publish and self.publisher and getattr(self.publisher, "enabled", False):
+            from src.integration.project2_publisher import validate_publication_configuration
+            pub_config_valid, pub_config_reason = validate_publication_configuration(
+                getattr(self.publisher, "publish_url", None),
+                getattr(self.publisher, "api_key", None),
+            )
+            if not pub_config_valid:
+                raise PromotionUnavailable(
+                    f"Publication requested but Project 2 publication configuration is unusable: {pub_config_reason}"
+                )
+
         readiness_results = {}
         ready_count = 0
         for tf in self.timeframes:
@@ -2207,12 +2219,17 @@ class ContinuousLiveRuntime:
                 f"{tf}: [{res.get('reason_code')}] {res.get('detail')}"
                 for tf, res in readiness_results.items()
             ]
-            msg = (
-                f"Startup readiness preflight failed for {self.symbol}: 0 of {len(self.timeframes)} "
-                f"configured timeframes are READY. Failure details:\n" + "\n".join(details)
+            # Candidate/readiness unavailability is a per-timeframe condition, NOT a
+            # process-level failure. The worker proceeds so ready timeframes can run
+            # and blocked timeframes report their own BLOCKED/NO-TRADE reason and
+            # recover automatically once their prerequisite becomes available.
+            logger.error(
+                "Startup readiness preflight: 0 of %d configured timeframes are READY for %s. "
+                "Continuing with per-timeframe BLOCKED reporting. Failure details:\n%s",
+                len(self.timeframes),
+                self.symbol,
+                "\n".join(details),
             )
-            logger.error(msg)
-            raise PromotionUnavailable(msg)
 
         self._timeframe_readiness = readiness_results
         return readiness_results

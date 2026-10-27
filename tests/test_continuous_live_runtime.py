@@ -998,10 +998,116 @@ def test_independent_startup_readiness_partial_blocked_runs_healthy_timeframe(tm
         assert eval_15m["candidate_id"] == "missing_15m_cand"
 
 
+def test_blocked_timeframe_does_not_suppress_other_timeframes_publication(tmp_path: Path) -> None:
+    """Acceptance: a missing/unqualified candidate on one timeframe must not suppress that
+    timeframe's own evaluation outcome nor prevent another timeframe's valid decision from
+    reaching the P2 publisher. Publication is per-timeframe independent."""
+    from unittest.mock import MagicMock
+    from src.evaluation.research_store import save_research_candidate
+    from tests.test_timeframe_identity_invariants import _make_test_evidence
+
+    save_research_candidate(
+        candidate_id="cand_5m_pub",
+        evidence=_make_test_evidence("5m"),
+        operational_stability_score=0.88,
+        base_dir=tmp_path,
+    )
+
+    mock_publisher = MagicMock()
+    mock_publisher.enabled = True
+    mock_publisher.publish_url = "https://project2.example/api/v1/integration/project1/ingest"
+    mock_publisher.api_key = "test_api_key"
+    mock_publisher.publish.return_value = {
+        "status": "PUBLISHED",
+        "published": True,
+        "delivery_status": "DELIVERED",
+    }
+
+    cont_runtime = ContinuousLiveRuntime(
+        symbol="XAUUSD",
+        timeframes=["5m", "15m"],
+        research_dir=tmp_path,
+        store_path=tmp_path / "decisions.json",
+        snapshot_path=tmp_path / "snapshots.json",
+        candidate_ids={"5m": "cand_5m_pub", "15m": "missing_15m_cand"},
+        publish=True,
+        publisher=mock_publisher,
+        max_age_seconds=3600.0,
+    )
+
+    now_dt = datetime.datetime.now(datetime.timezone.utc)
+    dates = [now_dt - datetime.timedelta(minutes=5 * i) for i in range(100)]
+    dates.reverse()
+    prices = [2000.0 + (i * 2.0) for i in range(100)]
+    df_5m = pd.DataFrame({
+        "openTime": [d.isoformat() for d in dates],
+        "open": [p - 1.0 for p in prices],
+        "high": [p + 3.0 for p in prices],
+        "low": [p - 2.0 for p in prices],
+        "close": prices,
+    })
+
+    def loader(tf: str) -> pd.DataFrame:
+        return df_5m
+
+    cont_runtime.verify_startup_readiness()
+    tick_res = cont_runtime.tick(reference_now=now_dt)
+
+    # 15m is independently blocked with its own reason; no publication fabricated for it.
+    eval_15m = tick_res["evaluations"]["15m"]
+    assert eval_15m["blocked"] is True
+    assert eval_15m["reason"] == "PromotionUnavailable"
+
+    # 5m evaluated independently and its valid decision was delivered to P2
+    # even though the 15m timeframe is blocked.
+    eval_5m = tick_res["evaluations"]["5m"]
+    assert eval_5m["blocked"] is False
+    assert eval_5m["symbol"] == "XAUUSD"
+    assert eval_5m["interval"] == "5m"
+    assert eval_5m["candidate_id"] == "cand_5m_pub"
+    assert eval_5m["decision"] in ("BUY", "SELL", "NO TRADE")
+    assert eval_5m["publish_result"]["published"] is True
+    assert eval_5m["publish_result"]["status"] == "PUBLISHED"
+
+    # Exactly one publisher call: only 5m's own decision was delivered.
+    assert mock_publisher.publish.call_count == 1
+
+
+def test_all_seven_configured_timeframes_independently_attempted(tmp_path: Path) -> None:
+    """Acceptance: all seven canonical timeframes are configured and independently attempted;
+    candidate absence yields per-timeframe BLOCKED results without crashing the worker."""
+    cont_runtime = ContinuousLiveRuntime(
+        symbol="XAUUSD",
+        timeframes=["1m", "5m", "15m", "30m", "1H", "4H", "1D"],
+        poll_interval=0.0,
+        research_dir=tmp_path,
+        candidate_ids={"1D": "missing_1d"},
+        publish=False,
+        persist=False,
+    )
+
+    readiness = cont_runtime.verify_startup_readiness()
+    assert set(readiness.keys()) == {"1m", "5m", "15m", "30m", "1H", "4H", "1D"}
+    assert readiness["1m"]["status"] == "BLOCKED"
+    assert readiness["1D"]["status"] == "BLOCKED"
+
+    now_dt = datetime.datetime.now(datetime.timezone.utc)
+    tick_res = cont_runtime.tick(reference_now=now_dt)
+    evaluations = tick_res["evaluations"]
+    assert set(evaluations.keys()) == {"1m", "5m", "15m", "30m", "1H", "4H", "1D"}
+    for tf in ("1m", "5m", "15m", "30m", "1H", "4H", "1D"):
+        assert evaluations[tf]["blocked"] is True, tf
+        assert evaluations[tf]["reason"] == "PromotionUnavailable", tf
+
+    # The runtime is still alive and will recover a timeframe automatically when its
+    # prerequisite becomes available without any restart.
+    assert cont_runtime.is_running
+
+
 def test_stale_timeframe_readiness_cache_invalidation_on_failed_preflight(tmp_path: Path) -> None:
     """Verify that a failed preflight invalidates any previous cached _timeframe_readiness matrix."""
     from unittest.mock import patch
-    from src.evaluation.research_store import PromotionUnavailable, save_research_candidate
+    from src.evaluation.research_store import save_research_candidate
     from tests.test_timeframe_identity_invariants import _make_test_evidence
 
     # 1. Create candidate artifact for 5m
@@ -1037,16 +1143,20 @@ def test_stale_timeframe_readiness_cache_invalidation_on_failed_preflight(tmp_pa
         "candidate_id": "cand_5m_cache",
     }
     with patch("src.evaluation.live_execution_runtime.verify_timeframe_production_readiness", return_value=blocked_mock):
-        with pytest.raises(PromotionUnavailable, match="0 of 2 configured timeframes are READY"):
-            cont_runtime.verify_startup_readiness()
+        # Candidate unavailability must NOT abort the worker: it is cached as per-timeframe
+        # BLOCKED state and reported independently, while the process keeps running.
+        second_res = cont_runtime.verify_startup_readiness()
+        assert second_res["5m"]["status"] == "BLOCKED"
+        assert second_res["15m"]["status"] == "BLOCKED"
 
-    # Assert that stale readiness cache from first preflight was cleared and is empty
-    assert cont_runtime._timeframe_readiness == {}
+    # Assert that stale readiness cache from first preflight was cleared and replaced
+    assert cont_runtime._timeframe_readiness["5m"]["status"] == "BLOCKED"
+    assert cont_runtime._timeframe_readiness["15m"]["status"] == "BLOCKED"
 
 
-def test_independent_startup_readiness_all_blocked_fails_closed(tmp_path: Path) -> None:
-    """Test C: All timeframes BLOCKED must fail closed with PromotionUnavailable on startup preflight."""
-    from src.evaluation.research_store import PromotionUnavailable
+def test_all_blocked_timeframes_do_not_abort_worker(tmp_path: Path) -> None:
+    """A worker with 0 READY timeframes must NOT crash: each timeframe independently
+    reports its own BLOCKED reason on preflight and on every tick."""
     cont_runtime = ContinuousLiveRuntime(
         symbol="XAUUSD",
         timeframes=["1m", "15m"],
@@ -1058,8 +1168,33 @@ def test_independent_startup_readiness_all_blocked_fails_closed(tmp_path: Path) 
         publish=False,
     )
 
-    with pytest.raises(PromotionUnavailable, match="0 of 2 configured timeframes are READY"):
-        cont_runtime.verify_startup_readiness()
+    # Preflight must NOT raise: candidate unavailability is per-timeframe.
+    readiness = cont_runtime.verify_startup_readiness()
+    assert readiness["1m"]["status"] == "BLOCKED"
+    assert readiness["1m"]["reason_code"] == "PromotionUnavailable"
+    assert readiness["15m"]["status"] == "BLOCKED"
+    assert readiness["15m"]["reason_code"] == "PromotionUnavailable"
+
+    # Continuous ticks proceed and each timeframe reports its own blocked result.
+    now_dt = datetime.datetime.now(datetime.timezone.utc)
+    tick_res = cont_runtime.tick(reference_now=now_dt)
+    assert tick_res["evaluations"]["1m"]["blocked"] is True
+    assert tick_res["evaluations"]["1m"]["reason"] == "PromotionUnavailable"
+    assert tick_res["evaluations"]["15m"]["blocked"] is True
+    assert tick_res["evaluations"]["15m"]["reason"] == "PromotionUnavailable"
+
+    # The rejection remains for publish-mode misuse: publishing requested while the
+    # publisher configuration is unusable is a process-level failure.
+    unusable = ContinuousLiveRuntime(
+        symbol="XAUUSD",
+        timeframes=["1D"],
+        research_dir=tmp_path,
+        candidate_ids={"1D": "missing_1d"},
+        publish=True,
+    )
+    from src.evaluation.research_store import PromotionUnavailable
+    with pytest.raises(PromotionUnavailable, match="unusable"):
+        unusable.verify_startup_readiness()
 
 
 def test_independent_startup_readiness_seven_timeframe_ladder(tmp_path: Path) -> None:
