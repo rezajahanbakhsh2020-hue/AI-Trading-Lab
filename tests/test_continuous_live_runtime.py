@@ -424,7 +424,11 @@ def test_13_14_exact_timeframe_candidate_used(tmp_path) -> None:
 
 
 def test_15_explicit_candidate_timeframe_mismatch_fails_closed(tmp_path) -> None:
-    """15. Explicit candidate with mismatched DatasetScope timeframe fails closed."""
+    """15. Explicit candidate with mismatched DatasetScope timeframe fails closed.
+
+    Fails closed for ACTIONS (no authorized candidate, no trade executed), while
+    still producing the timeframe's own truthful NO_TRADE market observation with
+    the eligibility blocker disclosed."""
     persist_momentum_candidate(tmp_path, candidate_id="cand_5m", timeframe="5m")
 
     cont = ContinuousLiveRuntime(
@@ -442,11 +446,16 @@ def test_15_explicit_candidate_timeframe_mismatch_fails_closed(tmp_path) -> None
     res = cont.tick(reference_now=ref_now)
 
     eval_15m = res["evaluations"]["15m"]
-    assert eval_15m["blocked"] is True
-    assert eval_15m["reason"] == "PromotionEligibilityError"
-    assert "timeframe '5m'" in eval_15m["detail"]
-    assert "15m" in eval_15m["detail"]
-    assert len(cont._evaluated_candles) == 0
+    # No authorized action: the mismatched candidate must never act on this timeframe.
+    assert eval_15m.get("observation") is True
+    assert eval_15m.get("blocked") is False
+    assert eval_15m.get("decision") == "NO TRADE"
+    assert eval_15m.get("candidate_id") is None
+    assert eval_15m.get("publish_result", {}).get("status") == "SKIPPED_DISABLED"
+    # The eligibility blocker is honestly disclosed, naming the misconfigured scope.
+    assert eval_15m.get("reason") == "PromotionEligibilityError"
+    assert "timeframe '5m'" in eval_15m.get("detail", "")
+    assert "15m" in eval_15m.get("detail", "")
 
 
 def test_16_missing_candidate_fails_closed(tmp_path) -> None:
@@ -466,8 +475,13 @@ def test_16_missing_candidate_fails_closed(tmp_path) -> None:
     res = cont.tick(reference_now=ref_now)
 
     eval_5m = res["evaluations"]["5m"]
+    # Fail-closed: no authorized candidate AND no trade action. The freshest
+    # truth (stale market data failed the freshness/closure gate for this
+    # candle) is reported at top level, with the missing candidate blocker
+    # disclosed in blocked_state.
     assert eval_5m["blocked"] is True
-    assert eval_5m["reason"] == "PromotionUnavailable"
+    assert eval_5m["reason"] == "stale_market_data"
+    assert eval_5m["blocked_state"]["reason"] == "PromotionUnavailable"
 
 
 def test_candidate_mapping_parser_exact_duplicate_key_rejected() -> None:
@@ -993,9 +1007,12 @@ def test_independent_startup_readiness_partial_blocked_runs_healthy_timeframe(tm
         assert eval_5m["blocked"] is False
         assert eval_5m["candidate_id"] == "cand_5m_only"
 
-        assert eval_15m["blocked"] is True
-        assert eval_15m["reason"] == "PromotionUnavailable"
-        assert eval_15m["candidate_id"] == "missing_15m_cand"
+        assert eval_15m.get("observation") is True
+        assert eval_15m.get("blocked") is False
+        assert eval_15m.get("decision") == "NO TRADE"
+        assert eval_15m.get("candidate_id") is None
+        assert eval_15m.get("reason") == "PromotionUnavailable"
+        assert eval_15m.get("publish_result", {}).get("status") == "SKIPPED_DISABLED"
 
 
 def test_blocked_timeframe_does_not_suppress_other_timeframes_publication(tmp_path: Path) -> None:

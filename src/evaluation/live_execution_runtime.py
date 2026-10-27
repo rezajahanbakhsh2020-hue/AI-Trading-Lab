@@ -1533,6 +1533,40 @@ class ContinuousLiveRuntime:
                 if exp_cand is None or res_cand != exp_cand:
                     return False
 
+        # Observation evaluations: truthful NO_TRADE market observations produced
+        # for timeframes without an authorized production candidate. They carry no
+        # candidate identity and must never smuggle a trade decision.
+        if res.get("observation") is True:
+            if res.get("decision") != "NO TRADE":
+                return False
+            # An observation must never claim candidate identity or authorization.
+            if res.get("candidate_id") is not None:
+                return False
+            if not isinstance(res.get("reason"), str) or not res["reason"].strip():
+                return False
+            obs_record = res.get("record")
+            if not isinstance(obs_record, dict) or not obs_record:
+                return False
+            obs_publication = res.get("publication")
+            if not isinstance(obs_publication, dict) or not obs_publication:
+                return False
+            obs_pub_res = res.get("publish_result")
+            if not isinstance(obs_pub_res, dict):
+                return False
+            obs_pub_status = obs_pub_res.get("status")
+            obs_published = obs_pub_res.get("published")
+            if obs_published is True:
+                if not obs_pub_status or obs_pub_status not in (
+                    "PUBLISHED", "DELIVERED", "ACCEPTED", "OK", "ACKNOWLEDGED", "INGESTED",
+                ):
+                    return False
+            elif obs_published is False:
+                if obs_pub_status not in ("SKIPPED_DISABLED", "SKIPPED_NO_TRADE"):
+                    return False
+            else:
+                return False
+            return True
+
         # 1. Recognized benign worker operational skips (exact match of status + reason)
         if st == "SKIPPED_DEDUPLICATED":
             if res.get("reason") != "candle_already_evaluated":
@@ -1846,9 +1880,20 @@ class ContinuousLiveRuntime:
                 elif tf_eval.get("blocked") or st in ("BLOCKED", "FAILED_RECOVERABLE", "SKIPPED_BLOCKED", "EXCEPTIONAL_FAILURE", "UNAUTHORIZED"):
                     reason_code = str(tf_eval.get("reason") or tf_eval.get("detail") or st)
 
-            # Precedence 4: Readiness non-ready reason
+            # Precedence 4: Readiness non-ready reason. For healthy market
+            # observations, fall back to the observation's disclosed candidate
+            # blocker so the diagnosis still names why no trade was authorized.
             if not reason_code and readiness_info.get("status") != "READY":
-                reason_code = str(readiness_info.get("reason_code") or readiness_info.get("detail") or "BLOCKED")
+                reason_code = (
+                    str(readiness_info.get("reason_code"))
+                    if readiness_info.get("reason_code")
+                    else (
+                        str(tf_eval.get("reason"))
+                        if isinstance(tf_eval, dict) and tf_eval.get("observation") is True and tf_eval.get("reason")
+                        else None
+                    )
+                    or "BLOCKED"
+                )
 
             # Safety fallback: An unhealthy evaluation must NEVER report "READY"
             if not is_healthy_tf and (not reason_code or reason_code == "READY"):
@@ -1969,6 +2014,135 @@ class ContinuousLiveRuntime:
                 return i, row, open_dt.isoformat()
         return None
 
+    def _evaluate_market_observation_no_trade(
+        self,
+        *,
+        canonical_tf: str,
+        eval_df: pd.DataFrame,
+        closed_ts_iso: str,
+        blocked: ProductionBlocked,
+        reference_now: datetime.datetime,
+    ) -> dict[str, Any]:
+        """Evaluate a per-timeframe NO_TRADE market observation when no authorized candidate exists.
+
+        The timeframe's real closed-candle slice is validated through the same
+        freshness/closure gate used by the canonical path. A fresh, closed slice
+        yields a truthful NO_TRADE observation publication (real candle timestamp,
+        real decision timestamp, explicit provenance that no authorized candidate
+        exists). A stale/invalid slice fail-closes to a blocked, unpublished
+        result: invalid data must never be laundered into a releasable outcome.
+        """
+        from src.evaluation.live_market_observation import MarketObservationPublication
+
+        freshness = validate_market_data_freshness(
+            data=eval_df,
+            timeframe=canonical_tf,
+            max_age_seconds=self.max_age_seconds,
+            reference_now=reference_now,
+        )
+
+        if not freshness.get("fresh"):
+            return {
+                "blocked": True,
+                "status": "BLOCKED",
+                "reason": str(freshness.get("reason") or "unclosed_market_data"),
+                "detail": (
+                    f"Market observation for {self.symbol} {canonical_tf} fail-closed: "
+                    f"market data did not pass the freshness/closure gate "
+                    f"(reason={freshness.get('reason')}); candidate blocker "
+                    f"[{blocked.reason}] is also present and disclosed in blocked_state."
+                ),
+                "symbol": self.symbol,
+                "timeframe": canonical_tf,
+                "candidate_id": blocked.candidate_id,
+                "blocked_state": {
+                    "blocked": True,
+                    "reason": blocked.reason,
+                    "detail": blocked.detail,
+                    "candidate_id": blocked.candidate_id,
+                    "symbol": self.symbol,
+                    "timeframe": canonical_tf,
+                    "market_data_fresh": False,
+                    "freshness_reason": str(freshness.get("reason")),
+                    "candle_timestamp": freshness.get("candle_timestamp") or closed_ts_iso,
+                },
+            }
+
+        try:
+            observation = MarketObservationPublication(
+                symbol=self.symbol,
+                timeframe=canonical_tf,
+                reason=blocked.reason,
+                detail=blocked.detail,
+                candle_timestamp_utc=closed_ts_iso,
+                observation_timestamp_utc=reference_now.isoformat(),
+            )
+        except Exception as exc:
+            return {
+                "blocked": True,
+                "status": "BLOCKED",
+                "reason": "MARKET_OBSERVATION_CONSTRUCTION_FAILED",
+                "detail": str(exc),
+                "symbol": self.symbol,
+                "timeframe": canonical_tf,
+                "candidate_id": blocked.candidate_id,
+            }
+
+        if self.publish and self.publisher is not None:
+            try:
+                pub_res = self.publisher.publish(
+                    observation,
+                    skip_if_no_trade=self.skip_if_no_trade,
+                )
+            except Exception as exc:
+                pub_res = {
+                    "status": "FAILED",
+                    "published": False,
+                    "reason": "Market observation publication exception",
+                    "error": str(exc),
+                }
+        else:
+            pub_res = {
+                "status": "SKIPPED_DISABLED",
+                "published": False,
+                "reason": "Publisher disabled in configuration",
+            }
+
+        observation_status = pub_res.get("status")
+
+        return {
+            "observation": True,
+            "blocked": False,
+            "status": observation_status,
+            "decision": "NO TRADE",
+            "reason": blocked.reason,
+            "detail": f"No authorized production candidate for {self.symbol} {canonical_tf}: {blocked.detail}",
+            "symbol": self.symbol,
+            "interval": canonical_tf,
+            "timeframe": canonical_tf,
+            "candle_timestamp": closed_ts_iso,
+            "decision_timestamp": observation.observation_timestamp_utc,
+            "record": {
+                "observation_id": observation.observation_id,
+                "decision": "NO TRADE",
+                "symbol": self.symbol,
+                "interval": canonical_tf,
+                "timeframe": canonical_tf,
+                "reason": blocked.reason,
+                "candidate_id": None,
+                "authorized": False,
+                "market_fresh": True,
+            },
+            "publication": observation.to_contract_v1_payload(),
+            "publish_result": pub_res,
+            "market_freshness": {
+                "fresh": True,
+                "reason": freshness.get("reason"),
+                "age_seconds": freshness.get("age_seconds"),
+                "candle_timestamp": freshness.get("candle_timestamp"),
+            },
+        }
+
     def tick(self, reference_now: datetime.datetime | None = None) -> dict[str, Any]:
         """Execute one continuous orchestration tick across all configured canonical timeframes."""
         if not self._lock.acquire(blocking=False):
@@ -1993,7 +2167,12 @@ class ContinuousLiveRuntime:
                 # independently on each tick so a blocked timeframe reports its own
                 # BLOCKED/NO-TRADE result here and automatically recovers when its
                 # prerequisite (qualified candidate) becomes available, without affecting
-                # any other timeframe's evaluation or publication.
+                # any other timeframe's evaluation or publication. A BLOCKED startup
+                # readiness result (e.g. PromotionUnavailable) is an isolation boundary
+                # and an operational diagnosis, never a reason to skip this timeframe's
+                # market evaluation and publication attempt at tick level:
+                # candidate-less timeframes still produce their own truthful NO_TRADE
+                # market observation below.
 
                 # 1. Acquire market data snapshot for timeframe
                 try:
@@ -2054,6 +2233,53 @@ class ContinuousLiveRuntime:
 
                 # 4. Construct 4-field deduplication key
                 dedup_key = (self.symbol, canonical_tf, closed_ts_iso, cand_id)
+
+                if isinstance(resolved, ProductionBlocked):
+                    # 5. Deduplication check BEFORE evaluation (same semantics as
+                    # the canonical path: only healthy prior outcomes dedup).
+                    if dedup_key in self._evaluated_candles:
+                        tick_evaluations[canonical_tf] = {
+                            "status": "SKIPPED_DEDUPLICATED",
+                            "reason": "candle_already_evaluated",
+                            "candle_timestamp": closed_ts_iso,
+                            "candidate_id": cand_id,
+                            "timeframe": canonical_tf,
+                        }
+                        continue
+
+                    # Candidate qualification is mandatory to ACT on the market
+                    # (BUY/SELL require an authorized production candidate), but it
+                    # must not suppress this timeframe's own market evaluation and
+                    # publication outcome. Evaluated against the timeframe's real
+                    # closed-candle slice below, the honest outcome is a NO_TRADE
+                    # market observation: publishable when the data is fresh and
+                    # closed, fail-closed (blocked, unpublished) otherwise.
+                    result = self._evaluate_market_observation_no_trade(
+                        canonical_tf=canonical_tf,
+                        eval_df=eval_df,
+                        closed_ts_iso=closed_ts_iso,
+                        blocked=resolved,
+                        reference_now=ref_now,
+                    )
+                    tick_evaluations[canonical_tf] = result
+
+                    # Add the deduplication key ONLY after a healthy observation
+                    # evaluation; unhealthy outcomes (e.g. failed publication or
+                    # stale data) retry on the next tick without suppression.
+                    if self._is_healthy_evaluation(
+                        result,
+                        expected_timeframe=canonical_tf,
+                        expected_symbol=self.symbol,
+                        expected_candidate_id=cand_id,
+                    ):
+                        self._evaluated_candles.add(dedup_key)
+                        self._last_successful_evaluation_at_utc = ref_now.isoformat()
+                        pub_obs_res = result.get("publish_result")
+                        if pub_obs_res and pub_obs_res.get("published") is True:
+                            self._last_successful_publication_at_utc = ref_now.isoformat()
+                    else:
+                        self._last_failure_reason = result.get("reason") or "OBSERVATION_UNHEALTHY"
+                    continue
 
                 # 5. Deduplication check BEFORE evaluation
                 if dedup_key in self._evaluated_candles:

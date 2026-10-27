@@ -180,17 +180,19 @@ def test_mismatched_candidate_scope_rejection():
 
 
 def test_render_worker_configuration_truthfulness():
-    """Verify render.yaml worker configuration runs all seven canonical timeframes
-    independently, with the verified 1D candidate explicitly bound ONLY to 1D."""
+    """Verify render.yaml runs all seven canonical timeframes with only the verified 1D candidate explicitly bound."""
     render_yaml_path = Path("render.yaml")
     assert render_yaml_path.exists()
     content = render_yaml_path.read_text(encoding="utf-8")
 
     assert "--timeframes 1m,5m,15m,30m,1H,4H,1D" in content
+    # Only the real, persisted, qualified candidate is explicitly bound to 1D;
+    # it must never be copied to other timeframes.
     assert "--candidate-id 1D=cand_moving_average_1d_verified_20261020" in content
-    # No cross-timeframe borrowing: the 1D candidate must not be mapped onto 5m.
-    assert "5m=cand_moving_average_1d_verified_20261020" not in content
     assert "5m=cand_moving_average_5m" not in content
+    assert "5m=cand_moving_average_1d_verified_20261020" not in content
+    assert "1m=cand_moving_average_1d_verified_20261020" not in content
+    assert "15m=cand_moving_average_1d_verified_20261020" not in content
 
 
 # ==============================================================================
