@@ -31,11 +31,13 @@ def test_render_yaml_configuration() -> None:
     assert "env: python" in content
     assert "run_live_execution.py --continuous" in content
     assert "--symbol XAUUSD" in content
-    assert "--timeframes 1D" in content
-    assert "--timeframes 1m,5m,15m,30m,1H,4H,1D" not in content
-    # Exact timeframe→candidate mapping: substrings would vacuously match other IDs.
-    assert "--candidate-id cand_moving_average_1d_verified_20261020" in content
+    # All canonical timeframes must run independently; only the known 1D
+    # candidate is explicitly bound. Missing candidates on other frames must
+    # not be disguised by mapping or copying the 1D candidate.
+    assert "--timeframes 1m,5m,15m,30m,1H,4H,1D" in content
+    assert "--candidate-id 1D=cand_moving_average_1d_verified_20261020" in content
     assert "5m=cand_moving_average_5m" not in content
+    assert "15m=cand_moving_average_1d_verified_20261020" not in content
     assert "--publish" in content
     assert "PROJECT2_PUBLISH_ENABLED" in content
     assert "PROJECT2_PUBLISH_URL" in content
