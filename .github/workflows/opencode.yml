@@ -3,6 +3,8 @@ name: OpenCode End-to-End Trading Pipeline Repair
 on:
   pull_request:
     types: [opened, synchronize, reopened]
+  issue_comment:
+    types: [created]
 
 permissions:
   contents: write
@@ -11,14 +13,42 @@ permissions:
 
 jobs:
   repair:
-    if: github.event.pull_request.head.repo.full_name == github.repository
+    if: |
+      (github.event_name == 'pull_request' &&
+       github.event.pull_request.head.repo.full_name == github.repository &&
+       github.actor != 'github-actions[bot]') ||
+      (github.event_name == 'issue_comment' &&
+       github.event.issue.pull_request &&
+       contains(github.event.comment.body, '/opencode') &&
+       github.actor == github.repository_owner)
     runs-on: ubuntu-latest
     timeout-minutes: 45
     steps:
+      - name: Resolve pull request head
+        id: resolve-pr
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const number = context.payload.pull_request?.number ?? context.payload.issue?.number;
+            if (!number) {
+              core.setFailed("No pull request number is available in this event.");
+              return;
+            }
+            const { data: pr } = await github.rest.pulls.get({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              pull_number: number,
+            });
+            if (pr.head.repo?.full_name !== `${context.repo.owner}/${context.repo.repo}`) {
+              core.setFailed("Refusing to run OpenCode on a fork-owned branch.");
+              return;
+            }
+            core.setOutput("head_ref", pr.head.ref);
+            core.setOutput("head_sha", pr.head.sha);
       - name: Checkout pull request head
         uses: actions/checkout@v4
         with:
-          ref: ${{ github.event.pull_request.head.ref }}
+          ref: ${{ steps.resolve-pr.outputs.head_ref }}
           persist-credentials: true
 
       - name: Configure Git identity
