@@ -126,6 +126,28 @@ def make_tf_market_data(start_time="2025-01-01 10:00", timeframe="5m", count=10)
     })
 
 
+def make_fresh_tf_data(timeframe: str, ref_now: datetime.datetime, count: int = 10) -> pd.DataFrame:
+    """Hermetic fresh candle slice for a timeframe, mirroring real provider shape.
+
+    The last row is the currently OPEN candle (opens at ref_now). The second-to-last
+    candle opens one duration earlier and is therefore CLOSED by ref_now, and every
+    closed candle's age is within duration + max_age tolerance."""
+    duration = {
+        "1m": 60, "5m": 300, "15m": 900, "30m": 1800,
+        "1H": 3600, "4H": 14400, "1D": 86400,
+    }[timeframe]
+    dates = [ref_now - datetime.timedelta(seconds=duration * i) for i in range(count - 1, -1, -1)]
+    prices = [2000.0 + (i * 2.0) for i in range(count)]
+    return pd.DataFrame({
+        "openTime": [d.isoformat() for d in dates],
+        "open": [p - 1.0 for p in prices],
+        "high": [p + 3.0 for p in prices],
+        "low": [p - 2.0 for p in prices],
+        "close": prices,
+        "timestamp": dates,
+    })
+
+
 # -----------------------------------------------------------------------------
 # Closed-candle tests (1-7)
 # -----------------------------------------------------------------------------
@@ -1070,13 +1092,21 @@ def test_blocked_timeframe_does_not_suppress_other_timeframes_publication(tmp_pa
     cont_runtime.verify_startup_readiness()
     tick_res = cont_runtime.tick(reference_now=now_dt)
 
-    # 15m is independently blocked with its own reason; no publication fabricated for it.
+    # 15m is independently evaluated on its own real candle slice; with no
+    # candidate of its own it fails closed for ACTIONS and publishes its own
+    # truthful NO_TRADE market observation (never claiming the 5m candidate).
     eval_15m = tick_res["evaluations"]["15m"]
-    assert eval_15m["blocked"] is True
-    assert eval_15m["reason"] == "PromotionUnavailable"
+    assert eval_15m.get("observation") is True
+    assert eval_15m.get("blocked") is False
+    assert eval_15m.get("decision") == "NO TRADE"
+    assert eval_15m.get("candidate_id") is None
+    assert eval_15m.get("reason") == "PromotionUnavailable"
+    assert eval_15m.get("publish_result", {}).get("published") is True
+    assert eval_15m.get("publication", {}).get("signal", {}).get("decision") == "NO TRADE"
+    assert eval_15m.get("publication", {}).get("provenance", {}).get("authorized") is False
 
     # 5m evaluated independently and its valid decision was delivered to P2
-    # even though the 15m timeframe is blocked.
+    # even without the 15m candidate.
     eval_5m = tick_res["evaluations"]["5m"]
     assert eval_5m["blocked"] is False
     assert eval_5m["symbol"] == "XAUUSD"
@@ -1086,21 +1116,26 @@ def test_blocked_timeframe_does_not_suppress_other_timeframes_publication(tmp_pa
     assert eval_5m["publish_result"]["published"] is True
     assert eval_5m["publish_result"]["status"] == "PUBLISHED"
 
-    # Exactly one publisher call: only 5m's own decision was delivered.
-    assert mock_publisher.publish.call_count == 1
+    # Both timeframes reached the single publisher path independently.
+    assert mock_publisher.publish.call_count == 2
 
 
 def test_all_seven_configured_timeframes_independently_attempted(tmp_path: Path) -> None:
     """Acceptance: all seven canonical timeframes are configured and independently attempted;
-    candidate absence yields per-timeframe BLOCKED results without crashing the worker."""
+    candidate absence yields per-timeframe truthful NO_TRADE observations without crashing
+    the worker."""
+    now_dt = datetime.datetime.now(datetime.timezone.utc)
     cont_runtime = ContinuousLiveRuntime(
         symbol="XAUUSD",
         timeframes=["1m", "5m", "15m", "30m", "1H", "4H", "1D"],
         poll_interval=0.0,
         research_dir=tmp_path,
+        store_path=tmp_path / "decisions.json",
+        snapshot_path=tmp_path / "snapshots.json",
         candidate_ids={"1D": "missing_1d"},
         publish=False,
         persist=False,
+        market_data_loaders=lambda tf: make_fresh_tf_data(tf, now_dt),
     )
 
     readiness = cont_runtime.verify_startup_readiness()
@@ -1108,13 +1143,19 @@ def test_all_seven_configured_timeframes_independently_attempted(tmp_path: Path)
     assert readiness["1m"]["status"] == "BLOCKED"
     assert readiness["1D"]["status"] == "BLOCKED"
 
-    now_dt = datetime.datetime.now(datetime.timezone.utc)
     tick_res = cont_runtime.tick(reference_now=now_dt)
     evaluations = tick_res["evaluations"]
     assert set(evaluations.keys()) == {"1m", "5m", "15m", "30m", "1H", "4H", "1D"}
     for tf in ("1m", "5m", "15m", "30m", "1H", "4H", "1D"):
-        assert evaluations[tf]["blocked"] is True, tf
-        assert evaluations[tf]["reason"] == "PromotionUnavailable", tf
+        # Each timeframe publishes its own truthful NO_TRADE observation when no
+        # authorized candidate exists (publication disabled in this test), with
+        # the candidate blocker honestly disclosed in its own result.
+        assert evaluations[tf].get("observation") is True, tf
+        assert evaluations[tf].get("blocked") is False, tf
+        assert evaluations[tf].get("decision") == "NO TRADE", tf
+        assert evaluations[tf].get("candidate_id") is None, tf
+        assert evaluations[tf].get("reason") == "PromotionUnavailable", tf
+        assert evaluations[tf].get("publish_result", {}).get("status") == "SKIPPED_DISABLED", tf
 
     # The runtime is still alive and will recover a timeframe automatically when its
     # prerequisite becomes available without any restart.
@@ -1173,16 +1214,21 @@ def test_stale_timeframe_readiness_cache_invalidation_on_failed_preflight(tmp_pa
 
 def test_all_blocked_timeframes_do_not_abort_worker(tmp_path: Path) -> None:
     """A worker with 0 READY timeframes must NOT crash: each timeframe independently
-    reports its own BLOCKED reason on preflight and on every tick."""
+    reports its own truthful outcome on preflight and on every tick."""
+    now_dt = datetime.datetime.now(datetime.timezone.utc)
     cont_runtime = ContinuousLiveRuntime(
         symbol="XAUUSD",
         timeframes=["1m", "15m"],
         research_dir=tmp_path,
+        store_path=tmp_path / "decisions.json",
+        snapshot_path=tmp_path / "snapshots.json",
         candidate_ids={
             "1m": "missing_1m",
             "15m": "missing_15m",
         },
         publish=False,
+        persist=False,
+        market_data_loaders=lambda tf: make_fresh_tf_data(tf, now_dt),
     )
 
     # Preflight must NOT raise: candidate unavailability is per-timeframe.
@@ -1192,13 +1238,18 @@ def test_all_blocked_timeframes_do_not_abort_worker(tmp_path: Path) -> None:
     assert readiness["15m"]["status"] == "BLOCKED"
     assert readiness["15m"]["reason_code"] == "PromotionUnavailable"
 
-    # Continuous ticks proceed and each timeframe reports its own blocked result.
-    now_dt = datetime.datetime.now(datetime.timezone.utc)
+    # Continuous ticks proceed and each timeframe produces its own truthful
+    # NO_TRADE observation with the missing-candidate blocker disclosed
+    # (publication disabled in this test).
     tick_res = cont_runtime.tick(reference_now=now_dt)
-    assert tick_res["evaluations"]["1m"]["blocked"] is True
-    assert tick_res["evaluations"]["1m"]["reason"] == "PromotionUnavailable"
-    assert tick_res["evaluations"]["15m"]["blocked"] is True
-    assert tick_res["evaluations"]["15m"]["reason"] == "PromotionUnavailable"
+    assert tick_res["evaluations"]["1m"].get("observation") is True
+    assert tick_res["evaluations"]["1m"].get("blocked") is False
+    assert tick_res["evaluations"]["1m"].get("decision") == "NO TRADE"
+    assert tick_res["evaluations"]["1m"].get("reason") == "PromotionUnavailable"
+    assert tick_res["evaluations"]["15m"].get("observation") is True
+    assert tick_res["evaluations"]["15m"].get("blocked") is False
+    assert tick_res["evaluations"]["15m"].get("decision") == "NO TRADE"
+    assert tick_res["evaluations"]["15m"].get("reason") == "PromotionUnavailable"
 
     # The rejection remains for publish-mode misuse: publishing requested while the
     # publisher configuration is unusable is a process-level failure.

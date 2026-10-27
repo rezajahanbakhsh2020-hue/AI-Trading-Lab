@@ -67,12 +67,15 @@ def test_startup_preflight_reports_blocked_timeframe_without_aborting_worker(tmp
     assert readiness["5m"]["reason_code"] == "PromotionUnavailable"
 
     # The continuous loop proceeds and each tick reports the blocked timeframe
-    # without aborting the worker.
+    # without aborting the worker. The fixture's candles are stale relative to
+    # real time, so the timeframe fails closed on the freshness/closure gate,
+    # with the candidate blocker honestly disclosed in blocked_state.
     ticks = cont.run_ticks(1)
     assert len(ticks) == 1
     eval_5m = ticks[0]["evaluations"]["5m"]
     assert eval_5m["blocked"] is True
-    assert eval_5m["reason"] == "PromotionUnavailable"
+    assert eval_5m["reason"] == "stale_market_data"
+    assert eval_5m["blocked_state"]["reason"] == "PromotionUnavailable"
 
 
 def test_startup_preflight_accepts_valid_authoritative_promoted_candidate(tmp_path) -> None:
