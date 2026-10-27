@@ -53,7 +53,8 @@ def build_live_visual_status(snapshot: Mapping[str, Any]) -> go.Figure:
 
     decision_status = (
         "ACTIONABLE"
-        if signal == "BUY" and trend == "UP"
+        if (signal == "BUY" and trend == "UP")
+        or (signal == "SELL" and trend == "DOWN")
         else "MONITOR"
     )
 

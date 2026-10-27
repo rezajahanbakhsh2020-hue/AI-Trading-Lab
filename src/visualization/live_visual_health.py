@@ -51,7 +51,7 @@ def build_live_visual_health(snapshot: Mapping[str, Any]) -> go.Figure:
         ("MARKET STATE", market_state != "UNKNOWN"),
         ("CANDLE DATA", candle_count > 0),
         ("TREND STATE", trend != "INSUFFICIENT DATA"),
-        ("SIGNAL STATE", signal in {"BUY", "NO TRADE"}),
+        ("SIGNAL STATE", signal in {"BUY", "SELL", "NO TRADE"}),
     ]
 
     labels = [label for label, _ in checks]

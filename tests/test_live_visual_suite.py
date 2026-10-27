@@ -162,3 +162,26 @@ def test_stale_quote_is_visible():
     )
 
     assert "STALE" in html
+
+
+def test_sell_visual_suite_shows_active_setup():
+    snapshot = sample_snapshot()
+    snapshot.update(
+        {
+            "signal": -1,
+            "signal_label": "SELL",
+            "trend": "DOWN",
+        }
+    )
+
+    figure = build_live_visual_suite(
+        sample_candles(),
+        snapshot,
+    )
+
+    html = figure.to_html(
+        include_plotlyjs=False
+    )
+
+    assert "SELL" in html
+    assert "TRADE SETUP ACTIVE" in html

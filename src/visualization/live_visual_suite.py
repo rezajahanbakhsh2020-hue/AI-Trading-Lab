@@ -66,6 +66,9 @@ def _decision_text(
     if signal_label == "BUY":
         return "BUY — TRADE SETUP ACTIVE"
 
+    if signal_label == "SELL":
+        return "SELL — TRADE SETUP ACTIVE"
+
     return "NO TRADE — WAIT"
 
 

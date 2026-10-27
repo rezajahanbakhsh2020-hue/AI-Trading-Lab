@@ -605,6 +605,10 @@ def _render_dashboard() -> None:
         st.success(
             "BUY — active trade setup is visible."
         )
+    elif signal == "SELL":
+        st.success(
+            "SELL — active trade setup is visible."
+        )
     else:
         st.info(
             "NO TRADE — waiting for an active setup."

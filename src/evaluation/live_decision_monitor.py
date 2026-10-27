@@ -38,6 +38,12 @@ def monitor_live_decision_history(
         if record.get("signal_label") == "BUY"
     )
 
+    sell_count = sum(
+        1
+        for record in records
+        if record.get("signal_label") == "SELL"
+    )
+
     no_trade_count = sum(
         1
         for record in records
@@ -55,6 +61,7 @@ def monitor_live_decision_history(
         "healthy": health["healthy"],
         "record_count": health["record_count"],
         "buy_count": buy_count,
+        "sell_count": sell_count,
         "no_trade_count": no_trade_count,
         "stale_quote_count": stale_count,
         "latest_timestamp": (
@@ -95,6 +102,7 @@ def validate_live_decision_monitor(
         "healthy",
         "record_count",
         "buy_count",
+        "sell_count",
         "no_trade_count",
         "stale_quote_count",
         "latest_timestamp",
@@ -125,6 +133,7 @@ def validate_live_decision_monitor(
     for field in (
         "record_count",
         "buy_count",
+        "sell_count",
         "no_trade_count",
         "stale_quote_count",
     ):

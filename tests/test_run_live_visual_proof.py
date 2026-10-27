@@ -248,3 +248,64 @@ def test_live_visual_proof_fails_when_unauthorized(monkeypatch):
 
     with pytest.raises(ProductionRuntimeAuthorizationError):
         run_live_visual_proof.run_live_visual_proof()
+
+
+def test_live_visual_proof_marks_sell_snapshot_actionable(monkeypatch, tmp_path):
+    closes = [2100.0 - float(i) for i in range(50)]
+    data = pd.DataFrame(
+        {
+            "timestamp": pd.date_range(
+                pd.Timestamp.now(tz="UTC") - pd.Timedelta(minutes=5 * len(closes)),
+                periods=len(closes),
+                freq="5min",
+            ),
+            "open": closes,
+            "high": [c + 2.0 for c in closes],
+            "low": [c - 2.0 for c in closes],
+            "close": closes,
+            "volume": [100.0] * len(closes),
+            "tickVolume": [100.0] * len(closes),
+            "isOpen": [False] * len(closes),
+        }
+    )
+
+    ev = make_promoted_evidence(PromotionStatus.PROMOTABLE)
+    gov_fp = qualify_research_evidence(ev, robustness_assessment=assess_research_robustness(ev)).decision_fingerprint
+    promoted = PromotedCandidateArtifact(
+        candidate_id="cand_vp_sell_01",
+        strategy_name="momentum",
+        strategy_version="1.0",
+        evidence=ev,
+        symbol="XAUUSD",
+        timeframe="5m",
+        operational_stability_score=0.85,
+        governance_decision_fingerprint=gov_fp,
+    )
+
+    monkeypatch.setattr(
+        "src.evaluation.live_runtime.resolve_promoted_candidate",
+        lambda *args, **kwargs: promoted,
+    )
+    monkeypatch.setattr(
+        "src.evaluation.live_runtime.DEFAULT_STORE_PATH",
+        tmp_path / "decision_history.json",
+    )
+
+    runtime = run_live_visual_proof.build_live_runtime(
+        data,
+        stable_strategy="momentum",
+        stability_score=0.85,
+    )
+
+    assert runtime.decision["decision"] == "SELL"
+
+    snapshot = run_live_visual_proof._build_runtime_snapshot(
+        data,
+        _make_mock_quote(),
+        runtime,
+    )
+
+    assert snapshot["signal"] == -1
+    assert snapshot["signal_label"] == "SELL"
+    assert snapshot["decision"] == "SELL"
+    assert snapshot["actionable"] is True

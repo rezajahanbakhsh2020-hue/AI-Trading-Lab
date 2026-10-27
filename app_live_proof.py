@@ -177,6 +177,20 @@ def build_human_explanation(proof: dict[str, Any]) -> str:
 
         return explanation
 
+    if signal_label == "SELL":
+        explanation = (
+            f"Signal is SELL while the detected trend is {trend_label}. "
+            f"Entry is {risk.get('entry_price')}."
+        )
+
+        if risk.get("stop_loss") is not None:
+            explanation += (
+                f" Stop Loss is {risk['stop_loss']} and "
+                f"Take Profit is {risk['take_profit']}."
+            )
+
+        return explanation
+
     return (
         f"Signal is {signal_label}. "
         f"Detected trend is {trend_label}. "

@@ -46,10 +46,22 @@ def build_live_explanation(
             reasons.append(
                 "The moving-average trend is DOWN."
             )
+    elif signal == -1:
+        reasons.append(
+            "Momentum is negative over the configured window."
+        )
+        if trend == "DOWN":
+            reasons.append(
+                "The moving-average trend is DOWN."
+            )
+        elif trend == "UP":
+            reasons.append(
+                "The moving-average trend is UP."
+            )
     elif signal == 0:
         reasons.append(
             "The current momentum condition does not "
-            "produce a BUY signal."
+            "produce a BUY or SELL signal."
         )
         if trend == "UP":
             reasons.append(
@@ -76,6 +88,11 @@ def build_live_explanation(
         action = "BUY"
         summary = (
             "A BUY condition is currently detected."
+        )
+    elif signal == -1 and entry_price is not None:
+        action = "SELL"
+        summary = (
+            "A SELL condition is currently detected."
         )
     else:
         action = "NO TRADE"
@@ -125,6 +142,7 @@ def validate_live_explanation(
 
     if explanation["action"] not in {
         "BUY",
+        "SELL",
         "NO TRADE",
     }:
         return False
