@@ -35,6 +35,25 @@ jobs:
           agent: build
           use_github_token: true
           prompt: |
+            MANDATORY OUTCOME-DRIVEN REPAIR — READ THIS FIRST
+
+            The previous run completed successfully but made only a test-only follow-up commit while the actual goal remains unmet. Do not repeat that failure mode. A green test suite and a report are not, by themselves, a repair.
+
+            Your primary deliverable is a concrete functional improvement to the actual P1 trading pipeline that advances the end-to-end objective. Start from the current HEAD, inspect the previous run's commit and report, and do not duplicate its test-only change. Trace the remaining blockers to their real causes, then implement every code-level fix that is genuinely actionable. Prefer a source-code fix with a focused regression test over adding more status tests.
+
+            You are authorized to use any sound engineering approach within the repository and permitted environment: refactor the affected path, repair orchestration or data handling, add a missing implementation, improve deterministic recovery, use available public documentation, and run safe local experiments. Do not wait for the owner to restate this instruction. Keep working iteratively; do not stop at the first green test, a passing audit, or a blocked timeframe.
+
+            Treat each blocker as one of two categories:
+            (1) A code defect that can be fixed here: fix it in source and prove the fix.
+            (2) A genuinely external prerequisite (for example, unavailable licensed market data, private deployment credentials, or unreachable deployed service): verify the exact limitation, exhaust safe local/code-side remedies, and clearly separate what can and cannot be completed here.
+            Do not mislabel a solvable code defect as an external blocker.
+
+            For missing 1m/5m market data, actively investigate whether the repository already supports a legitimate, reproducible, publicly accessible source or ingestion path. If a real source can be used safely and lawfully, implement the ingestion adapter/tests and record provenance, timestamps, licensing/source terms, and manifest integrity. Never substitute synthetic, fabricated, stale, or unverifiable prices for real market data; never present historical data as live data. If no suitable source is available without private credentials or unacceptable terms, document the exact source/access blocker rather than faking readiness.
+
+            Do not weaken qualification, robustness, walk-forward, timestamp, freshness, risk, authorization, or provenance rules to manufacture a READY state. Do not add tests alone as a substitute for fixing an actionable defect. A test-only commit is acceptable only if you have first demonstrated from concrete code-path evidence that no actionable implementation defect remains; the still-blocked end-to-end objective means you must then investigate the next legitimate data/ingestion/orchestration step instead of stopping.
+
+            Before finalizing, inspect the actual diff and explicitly answer: what functional behavior changed for users or the running pipeline? If the answer is "none; only tests/reports changed", continue working. Commit real, justified changes to this existing PR branch only. Never merge or close PR #99. Preserve manual merge control.
+
             MISSION AND OWNER AUTHORIZATION
 
             The repository owner explicitly authorizes actual implementation work on the existing PR #99. This authorization supersedes stale read-only, no-write, or pending-authorization statements in earlier audit comments and reports for the implementation work permitted below.
