@@ -961,6 +961,70 @@ def test_real_manifest_backed_15m_research_qualification(tmp_path):
     assert "FAILED_PARAMETER_SENSITIVITY" in {r.value for r in qualification.rejection_reasons}
     assert "FAILED_STATISTICAL_VALIDATION" in {r.value for r in qualification.rejection_reasons}
 
+@pytest.mark.parametrize(
+    ("subdir", "dataset_id"),
+    [
+        ("xauusd_15m", "ds_moving_average_15m"),
+        ("xauusd_30m", "ds_moving_average_30m"),
+        ("xauusd_1h", "ds_moving_average_1h"),
+        ("xauusd_4h", "ds_moving_average_4h"),
+    ],
+)
+def test_real_manifest_backed_datasets_fail_closed(tmp_path, subdir, dataset_id):
+    """15m/30m/1H/4H real datasets honestly fail qualification under unchanged policy.
+
+    Fail-closed regression across every manifest-backed non-daily timeframe:
+    none of these datasets may become releasable without genuine canonical
+    research that passes robustness. Never manufacture promotion for them.
+    """
+    from src.data.ingest_xauusd_15m import verify_dataset_and_manifest_integrity
+    from src.evaluation.research_constitution import (
+        ResearchHypothesis,
+        ExecutionAssumptions,
+        CodeProvenance,
+        WalkForwardProtocol,
+        HypothesisStatus,
+    )
+    from src.evaluation.research_runner import run_research_experiment, validate_and_prepare_dataset
+    from src.evaluation.research_robustness import assess_research_robustness
+    from src.evaluation.research_qualification import qualify_research_evidence
+
+    data_dir = Path("data/raw") / subdir
+    raw_df, manifest = verify_dataset_and_manifest_integrity(
+        data_dir / f"{dataset_id}.csv",
+        data_dir / f"{dataset_id}.manifest.json",
+        data_dir / f"{dataset_id}.commit.json",
+    )
+    assert manifest["dataset_id"] == dataset_id
+    scope = DatasetScope(
+        dataset_id=manifest["dataset_id"],
+        symbol=manifest["symbol"],
+        timeframe=manifest["timeframe"],
+        start_date=manifest["start_timestamp_utc"][:10],
+        end_date=manifest["end_timestamp_utc"][:10],
+    )
+    df = validate_and_prepare_dataset(raw_df, scope)
+    hypothesis = ResearchHypothesis(
+        statement=f"Moving Average 20/50 on actual manifest-backed XAUUSD {manifest['timeframe']} data",
+        methodology_version="1.0",
+        strategy_name="moving_average",
+        strategy_version="1.0",
+        dataset_scope=scope,
+        execution_assumptions=ExecutionAssumptions(0.0001, 0.0001, 10.0),
+        code_provenance=CodeProvenance("7b34bdf4f81d40abd4274ac41ebfe9f2b6222255"),
+        benchmark_reference="buy_and_hold",
+        parameters={"fast_window": 20, "slow_window": 50, "stop_loss_pct": 0.01, "take_profit_pct": 0.02},
+        walk_forward_protocol=WalkForwardProtocol(train_size=1000, test_size=250),
+        status=HypothesisStatus.ACCEPTED_FOR_RESEARCH,
+    )
+    evidence = run_research_experiment(hypothesis, df=df, persist_evidence=True, base_dir=tmp_path / "research")
+    robustness = assess_research_robustness(evidence)
+    qualification = qualify_research_evidence(evidence, robustness_assessment=robustness)
+    assert not qualification.qualified
+    assert evidence.promotion_status == PromotionStatus.REJECTED
+    assert "FAILED_PARAMETER_SENSITIVITY" in {r.value for r in qualification.rejection_reasons}
+    assert "FAILED_STATISTICAL_VALIDATION" in {r.value for r in qualification.rejection_reasons}
+
 def test_real_manifest_backed_daily_candidate_qualifies_without_policy_relaxation(tmp_path):
     """Qualify real 2025 data, create a genuine binding, preflight, authorize, and publish."""
     import numpy as np
