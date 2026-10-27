@@ -198,10 +198,17 @@ def test_timestamp_valued_end_bound_preserves_exact_instant():
 # -----------------------------------------------------------------------------
 
 def test_missing_dataset_resolution_fails_closed_without_substitution():
-    missing_timeframes = ["1m", "5m", "1d"]
-    for tf in missing_timeframes:
+    # 1m and 5m datasets are now genuinely manifest-backed
+    # (tests/test_ingest_xauusd_intervals.py). Fail-closed resolution without
+    # substitution is pinned via dataset ids that remain absent.
+    missing_ids = [
+        ("ds_moving_average_2m", "1D"),
+        ("ds_absent_moving_average_1m", "1m"),
+        ("ds_absent_moving_average_5m", "5m"),
+    ]
+    for dataset_id, tf in missing_ids:
         ds = DatasetScope(
-            dataset_id=f"ds_moving_average_{tf.lower()}",
+            dataset_id=dataset_id,
             symbol="XAUUSD",
             timeframe=tf,
             start_date="2025-01-01",
@@ -209,6 +216,19 @@ def test_missing_dataset_resolution_fails_closed_without_substitution():
         )
         with pytest.raises(FileNotFoundError, match="Unable to resolve exact approved dataset artifact"):
             resolve_historical_dataset(ds)
+
+
+def test_ingested_one_and_five_minute_datasets_resolve_without_substitution():
+    for tf in ("1m", "5m"):
+        ds = DatasetScope(
+            dataset_id=f"ds_moving_average_{tf}",
+            symbol="XAUUSD",
+            timeframe=tf,
+            start_date="2025-01-01",
+            end_date="2026-12-31",
+        )
+        df = resolve_historical_dataset(ds)
+        assert not df.empty
 
 
 def test_tracked_daily_2025_resolves_with_manifest_integrity():
@@ -624,7 +644,7 @@ def test_research_experiment_missing_dataset_returns_rejected_evidence():
         strategy_name="moving_average",
         strategy_version="1.0",
         dataset_scope=DatasetScope(
-            dataset_id="ds_moving_average_1m",  # missing
+            dataset_id="ds_moving_average_1m",  # scope window has no overlap with this dataset
             symbol="XAUUSD",
             timeframe="1m",
             start_date="2025-01-01",
@@ -881,7 +901,12 @@ def test_unauthorized_runtime_publishes_nothing(tmp_path):
 
 def test_seven_canonical_timeframes_independent_resolution():
     canonical_timeframes = ["1m", "5m", "15m", "30m", "1H", "4H", "1D"]
+    # 1m and 5m became manifest-backed via the MIT-licensed public
+    # getdata-finance source (see src/data/ingest_xauusd_intervals.py);
+    # their datasets resolve through the same strict identity checks.
     available_datasets = {
+        "1m": "ds_moving_average_1m",
+        "5m": "ds_moving_average_5m",
         "15m": "ds_moving_average_15m",
         "30m": "ds_moving_average_30m",
         "1H": "ds_moving_average_1h",
@@ -890,26 +915,18 @@ def test_seven_canonical_timeframes_independent_resolution():
     }
 
     for tf in canonical_timeframes:
-        if tf in available_datasets:
-            ds = DatasetScope(
-                dataset_id=available_datasets[tf],
-                symbol="XAUUSD",
-                timeframe=tf,
-                start_date="2025-01-01",
-                end_date="2026-12-31",
-            )
-            df = resolve_historical_dataset(ds)
-            assert not df.empty
-        else:
-            ds = DatasetScope(
-                dataset_id=f"ds_moving_average_{tf.lower()}",
-                symbol="XAUUSD",
-                timeframe=tf,
-                start_date="2025-01-01",
-                end_date="2026-12-31",
-            )
-            with pytest.raises(FileNotFoundError):
-                resolve_historical_dataset(ds)
+        ds = DatasetScope(
+            dataset_id=available_datasets[tf],
+            symbol="XAUUSD",
+            timeframe=tf,
+            start_date="2025-01-01",
+            end_date="2026-12-31",
+        )
+        # resolve_historical_dataset enforces manifest dataset_id/symbol/
+        # timeframe identity against the requested scope: each timeframe can
+        # only ever resolve its own artifact.
+        df = resolve_historical_dataset(ds)
+        assert not df.empty
 
 def test_real_manifest_backed_15m_research_qualification(tmp_path):
     """Evaluate real repository data using canonical research and unchanged policy."""
@@ -964,6 +981,8 @@ def test_real_manifest_backed_15m_research_qualification(tmp_path):
 @pytest.mark.parametrize(
     ("subdir", "dataset_id"),
     [
+        ("xauusd_1m", "ds_moving_average_1m"),
+        ("xauusd_5m", "ds_moving_average_5m"),
         ("xauusd_15m", "ds_moving_average_15m"),
         ("xauusd_30m", "ds_moving_average_30m"),
         ("xauusd_1h", "ds_moving_average_1h"),
@@ -971,11 +990,13 @@ def test_real_manifest_backed_15m_research_qualification(tmp_path):
     ],
 )
 def test_real_manifest_backed_datasets_fail_closed(tmp_path, subdir, dataset_id):
-    """15m/30m/1H/4H real datasets honestly fail qualification under unchanged policy.
+    """1m/5m/15m/30m/1H/4H real datasets honestly fail qualification under unchanged policy.
 
-    Fail-closed regression across every manifest-backed non-daily timeframe:
+    Fail-closed regression across every manifest-backed intraday timeframe:
     none of these datasets may become releasable without genuine canonical
     research that passes robustness. Never manufacture promotion for them.
+    The 1m/5m datasets are genuine MIT-licensed public-market data ingested via
+    src.data.ingest_xauusd_intervals (see tests/test_ingest_xauusd_intervals.py).
     """
     from src.data.ingest_xauusd_15m import verify_dataset_and_manifest_integrity
     from src.evaluation.research_constitution import (
