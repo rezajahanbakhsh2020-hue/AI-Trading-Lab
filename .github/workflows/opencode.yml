@@ -1,214 +1,214 @@
 name: OpenCode End-to-End Trading Pipeline Repair
 
 on:
-pull_request:
-types: [opened, synchronize, reopened]
+  pull_request:
+    types: [opened, synchronize, reopened]
 
 permissions:
-contents: write
-pull-requests: write
-issues: write
-id-token: write
+  contents: write
+  pull-requests: write
+  issues: write
+  id-token: write
 
 jobs:
-repair:
-if: github.event.pull_request.head.repo.full_name == github.repository
-runs-on: ubuntu-latest
-timeout-minutes: 45
-steps:
-- name: Checkout pull request head
-uses: actions/checkout@v4
-with:
-ref: ${{ github.event.pull_request.head.sha }}
-persist-credentials: true
+  repair:
+    if: github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - name: Checkout pull request head
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          persist-credentials: true
 
-  - name: Investigate and repair the canonical XAUUSD pipeline
-    uses: anomalyco/opencode/github@latest
-    with:
-      model: opencode/glm-5.3-flash-free
-      agent: build
-      prompt: |
-        MISSION AND OWNER AUTHORIZATION
+      - name: Investigate and repair the canonical XAUUSD pipeline
+        uses: anomalyco/opencode/github@latest
+        with:
+          model: opencode/glm-5.3-flash-free
+          agent: build
+          prompt: |
+            MISSION AND OWNER AUTHORIZATION
 
-        The repository owner explicitly authorizes actual implementation work on the existing PR #99. This authorization supersedes stale read-only, no-write, or pending-authorization statements in earlier audit comments and reports for the implementation work permitted below.
+            The repository owner explicitly authorizes actual implementation work on the existing PR #99. This authorization supersedes stale read-only, no-write, or pending-authorization statements in earlier audit comments and reports for the implementation work permitted below.
 
-        Do not merely audit, plan, or list issues. Inspect the current repository state, establish root causes, implement justified repairs, add regression tests, run the relevant checks, commit completed changes to the existing PR head branch, and report verifiable results. Continue iteratively until all safely actionable defects in scope are fixed or a concrete external prerequisite prevents further progress.
+            Do not merely audit, plan, or list issues. Inspect the current repository state, establish root causes, implement justified repairs, add regression tests, run the relevant checks, commit completed changes to the existing PR head branch, and report verifiable results. Continue iteratively until all safely actionable defects in scope are fixed or a concrete external prerequisite prevents further progress.
 
-        REPOSITORY AND CHANGE SCOPE
+            REPOSITORY AND CHANGE SCOPE
 
-        - Repository: rezajahanbakhsh2020-hue/AI-Trading-Lab.
-        - Existing PR: #99, "Repair Canonical XAUUSD Pipeline End-to-End".
-        - Expected head branch: rezajahanbakhsh2020-hue-patch-1. Verify the actual PR head, base, and SHA before editing. If the identity differs, do not guess or write to another branch.
-        - Make source-code, test, and strictly necessary P1 research-pipeline fixes on the existing PR branch only.
-        - Commit completed fixes to that branch and update PR #99 with an accurate evidence-based summary.
-        - Never merge or close PR #99.
-        - Do not create another branch or PR.
-        - Do not modify AI-Trading-Lab-Platform (P2). P2 source inspection is out of scope; use only the already documented P1 publication contract and existing P1 tests. Report any P2 issue only if supported by existing evidence.
-        - Do not change repository settings, secrets, credentials, deployment configuration, or production services.
-        - Do not send real production events, execute broker orders, or claim live delivery without direct evidence.
-        - If a write, commit, or test is blocked by actual permissions or environment limitations, report the exact failure and continue with other permitted work. Do not misrepresent a failed write as a completed repair.
+            - Repository: rezajahanbakhsh2020-hue/AI-Trading-Lab.
+            - Existing PR: #99, "Repair Canonical XAUUSD Pipeline End-to-End".
+            - Expected head branch: rezajahanbakhsh2020-hue-patch-1. Verify the actual PR head, base, and SHA before editing. If the identity differs, do not guess or write to another branch.
+            - Make source-code, test, and strictly necessary P1 research-pipeline fixes on the existing PR branch only.
+            - Commit completed fixes to that branch and update PR #99 with an accurate evidence-based summary.
+            - Never merge or close PR #99.
+            - Do not create another branch or PR.
+            - Do not modify AI-Trading-Lab-Platform (P2). P2 source inspection is out of scope; use only the already documented P1 publication contract and existing P1 tests. Report any P2 issue only if supported by existing evidence.
+            - Do not change repository settings, secrets, credentials, deployment configuration, or production services.
+            - Do not send real production events, execute broker orders, or claim live delivery without direct evidence.
+            - If a write, commit, or test is blocked by actual permissions or environment limitations, report the exact failure and continue with other permitted work. Do not misrepresent a failed write as a completed repair.
 
-        SYSTEM OWNERSHIP AND ARCHITECTURE
+            SYSTEM OWNERSHIP AND ARCHITECTURE
 
-        P1 owns research, governance, qualification, production authorization, market evaluation, canonical decisions, BUY/SELL/NO_TRADE, risk management, and publication.
+            P1 owns research, governance, qualification, production authorization, market evaluation, canonical decisions, BUY/SELL/NO_TRADE, risk management, and publication.
 
-        P2 is a separate integration gateway and presentation layer. It must not become the trading decision engine and must not be modified in this task.
+            P2 is a separate integration gateway and presentation layer. It must not become the trading decision engine and must not be modified in this task.
 
-        The canonical P1 pipeline is:
+            The canonical P1 pipeline is:
 
-        Evidence
-        -> Candidate/Hypothesis
-        -> Governance acceptance
-        -> Research execution
-        -> Qualification/promotion
-        -> Explicit binding resolution
-        -> DatasetScope + ExecutionAssumptions + CodeProvenance + WalkForward
-        -> ProductionRuntimeAuthorization
-        -> AuthorizedProductionRuntimeContext
-        -> LiveMarketEvaluation
-        -> evaluate_authorized_live_runtime()
-        -> CanonicalLiveDecision
-        -> Signal
-        -> Risk
-        -> Publisher
+            Evidence
+            -> Candidate/Hypothesis
+            -> Governance acceptance
+            -> Research execution
+            -> Qualification/promotion
+            -> Explicit binding resolution
+            -> DatasetScope + ExecutionAssumptions + CodeProvenance + WalkForward
+            -> ProductionRuntimeAuthorization
+            -> AuthorizedProductionRuntimeContext
+            -> LiveMarketEvaluation
+            -> evaluate_authorized_live_runtime()
+            -> CanonicalLiveDecision
+            -> Signal
+            -> Risk
+            -> Publisher
 
-        Preserve the ownership boundaries and fail-closed behavior throughout this chain.
+            Preserve the ownership boundaries and fail-closed behavior throughout this chain.
 
-        NON-NEGOTIABLE INVARIANTS
+            NON-NEGOTIABLE INVARIANTS
 
-        - The seven canonical timeframes are exactly 1m, 5m, 15m, 30m, 1H, 4H, and 1D.
-        - Every timeframe is independent and first-class. Never borrow another timeframe's candidate, dataset, health, evidence, readiness, authorization, or signal.
-        - Never introduce implicit defaults, hidden parameters, production.json fallbacks, legacy fallback paths, or UI/caller substitutes for canonical bindings.
-        - Never fabricate datasets, market prices, performance metrics, qualification evidence, timestamps, test results, or production-delivery proof.
-        - Never bypass or weaken governance, promotion, data integrity, exact UTC timestamp, non-overlapping IS/OOS, walk-forward, robustness, authorization, stability, risk, freshness, or provenance requirements to make a test pass.
-        - Stability values must be finite and non-boolean. Never silently substitute a default stability score.
-        - BUY, SELL, and NO_TRADE are valid decision outcomes. Never force a BUY or SELL merely to satisfy a test.
-        - NO_TRADE must not be used to conceal invalid or stale market data, missing authorization, failed integrity checks, or an unready production pipeline.
-        - Event time, candle-close time, data-feed freshness time, and publication time are distinct concepts. Do not conflate them.
-        - Keep all changes limited to the P1 scope above. Preserve manual merge only.
+            - The seven canonical timeframes are exactly 1m, 5m, 15m, 30m, 1H, 4H, and 1D.
+            - Every timeframe is independent and first-class. Never borrow another timeframe's candidate, dataset, health, evidence, readiness, authorization, or signal.
+            - Never introduce implicit defaults, hidden parameters, production.json fallbacks, legacy fallback paths, or UI/caller substitutes for canonical bindings.
+            - Never fabricate datasets, market prices, performance metrics, qualification evidence, timestamps, test results, or production-delivery proof.
+            - Never bypass or weaken governance, promotion, data integrity, exact UTC timestamp, non-overlapping IS/OOS, walk-forward, robustness, authorization, stability, risk, freshness, or provenance requirements to make a test pass.
+            - Stability values must be finite and non-boolean. Never silently substitute a default stability score.
+            - BUY, SELL, and NO_TRADE are valid decision outcomes. Never force a BUY or SELL merely to satisfy a test.
+            - NO_TRADE must not be used to conceal invalid or stale market data, missing authorization, failed integrity checks, or an unready production pipeline.
+            - Event time, candle-close time, data-feed freshness time, and publication time are distinct concepts. Do not conflate them.
+            - Keep all changes limited to the P1 scope above. Preserve manual merge only.
 
-        REQUIRED INVESTIGATION AND IMPLEMENTATION
+            REQUIRED INVESTIGATION AND IMPLEMENTATION
 
-        1. Establish the exact current state.
+            1. Establish the exact current state.
 
-        Read the current branch SHA, PR diff, workflow run context, and relevant existing audit comments. Reuse verified findings and prior test evidence where still applicable. Do not repeat broad inventories without a reason. Do not assume old SHAs or old audit statements describe the current branch.
+            Read the current branch SHA, PR diff, workflow run context, and relevant existing audit comments. Reuse verified findings and prior test evidence where still applicable. Do not repeat broad inventories without a reason. Do not assume old SHAs or old audit statements describe the current branch.
 
-        2. Repair the final-release decision contract.
+            2. Repair the final-release decision contract.
 
-        Inspect src/evaluation/final_release.py, src/evaluation/live_release_gate.py, their callers, configuration, and tests. Verify whether the implementation incorrectly requires BUY, mishandles SELL or NO_TRADE, or allows an invalid market state to pass release checks.
+            Inspect src/evaluation/final_release.py, src/evaluation/live_release_gate.py, their callers, configuration, and tests. Verify whether the implementation incorrectly requires BUY, mishandles SELL or NO_TRADE, or allows an invalid market state to pass release checks.
 
-        Implement the intended contract:
-        - BUY and SELL are accepted only when all required canonical decision, authorization, risk, data-integrity, and freshness gates pass.
-        - NO_TRADE is a valid first-class outcome when the canonical decision rules genuinely produce it and all mandatory release gates pass.
-        - Stale or invalid market data, missing authorization, invalid timestamps, failed integrity checks, or other mandatory gate failures must remain blocked; they must not become releasable merely by returning NO_TRADE.
-        - Preserve existing documented thresholds and governance requirements. Do not invent a new stability threshold or alter a threshold without an explicit, repository-supported requirement.
-        - Add regression tests for BUY, SELL, legitimate NO_TRADE, and blocked invalid/stale-data cases.
-        - Trace the final-release result through its real callers to ensure no downstream layer silently reintroduces a BUY-only restriction or bypasses a gate.
+            Implement the intended contract:
+            - BUY and SELL are accepted only when all required canonical decision, authorization, risk, data-integrity, and freshness gates pass.
+            - NO_TRADE is a valid first-class outcome when the canonical decision rules genuinely produce it and all mandatory release gates pass.
+            - Stale or invalid market data, missing authorization, invalid timestamps, failed integrity checks, or other mandatory gate failures must remain blocked; they must not become releasable merely by returning NO_TRADE.
+            - Preserve existing documented thresholds and governance requirements. Do not invent a new stability threshold or alter a threshold without an explicit, repository-supported requirement.
+            - Add regression tests for BUY, SELL, legitimate NO_TRADE, and blocked invalid/stale-data cases.
+            - Trace the final-release result through its real callers to ensure no downstream layer silently reintroduces a BUY-only restriction or bypasses a gate.
 
-        3. Repair freshness and candle-closure semantics.
+            3. Repair freshness and candle-closure semantics.
 
-        Trace market-data ingestion, candle timestamps, closed-candle selection, live evaluation, release gating, and publication timestamp validation.
+            Trace market-data ingestion, candle timestamps, closed-candle selection, live evaluation, release gating, and publication timestamp validation.
 
-        Determine separately:
-        - Whether the feed is fresh enough for the intended operation.
-        - Whether the selected candle is closed when the strategy requires a closed candle.
-        - Whether event and publication timestamps are valid, timezone-aware, and correctly interpreted.
-        - Whether future-dated, missing, naive, malformed, or stale timestamps fail at the appropriate boundary.
-        - Whether daily candle handling and intraday handling follow the same explicit contract without assuming identical candle-close behavior.
+            Determine separately:
+            - Whether the feed is fresh enough for the intended operation.
+            - Whether the selected candle is closed when the strategy requires a closed candle.
+            - Whether event and publication timestamps are valid, timezone-aware, and correctly interpreted.
+            - Whether future-dated, missing, naive, malformed, or stale timestamps fail at the appropriate boundary.
+            - Whether daily candle handling and intraday handling follow the same explicit contract without assuming identical candle-close behavior.
 
-        Fix confirmed root causes instead of merely raising maximum age limits, removing freshness checks, or treating an old candle as current. Add deterministic tests covering the seven canonical timeframes, boundary conditions, timezone behavior, stale data, future timestamps, and closed versus unclosed candles as appropriate.
+            Fix confirmed root causes instead of merely raising maximum age limits, removing freshness checks, or treating an old candle as current. Add deterministic tests covering the seven canonical timeframes, boundary conditions, timezone behavior, stale data, future timestamps, and closed versus unclosed candles as appropriate.
 
-        4. Repair publication and retry behavior.
+            4. Repair publication and retry behavior.
 
-        Inspect the existing P1 publisher, worker loop, publication configuration validation, NO_TRADE handling, timestamp handling, and daily deduplication/retry logic.
+            Inspect the existing P1 publisher, worker loop, publication configuration validation, NO_TRADE handling, timestamp handling, and daily deduplication/retry logic.
 
-        Verify and fix locally actionable defects concerning:
-        - Missing or malformed publication configuration and clear failure reporting.
-        - Distinguishing publication success from attempted publication.
-        - Correct behavior when the canonical decision is NO_TRADE.
-        - Retry behavior after a failed publication.
-        - Daily-candle deduplication that might suppress a legitimate retry after a failed delivery.
-        - Idempotency and duplicate prevention without silently losing an undelivered event.
-        - Correct separation of event timestamps and publication timestamps.
-        - Accurate operational status and logs without exposing credentials.
+            Verify and fix locally actionable defects concerning:
+            - Missing or malformed publication configuration and clear failure reporting.
+            - Distinguishing publication success from attempted publication.
+            - Correct behavior when the canonical decision is NO_TRADE.
+            - Retry behavior after a failed publication.
+            - Daily-candle deduplication that might suppress a legitimate retry after a failed delivery.
+            - Idempotency and duplicate prevention without silently losing an undelivered event.
+            - Correct separation of event timestamps and publication timestamps.
+            - Accurate operational status and logs without exposing credentials.
 
-        Do not assume that a valid but old event timestamp is rejected by a validator unless the actual code proves that behavior. Identify the specific layer that enforces freshness.
+            Do not assume that a valid but old event timestamp is rejected by a validator unless the actual code proves that behavior. Identify the specific layer that enforces freshness.
 
-        The repository's Render configuration has previously declared a P2 publish URL and PROJECT2_API_KEY as an external environment setting. Do not read, reveal, change, or manufacture secrets. If deployment credentials or network access are unavailable, state exactly what remains unverified. Do not send a production event as a test.
+            The repository's Render configuration has previously declared a P2 publish URL and PROJECT2_API_KEY as an external environment setting. Do not read, reveal, change, or manufacture secrets. If deployment credentials or network access are unavailable, state exactly what remains unverified. Do not send a production event as a test.
 
-        5. Audit all seven timeframes independently.
+            5. Audit all seven timeframes independently.
 
-        For each of 1m, 5m, 15m, 30m, 1H, 4H, and 1D, inspect the evidence already present in the repository and determine the actual state of:
-        - Canonical raw data and manifest integrity.
-        - Timestamp units, exact UTC timestamps, and partition boundaries.
-        - Candidate and hypothesis identity.
-        - Governance acceptance.
-        - Research execution and evidence provenance.
-        - IS/OOS separation and walk-forward evidence.
-        - Robustness and promotion qualification.
-        - Explicit candidate binding.
-        - Production authorization and stability.
-        - Live evaluation and final-release eligibility.
-        - Publication eligibility and timeframe isolation.
+            For each of 1m, 5m, 15m, 30m, 1H, 4H, and 1D, inspect the evidence already present in the repository and determine the actual state of:
+            - Canonical raw data and manifest integrity.
+            - Timestamp units, exact UTC timestamps, and partition boundaries.
+            - Candidate and hypothesis identity.
+            - Governance acceptance.
+            - Research execution and evidence provenance.
+            - IS/OOS separation and walk-forward evidence.
+            - Robustness and promotion qualification.
+            - Explicit candidate binding.
+            - Production authorization and stability.
+            - Live evaluation and final-release eligibility.
+            - Publication eligibility and timeframe isolation.
 
-        Existing audit evidence indicates that raw datasets are present for 15m, 30m, 1H, and 4H; genuine 1m and 5m datasets were previously absent; and the 5m candidate evidence was previously reported as invalid or placeholder-shaped. Recheck the current branch before relying on these findings.
+            Existing audit evidence indicates that raw datasets are present for 15m, 30m, 1H, and 4H; genuine 1m and 5m datasets were previously absent; and the 5m candidate evidence was previously reported as invalid or placeholder-shaped. Recheck the current branch before relying on these findings.
 
-        Do not fabricate 1m or 5m data. Do not label a timeframe READY merely because a candidate or CSV exists. If genuine evidence or a candidate is missing, preserve BLOCKED status and explain the exact unmet prerequisite. Where the existing repository provides a valid reproducible research pipeline and genuine source data, repair the pipeline and run it only when safe and permitted; never rewrite evidence to force qualification.
+            Do not fabricate 1m or 5m data. Do not label a timeframe READY merely because a candidate or CSV exists. If genuine evidence or a candidate is missing, preserve BLOCKED status and explain the exact unmet prerequisite. Where the existing repository provides a valid reproducible research pipeline and genuine source data, repair the pipeline and run it only when safe and permitted; never rewrite evidence to force qualification.
 
-        6. Test the real code paths.
+            6. Test the real code paths.
 
-        Run focused regression tests for each changed component first. Then run relevant integration tests and the production-readiness entrypoint, including run_production_end_to_end.py if available and applicable.
+            Run focused regression tests for each changed component first. Then run relevant integration tests and the production-readiness entrypoint, including run_production_end_to_end.py if available and applicable.
 
-        Verify that:
-        - Tests exercise real decision and release gates rather than only isolated mocks.
-        - BUY, SELL, and NO_TRADE semantics are consistent.
-        - Invalid or stale market data cannot pass the final-release gate.
-        - Timeframes remain isolated.
-        - Publication failures and retries behave correctly.
-        - No governance or qualification gate has been bypassed.
-        - Existing tests are not weakened, deleted, skipped, or rewritten merely to achieve green CI.
+            Verify that:
+            - Tests exercise real decision and release gates rather than only isolated mocks.
+            - BUY, SELL, and NO_TRADE semantics are consistent.
+            - Invalid or stale market data cannot pass the final-release gate.
+            - Timeframes remain isolated.
+            - Publication failures and retries behave correctly.
+            - No governance or qualification gate has been bypassed.
+            - Existing tests are not weakened, deleted, skipped, or rewritten merely to achieve green CI.
 
-        Run the broader test suite if the available environment and time permit. Report exact commands, exit codes, and actual observed summaries. Distinguish tests executed in this run from historical CI results and from mocked or simulated integration tests.
+            Run the broader test suite if the available environment and time permit. Report exact commands, exit codes, and actual observed summaries. Distinguish tests executed in this run from historical CI results and from mocked or simulated integration tests.
 
-        7. Commit and document actual fixes.
+            7. Commit and document actual fixes.
 
-        Before committing, inspect the complete diff and repository status. Remove accidental artifacts and ensure all changes are in scope. Commit only justified P1 source, test, or strictly necessary research-pipeline changes to the verified existing PR branch.
+            Before committing, inspect the complete diff and repository status. Remove accidental artifacts and ensure all changes are in scope. Commit only justified P1 source, test, or strictly necessary research-pipeline changes to the verified existing PR branch.
 
-        Do not claim that a commit, test, readiness transition, or publication succeeded unless direct evidence confirms it. Update the PR summary or comment with the actual commits, changes, test results, remaining blockers, and readiness status. Do not leave a report that says no writes were authorized when this implementation authorization is in force.
+            Do not claim that a commit, test, readiness transition, or publication succeeded unless direct evidence confirms it. Update the PR summary or comment with the actual commits, changes, test results, remaining blockers, and readiness status. Do not leave a report that says no writes were authorized when this implementation authorization is in force.
 
-        REQUIRED FINAL REPORT
+            REQUIRED FINAL REPORT
 
-        Provide a concise, evidence-based report with these sections:
+            Provide a concise, evidence-based report with these sections:
 
-        A. Execution identity
-        - PR number, branch, base SHA, starting SHA, ending SHA, and commit SHAs actually created.
-        - Whether source changes were committed or whether a concrete permission/environment error prevented them.
+            A. Execution identity
+            - PR number, branch, base SHA, starting SHA, ending SHA, and commit SHAs actually created.
+            - Whether source changes were committed or whether a concrete permission/environment error prevented them.
 
-        B. Root causes and repairs
-        - Each confirmed root cause, its downstream impact, files changed, and the corresponding fix.
-        - Separate verified root causes from hypotheses and unresolved issues.
+            B. Root causes and repairs
+            - Each confirmed root cause, its downstream impact, files changed, and the corresponding fix.
+            - Separate verified root causes from hypotheses and unresolved issues.
 
-        C. Test evidence
-        - Exact commands and actual outcomes.
-        - Failures that remain, with relevant error details.
-        - Clearly distinguish tests executed now, existing CI evidence, mocks, and real service/deployment evidence.
+            C. Test evidence
+            - Exact commands and actual outcomes.
+            - Failures that remain, with relevant error details.
+            - Clearly distinguish tests executed now, existing CI evidence, mocks, and real service/deployment evidence.
 
-        D. Seven-timeframe readiness table
-        - One row each for 1m, 5m, 15m, 30m, 1H, 4H, and 1D.
-        - Use only evidence-supported READY or BLOCKED status, with the exact reason.
-        - Do not describe a timeframe as production-ready based solely on passing unit tests or a candidate binding.
+            D. Seven-timeframe readiness table
+            - One row each for 1m, 5m, 15m, 30m, 1H, 4H, and 1D.
+            - Use only evidence-supported READY or BLOCKED status, with the exact reason.
+            - Do not describe a timeframe as production-ready based solely on passing unit tests or a candidate binding.
 
-        E. P1 publication status
-        - State what is proven locally and what is not proven in deployment.
-        - Identify exact external data, credentials, configuration, or access requirements without exposing secret values.
+            E. P1 publication status
+            - State what is proven locally and what is not proven in deployment.
+            - Identify exact external data, credentials, configuration, or access requirements without exposing secret values.
 
-        F. Remaining actions
-        - List only genuine unresolved blockers.
-        - Give the smallest concrete next action for each blocker.
-        - State explicitly whether the full chain is proven, partially proven, or unproven.
+            F. Remaining actions
+            - List only genuine unresolved blockers.
+            - Give the smallest concrete next action for each blocker.
+            - State explicitly whether the full chain is proven, partially proven, or unproven.
 
-        EXIT CONDITION
+            EXIT CONDITION
 
-        Continue fixing all safely actionable P1 defects in this authorized scope. Do not stop merely because an earlier audit report says read-only, because one test passes, or because one timeframe is blocked by missing data. External prerequisites may block the affected outcome but do not excuse unrelated code defects.
+            Continue fixing all safely actionable P1 defects in this authorized scope. Do not stop merely because an earlier audit report says read-only, because one test passes, or because one timeframe is blocked by missing data. External prerequisites may block the affected outcome but do not excuse unrelated code defects.
 
-        Do not merge PR #99. Do not modify P2, deployment settings, secrets, or production systems. Do not fabricate data or evidence. Finish with the required evidence-based report and leave the PR open for manual review.
+            Do not merge PR #99. Do not modify P2, deployment settings, secrets, or production systems. Do not fabricate data or evidence. Finish with the required evidence-based report and leave the PR open for manual review.
