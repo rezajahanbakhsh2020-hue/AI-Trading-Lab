@@ -173,6 +173,36 @@ def test_deterministic_authorization_fingerprint():
     assert auth1.authorization_fingerprint == auth2.authorization_fingerprint
 
 
+def test_authorization_fingerprint_is_clock_independent():
+    """Re-authorization of the same identity at a later time MUST be idempotent:
+    authorized_at_utc is volatile audit metadata and must not enter the fingerprint,
+    otherwise every replay of the same canonical decision conflicts fail-closed."""
+    ev = make_promoted_evidence(PromotionStatus.PROMOTABLE, strategy_name="moving_average", timeframe="1D")
+    cand = PromotedCandidateArtifact(
+        candidate_id="cand_auth_clock",
+        strategy_name="moving_average",
+        strategy_version="1.0",
+        evidence=ev,
+        symbol="XAUUSD",
+        timeframe="1D",
+        operational_stability_score=0.85,
+        governance_decision_fingerprint=_gov_fp(ev),
+    )
+
+    auth1 = authorize_production_runtime(
+        cand, symbol="XAUUSD", timeframe="1D",
+        now=datetime(2026, 10, 26, 5, 0, 0, tzinfo=timezone.utc),
+    )
+    auth2 = authorize_production_runtime(
+        cand, symbol="XAUUSD", timeframe="1D",
+        now=datetime(2026, 10, 26, 5, 30, 0, tzinfo=timezone.utc),
+    )
+
+    assert auth1.authorization_fingerprint == auth2.authorization_fingerprint
+    # The timestamps are still recorded per-authorization for audit.
+    assert auth1.authorized_at_utc != auth2.authorized_at_utc
+
+
 def test_authorization_is_immutable():
     ev = make_promoted_evidence(PromotionStatus.PROMOTABLE)
     cand = PromotedCandidateArtifact(

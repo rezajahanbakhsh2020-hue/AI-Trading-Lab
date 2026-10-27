@@ -59,6 +59,22 @@ def test_build_live_signal_timeline_maps_buy_and_no_trade():
     assert list(figure.data[0].y) == [1, 0, 1]
 
 
+def test_build_live_signal_timeline_maps_sell_to_minus_one():
+    snapshots = [
+        {
+            "timestamp": 1,
+            "signal_label": "SELL",
+            "trend": "DOWN",
+            "strategy": "momentum",
+        }
+    ]
+
+    figure = build_live_signal_timeline(snapshots)
+
+    assert "Signal:</b> SELL" in figure.data[0].text[0]
+    assert list(figure.data[0].y) == [-1]
+
+
 def test_build_live_signal_timeline_contains_decision_details():
     figure = build_live_signal_timeline(_snapshots())
 

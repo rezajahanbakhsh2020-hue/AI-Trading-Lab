@@ -71,6 +71,8 @@ def build_live_proof_html(snapshot: Mapping[str, Any]) -> str:
     signal_class = (
         "positive"
         if signal == "BUY"
+        else "negative"
+        if signal == "SELL"
         else "neutral"
     )
 

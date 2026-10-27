@@ -112,3 +112,17 @@ def test_build_live_visual_status_html_is_generated():
     assert "plotly" in html.lower()
     assert "AI-Trading-Lab" in html
     assert "LIVE VISUAL STATUS" in html
+
+
+def test_build_live_visual_status_sell_setup_is_actionable():
+    snapshot = _snapshot()
+    snapshot["signal"] = "SELL"
+    snapshot["signal_label"] = "SELL"
+    snapshot["trend"] = "DOWN"
+
+    figure = build_live_visual_status(snapshot)
+
+    values = figure.data[0].cells.values[1]
+
+    assert values[2] == "SELL"
+    assert values[4] == "ACTIONABLE"

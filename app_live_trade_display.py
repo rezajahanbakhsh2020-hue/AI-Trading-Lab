@@ -4,7 +4,9 @@ import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
 
+from src.evaluation.live_runtime import build_live_runtime
 from src.evaluation.live_trade_display import build_live_trade_display
+from src.evaluation.production_live_bridge import load_production_selection
 from src.visualization.live_trade_overlay import build_live_trade_overlay
 
 
@@ -29,6 +31,7 @@ def _load_data() -> pd.DataFrame:
         data["timestamp"] = pd.to_datetime(
             data["timestamp"],
             unit="s",
+            utc=True,
             errors="coerce",
         )
     else:
@@ -113,11 +116,14 @@ def main() -> None:
     try:
         data = _load_data()
 
-        from src.evaluation.live_runtime import build_live_runtime
+        selection = load_production_selection()
+
         runtime_res = build_live_runtime(
             data,
-            stable_strategy="momentum",
-            stability_score=0.517268,
+            stable_strategy=selection["stable_strategy"],
+            stability_score=selection["stability_score"],
+            symbol="XAUUSD",
+            interval="1D",
             persist=False,
         )
         display = runtime_res.display
@@ -151,7 +157,7 @@ def main() -> None:
             f'{overlay["stability_score"]:.3f}',
         )
 
-    if overlay["decision"] == "BUY":
+    if overlay["decision"] in {"BUY", "SELL"}:
         levels = overlay["levels"]
 
         level_columns = st.columns(5)

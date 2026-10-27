@@ -108,3 +108,17 @@ def test_build_live_visual_health_html_is_generated():
     assert "plotly" in html.lower()
     assert "AI-Trading-Lab" in html
     assert "LIVE VISUAL HEALTH" in html
+
+
+def test_build_live_visual_health_accepts_sell_state():
+    snapshot = _snapshot()
+    snapshot["signal"] = "SELL"
+    snapshot["signal_label"] = "SELL"
+    snapshot["trend"] = "DOWN"
+
+    figure = build_live_visual_health(snapshot)
+
+    values = figure.data[0].cells.values[1]
+
+    assert all(value == "OK" for value in values)
+    assert "HEALTHY" in figure.layout.title.text

@@ -171,7 +171,11 @@ def build_live_trade_display(
         "stability_score": dec_obj.confidence if dec_obj.confidence is not None else stability_score,
         "min_stability_score": min_stability_score,
         "strategy_supported": receipt.strategy_name.lower() in ("momentum", "moving_average", "baseline"),
-        "signal": 1 if dec_obj.direction == Direction.BUY else 0,
+        "signal": (
+            1
+            if dec_obj.direction == Direction.BUY
+            else (-1 if dec_obj.direction == Direction.SELL else 0)
+        ),
         "signal_label": dec_obj.direction.value,
         "trend": str(trend_snap.get("trend", "NEUTRAL")),
         "momentum": close_price,
@@ -193,8 +197,9 @@ def build_live_trade_display(
     _validate_decision(decision)
 
     is_buy = decision["decision"] == "BUY"
+    is_sell = decision["decision"] == "SELL"
 
-    if not is_buy:
+    if not is_buy and not is_sell:
         entry_price = None
         stop_loss = None
         take_profit = None
@@ -208,33 +213,66 @@ def build_live_trade_display(
         risk_reward_tp2 = None
         risk_reward_tp3 = None
     else:
+        direction_label = "BUY" if is_buy else "SELL"
+
         if risk_obj is None or risk_obj.entry_price is None or risk_obj.stop_loss is None:
-            raise ValueError("BUY decision requires valid canonical risk_levels with entry_price and stop_loss.")
+            raise ValueError(
+                f"{direction_label} decision requires valid canonical risk_levels with entry_price and stop_loss."
+            )
 
         if risk_obj.tp1 is None or risk_obj.tp2 is None or risk_obj.tp3 is None:
-            raise ValueError("BUY decision requires valid canonical risk_levels with tp1, tp2, and tp3.")
+            raise ValueError(
+                f"{direction_label} decision requires valid canonical risk_levels with tp1, tp2, and tp3."
+            )
 
         if risk_obj.risk_reward_ratio is None:
-            raise ValueError("BUY decision requires valid canonical risk_levels with risk_reward_ratio.")
+            raise ValueError(
+                f"{direction_label} decision requires valid canonical risk_levels with risk_reward_ratio."
+            )
 
         entry_price = float(risk_obj.entry_price)
         stop_loss = float(risk_obj.stop_loss)
-        risk_distance = entry_price - stop_loss
 
-        if risk_distance <= 0:
-            raise ValueError("BUY risk distance must be greater than zero.")
+        if is_buy:
+            # BUY: risk distance measured from entry down to stop.
+            risk_distance = entry_price - stop_loss
+            if risk_distance <= 0:
+                raise ValueError(
+                    "BUY risk distance must be greater than zero."
+                )
 
-        tp1 = float(risk_obj.tp1)
-        tp2 = float(risk_obj.tp2)
-        tp3 = float(risk_obj.tp3)
+            tp1 = float(risk_obj.tp1)
+            tp2 = float(risk_obj.tp2)
+            tp3 = float(risk_obj.tp3)
+
+            risk_reward_tp1 = (tp1 - entry_price) / risk_distance
+            risk_reward_tp2 = (tp2 - entry_price) / risk_distance
+            risk_reward_tp3 = (tp3 - entry_price) / risk_distance
+        else:
+            # SELL: risk distance measured from stop down to entry.
+            risk_distance = stop_loss - entry_price
+            if risk_distance <= 0:
+                raise ValueError(
+                    "SELL risk distance must be greater than zero."
+                )
+
+            tp1 = float(risk_obj.tp1)
+            tp2 = float(risk_obj.tp2)
+            tp3 = float(risk_obj.tp3)
+
+            if not tp3 < tp2 < tp1 < entry_price < stop_loss:
+                raise ValueError(
+                    "SELL levels must satisfy TP3 < TP2 < TP1 < Entry < SL."
+                )
+
+            risk_reward_tp1 = (entry_price - tp1) / risk_distance
+            risk_reward_tp2 = (entry_price - tp2) / risk_distance
+            risk_reward_tp3 = (entry_price - tp3) / risk_distance
+
         trailing_stop = float(risk_obj.trailing_stop) if risk_obj.trailing_stop is not None else None
 
         take_profit = tp2 if tp2 is not None else tp1
         risk_reward_ratio = float(risk_obj.risk_reward_ratio)
-
-        risk_reward_tp1 = (tp1 - entry_price) / risk_distance
-        risk_reward_tp2 = (tp2 - entry_price) / risk_distance
-        risk_reward_tp3 = (tp3 - entry_price) / risk_distance
 
     res = {
         "symbol": decision["symbol"],

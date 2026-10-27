@@ -96,7 +96,7 @@ def _build_runtime_snapshot(
             "mid": quote.get("mid"),
             "candle_count": int(len(data)),
             "actionable": bool(
-                decision["decision"] == "BUY"
+                decision["decision"] in {"BUY", "SELL"}
                 and not quote.get("stale", False)
             ),
             "display_decision": display["decision"],

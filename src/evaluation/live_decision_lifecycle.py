@@ -24,6 +24,41 @@ class LiveDecisionLifecycleError(ValueError):
     """Raised when live decision lifecycle transition or validation fails."""
 
 
+CANONICAL_VOLATILE_KEYS = frozenset(
+    {
+        "decision_timestamp",
+        "authorized_at_utc",
+        "timestamp_utc",
+        "recorded_at",
+        "created_at",
+    }
+)
+
+
+def strip_volatile_canonical_fields(payload: Any) -> Any:
+    """Project away runtime wall-clock fields from canonical identity payloads.
+
+    Volatile keys (``decision_timestamp``, ``authorized_at_utc``, transition
+    ``timestamp_utc``) are excluded from canonical identity fingerprints and
+    replay comparisons: re-authorization and re-persistence of the same
+    semantic content legitimately produce different wall-clock values. The
+    volatile fields remain recorded in as_dict()/persistence records for audit.
+    Each key can still only realize its own per-record value once per append;
+    conflict detection for genuine content drift is unaffected.
+    """
+    if isinstance(payload, Mapping):
+        return {
+            key: strip_volatile_canonical_fields(value)
+            for key, value in payload.items()
+            if key not in CANONICAL_VOLATILE_KEYS
+        }
+    if isinstance(payload, list):
+        return [strip_volatile_canonical_fields(value) for value in payload]
+    if isinstance(payload, tuple):
+        return [strip_volatile_canonical_fields(value) for value in payload]
+    return payload
+
+
 class LiveDecisionLifecycleState(str, Enum):
     """Authoritative lifecycle states for a canonical live decision."""
 
@@ -244,14 +279,18 @@ class CanonicalLiveDecision:
         object.__setattr__(self, "live_decision_id", str(self.live_decision_id).strip())
 
         # Calculate canonical live decision fingerprint from core canonical payload
+        # (wall-clock volatile fields excluded via strip_volatile_canonical_fields)
         payload = {
             "live_decision_id": self.live_decision_id,
-            "authorization_receipt": self.authorization_receipt.as_dict(),
-            "decision": self.decision.as_dict(),
-            "signal": self.signal.as_dict(),
-            "risk_levels": self.risk_levels.as_dict(),
+            "authorization_receipt": strip_volatile_canonical_fields(self.authorization_receipt.as_dict()),
+            "decision": strip_volatile_canonical_fields(self.decision.as_dict()),
+            "signal": strip_volatile_canonical_fields(self.signal.as_dict()),
+            "risk_levels": strip_volatile_canonical_fields(self.risk_levels.as_dict()),
             "current_state": self.current_state.value,
-            "transition_history": [tr.as_dict() for tr in self.transition_history],
+            "transition_history": [
+                strip_volatile_canonical_fields(tr.as_dict())
+                for tr in self.transition_history
+            ],
         }
         serialized = json.dumps(payload, sort_keys=True, ensure_ascii=True)
         fp = hashlib.sha256(serialized.encode("utf-8")).hexdigest()

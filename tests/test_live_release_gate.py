@@ -65,6 +65,55 @@ def _rising_data(rows: int = 80) -> pd.DataFrame:
     )
 
 
+def _falling_data(rows: int = 80) -> pd.DataFrame:
+    timestamps = pd.date_range(
+        pd.Timestamp.now(tz="UTC") - pd.Timedelta(days=rows),
+        periods=rows,
+        freq="1D",
+    )
+
+    close = pd.Series(
+        [2160.0 - index * 2.0 for index in range(rows)],
+        dtype=float,
+    )
+
+    return pd.DataFrame(
+        {
+            "timestamp": timestamps,
+            "isOpen": False,
+            "open": close + 1.0,
+            "high": close + 3.0,
+            "low": close - 2.0,
+            "close": close,
+        }
+    )
+
+
+def _stale_data(rows: int = 40) -> pd.DataFrame:
+    timestamps = pd.date_range(
+        "2025-01-01",
+        periods=rows,
+        freq="1D",
+        tz="UTC",
+    )
+
+    close = pd.Series(
+        [2000.0 + index * 2.0 for index in range(rows)],
+        dtype=float,
+    )
+
+    return pd.DataFrame(
+        {
+            "timestamp": timestamps,
+            "isOpen": False,
+            "open": close - 1.0,
+            "high": close + 3.0,
+            "low": close - 2.0,
+            "close": close,
+        }
+    )
+
+
 def _runtime(store_path=None):
     data = _rising_data()
     ref_now = pd.to_datetime(data["timestamp"], utc=True).iloc[-1].to_pydatetime()
@@ -75,6 +124,32 @@ def _runtime(store_path=None):
         symbol="XAUUSD",
         interval="1d",
         reference_now=ref_now,
+        store_path=store_path,
+    )
+
+
+def _falling_runtime(store_path=None):
+    data = _falling_data()
+    ref_now = pd.to_datetime(data["timestamp"], utc=True).iloc[-1].to_pydatetime()
+    return build_live_runtime(
+        data,
+        stable_strategy="momentum",
+        stability_score=None,
+        symbol="XAUUSD",
+        interval="1d",
+        reference_now=ref_now,
+        store_path=store_path,
+    )
+
+
+def _stale_runtime(store_path=None):
+    data = _stale_data()
+    return build_live_runtime(
+        data,
+        stable_strategy="momentum",
+        stability_score=None,
+        symbol="XAUUSD",
+        interval="1d",
         store_path=store_path,
     )
 
@@ -232,3 +307,125 @@ def test_release_gate_requires_display_fields(tmp_path):
             decision=runtime.decision,
             display=display,
         )
+
+
+def test_release_gate_passes_complete_sell_runtime(tmp_path):
+    runtime = _falling_runtime(store_path=tmp_path / "store_sell.json")
+
+    result = validate_live_release(
+        decision=runtime.decision,
+        display=runtime.display,
+    )
+
+    assert result["decision"] == "SELL"
+    assert result["release_ready"] is True
+    assert all(result["checks"].values())
+
+    levels = runtime.display
+    assert (
+        levels["tp3"]
+        < levels["tp2"]
+        < levels["tp1"]
+        < levels["entry_price"]
+        < levels["stop_loss"]
+    )
+
+
+def test_release_gate_rejects_broken_sell_level_order(tmp_path):
+    runtime = _falling_runtime(store_path=tmp_path / "store_sell.json")
+
+    display = dict(runtime.display)
+    display["tp2"] = display["entry_price"] + 1.0
+
+    result = validate_live_release(
+        decision=runtime.decision,
+        display=display,
+    )
+
+    assert result["release_ready"] is False
+    assert result["checks"]["trade_levels_valid"] is False
+
+
+def test_release_gate_blocks_stale_no_trade():
+    """Stale market data must fail closed even for a NO TRADE outcome:
+    NO TRADE must never be a vehicle that launders stale or invalid
+    market data into a releasable state."""
+    runtime = _stale_runtime()
+
+    decision = dict(runtime.decision)
+    assert decision["decision"] == "NO TRADE"
+    assert decision["quote_stale"] is True
+
+    result = validate_live_release(
+        decision=decision,
+        display=runtime.display,
+    )
+
+    assert result["release_ready"] is False
+    assert result["checks"]["market_data_fresh"] is False
+
+
+def test_release_gate_blocks_stale_buy():
+    """If the data is stale, no outcome — BUY included — may be releasable."""
+    runtime = _runtime(store_path=tmp_path_store())
+
+    decision = dict(runtime.decision)
+    display = dict(runtime.display)
+
+    assert decision["decision"] == "BUY"
+
+    # Force the fail-closed interlock: same BUY payload on stale inputs.
+    decision["quote_stale"] = True
+
+    result = validate_live_release(
+        decision=decision,
+        display=display,
+    )
+
+    assert result["release_ready"] is False
+
+
+def tmp_path_store():
+    import tempfile
+    import pathlib
+
+    return pathlib.Path(tempfile.mkdtemp()) / "store_stale.json"
+
+
+def test_release_gate_rejects_no_trade_with_fabricated_levels(tmp_path):
+    runtime = _runtime(store_path=tmp_path / "store.json")
+
+    decision = dict(runtime.decision)
+    display = dict(runtime.display)
+
+    decision["decision"] = "NO TRADE"
+    display["decision"] = "NO TRADE"
+
+    # NO TRADE must not carry active trade levels.
+    display["stop_loss"] = 1900.0
+
+    result = validate_live_release(
+        decision=decision,
+        display=display,
+    )
+
+    assert result["release_ready"] is False
+    assert result["checks"]["trade_levels_valid"] is False
+
+
+def test_release_gate_rejects_unsupported_decision(tmp_path):
+    runtime = _runtime(store_path=tmp_path / "store.json")
+
+    decision = dict(runtime.decision)
+    display = dict(runtime.display)
+
+    decision["decision"] = "HOLD"
+    display["decision"] = "HOLD"
+
+    result = validate_live_release(
+        decision=decision,
+        display=display,
+    )
+
+    assert result["release_ready"] is False
+    assert result["checks"]["decision_supported"] is False

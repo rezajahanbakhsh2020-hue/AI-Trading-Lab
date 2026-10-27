@@ -55,6 +55,59 @@ def test_save_live_decision_history_writes_json(tmp_path):
     assert stored[0]["signal_label"] == "BUY"
 
 
+def test_replayed_authorized_record_with_later_clock_is_idempotent(tmp_path):
+    """Re-persisting the same canonical decision after re-authorization must be an
+    idempotent no-op: volatile wall-clock fields (authorized_at_utc, transition
+    timestamps) must not converge identical replays into a 'conflicting replay'."""
+    path = tmp_path / "decisions.json"
+
+    rec = _record("2026-09-10T05:45:00+00:00")
+    rec.update(
+        {
+            "decision_id": "dec_replay_clock",
+            "signal_id": "sig_replay_clock",
+            "canonical_live_decision_fingerprint": "cld_fp_clock",
+            "current_lifecycle_state": "PERSISTED",
+            "runtime_authorization_fingerprint": "auth_fp_clock",
+            "authorization_policy_version": "runtime_auth_v1.0",
+            "authorized_at_utc": "2026-09-10T05:45:00+00:00",
+            "promoted_artifact_fingerprint": "art_fp_clock",
+            "governance_decision_fingerprint": "gov_fp_clock",
+            "candidate_id": "cand_replay_clock",
+            "strategy_name": "momentum",
+            "strategy_version": "1.0",
+            "transition_history": [
+                {
+                    "from_state": "PRESENTABLE",
+                    "to_state": "PERSISTED",
+                    "timestamp_utc": "2026-09-10T05:45:00+00:00",
+                    "actor": "live_decision_store",
+                    "artifact_fingerprint": "prov_fp_clock",
+                    "reason": "canonical_persistence_boundary",
+                }
+            ],
+        }
+    )
+    append_live_decision_to_store(rec, path)
+    assert len(load_live_decision_history(path)) == 1
+
+    replay = dict(rec)
+    replay["authorized_at_utc"] = "2026-09-10T05:52:00+00:00"
+    replay["transition_history"][
+        0
+    ]["timestamp_utc"] = "2026-09-10T05:52:00+00:00"
+
+    append_live_decision_to_store(replay, path)
+
+    assert len(load_live_decision_history(path)) == 1
+
+    # Genuine content drift is still a conflict: same identity, changed decision.
+    conflicting = dict(rec)
+    conflicting["signal_label"] = "NO TRADE"
+    with pytest.raises(ValueError, match="Conflicting replay"):
+        append_live_decision_to_store(conflicting, path)
+
+
 def test_load_live_decision_history_restores_records(tmp_path):
     path = tmp_path / "decisions.json"
     history = [

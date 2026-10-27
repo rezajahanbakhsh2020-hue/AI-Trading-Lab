@@ -59,6 +59,10 @@ def build_live_trade_overlay(
     BUY:
         Entry, SL, TP1, TP2 and TP3 are visible.
 
+    SELL:
+        Entry, SL, TP1, TP2 and TP3 are visible with
+        TP3 < TP2 < TP1 < Entry < SL geometry.
+
     NO TRADE:
         No trade price lines are emitted.
 
@@ -80,9 +84,9 @@ def build_live_trade_overlay(
 
     decision = display["decision"]
 
-    if decision not in {"BUY", "NO TRADE", "BLOCKED"}:
+    if decision not in {"BUY", "SELL", "NO TRADE", "BLOCKED"}:
         raise ValueError(
-            "decision must be BUY, NO TRADE, or BLOCKED."
+            "decision must be BUY, SELL, NO TRADE, or BLOCKED."
         )
 
     if decision in {"NO TRADE", "BLOCKED"}:
@@ -117,21 +121,39 @@ def build_live_trade_overlay(
             ),
         }
 
-        if not levels["stop_loss"] < levels["entry"]:
-            raise ValueError(
-                "BUY stop_loss must be below entry."
-            )
+        if decision == "BUY":
+            if not levels["stop_loss"] < levels["entry"]:
+                raise ValueError(
+                    "BUY stop_loss must be below entry."
+                )
 
-        if not (
-            levels["entry"]
-            < levels["tp1"]
-            < levels["tp2"]
-            < levels["tp3"]
-        ):
-            raise ValueError(
-                "BUY levels must satisfy "
-                "SL < Entry < TP1 < TP2 < TP3."
-            )
+            if not (
+                levels["entry"]
+                < levels["tp1"]
+                < levels["tp2"]
+                < levels["tp3"]
+            ):
+                raise ValueError(
+                    "BUY levels must satisfy "
+                    "SL < Entry < TP1 < TP2 < TP3."
+                )
+        else:
+            # SELL geometry: TP3 < TP2 < TP1 < Entry < SL.
+            if not levels["stop_loss"] > levels["entry"]:
+                raise ValueError(
+                    "SELL stop_loss must be above entry."
+                )
+
+            if not (
+                levels["tp3"]
+                < levels["tp2"]
+                < levels["tp1"]
+                < levels["entry"]
+            ):
+                raise ValueError(
+                    "SELL levels must satisfy "
+                    "TP3 < TP2 < TP1 < Entry < SL."
+                )
 
     timestamp = data["timestamp"].iloc[-1]
 

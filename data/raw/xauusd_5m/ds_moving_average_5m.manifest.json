@@ -1,0 +1,39 @@
+{
+  "manifest_version": "1.0",
+  "dataset_id": "ds_moving_average_5m",
+  "symbol": "XAUUSD",
+  "timeframe": "5m",
+  "source_url": "https://raw.githubusercontent.com/getdata-finance/xauusd-5m-ohlcv-metals-historical-data/main/XAUUSD_5m.csv",
+  "source_license": "MIT",
+  "source_license_url": "https://github.com/getdata-finance/xauusd-5m-ohlcv-metals-historical-data/blob/main/LICENSE",
+  "raw_sha256": "acb0d2f86b030a3ead93d92038ea27c21db6f5171acfec7a7c316faf90a9e3db",
+  "output_sha256": "7a89001d273d59362da678737253c1d9681df3d192b55eace3791bb79367d1f0",
+  "row_count": 35954,
+  "columns": [
+    "timestamp",
+    "open",
+    "high",
+    "low",
+    "close",
+    "volume"
+  ],
+  "start_timestamp_utc": "2026-03-26T02:30:00+00:00",
+  "end_timestamp_utc": "2026-09-25T20:40:00+00:00",
+  "validation_summary": {
+    "columns_valid": true,
+    "timestamps_monotonic": true,
+    "timestamps_unique": true,
+    "timestamps_grid_aligned": true,
+    "ohlc_geometry_valid": true,
+    "volume_valid": true
+  },
+  "gap_diagnostics": {
+    "total_gaps_count": 136,
+    "weekend_gaps_count": 26,
+    "session_gaps_count": 105,
+    "holiday_gaps_count": 5,
+    "unexplained_gaps_count": 0,
+    "max_gap_seconds": 196800.0,
+    "unexplained_gaps": []
+  }
+}

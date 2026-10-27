@@ -124,3 +124,34 @@ def test_non_dictionary_snapshot_is_rejected():
         assert False
     except ValueError:
         assert True
+
+
+def sell_snapshot() -> dict:
+    return {
+        "signal": -1,
+        "signal_label": "SELL",
+        "trend": "DOWN",
+        "momentum": -0.012,
+        "entry_price": 4400.0,
+        "stop_loss": 4444.0,
+        "take_profit": 4312.0,
+        "risk_reward_ratio": 2.0,
+        "market_state": "OPEN",
+        "quote_stale": False,
+    }
+
+
+def test_sell_explanation():
+    explanation = build_live_explanation(
+        sell_snapshot()
+    )
+
+    assert explanation["action"] == "SELL"
+    assert explanation["signal_label"] == "SELL"
+    assert explanation["trend"] == "DOWN"
+    assert explanation["entry_price"] == 4400.0
+    assert explanation["stop_loss"] == 4444.0
+    assert explanation["take_profit"] == 4312.0
+    assert len(explanation["reasons"]) >= 2
+    assert "SELL" in explanation["human_text"]
+    assert validate_live_explanation(explanation) is True

@@ -198,10 +198,17 @@ def test_timestamp_valued_end_bound_preserves_exact_instant():
 # -----------------------------------------------------------------------------
 
 def test_missing_dataset_resolution_fails_closed_without_substitution():
-    missing_timeframes = ["1m", "5m", "1d"]
-    for tf in missing_timeframes:
+    # 1m and 5m datasets are now genuinely manifest-backed
+    # (tests/test_ingest_xauusd_intervals.py). Fail-closed resolution without
+    # substitution is pinned via dataset ids that remain absent.
+    missing_ids = [
+        ("ds_moving_average_2m", "1D"),
+        ("ds_absent_moving_average_1m", "1m"),
+        ("ds_absent_moving_average_5m", "5m"),
+    ]
+    for dataset_id, tf in missing_ids:
         ds = DatasetScope(
-            dataset_id=f"ds_moving_average_{tf.lower()}",
+            dataset_id=dataset_id,
             symbol="XAUUSD",
             timeframe=tf,
             start_date="2025-01-01",
@@ -209,6 +216,19 @@ def test_missing_dataset_resolution_fails_closed_without_substitution():
         )
         with pytest.raises(FileNotFoundError, match="Unable to resolve exact approved dataset artifact"):
             resolve_historical_dataset(ds)
+
+
+def test_ingested_one_and_five_minute_datasets_resolve_without_substitution():
+    for tf in ("1m", "5m"):
+        ds = DatasetScope(
+            dataset_id=f"ds_moving_average_{tf}",
+            symbol="XAUUSD",
+            timeframe=tf,
+            start_date="2025-01-01",
+            end_date="2026-12-31",
+        )
+        df = resolve_historical_dataset(ds)
+        assert not df.empty
 
 
 def test_tracked_daily_2025_resolves_with_manifest_integrity():
@@ -624,7 +644,7 @@ def test_research_experiment_missing_dataset_returns_rejected_evidence():
         strategy_name="moving_average",
         strategy_version="1.0",
         dataset_scope=DatasetScope(
-            dataset_id="ds_moving_average_1m",  # missing
+            dataset_id="ds_moving_average_1m",  # scope window has no overlap with this dataset
             symbol="XAUUSD",
             timeframe="1m",
             start_date="2025-01-01",
@@ -881,7 +901,12 @@ def test_unauthorized_runtime_publishes_nothing(tmp_path):
 
 def test_seven_canonical_timeframes_independent_resolution():
     canonical_timeframes = ["1m", "5m", "15m", "30m", "1H", "4H", "1D"]
+    # 1m and 5m became manifest-backed via the MIT-licensed public
+    # getdata-finance source (see src/data/ingest_xauusd_intervals.py);
+    # their datasets resolve through the same strict identity checks.
     available_datasets = {
+        "1m": "ds_moving_average_1m",
+        "5m": "ds_moving_average_5m",
         "15m": "ds_moving_average_15m",
         "30m": "ds_moving_average_30m",
         "1H": "ds_moving_average_1h",
@@ -890,26 +915,18 @@ def test_seven_canonical_timeframes_independent_resolution():
     }
 
     for tf in canonical_timeframes:
-        if tf in available_datasets:
-            ds = DatasetScope(
-                dataset_id=available_datasets[tf],
-                symbol="XAUUSD",
-                timeframe=tf,
-                start_date="2025-01-01",
-                end_date="2026-12-31",
-            )
-            df = resolve_historical_dataset(ds)
-            assert not df.empty
-        else:
-            ds = DatasetScope(
-                dataset_id=f"ds_moving_average_{tf.lower()}",
-                symbol="XAUUSD",
-                timeframe=tf,
-                start_date="2025-01-01",
-                end_date="2026-12-31",
-            )
-            with pytest.raises(FileNotFoundError):
-                resolve_historical_dataset(ds)
+        ds = DatasetScope(
+            dataset_id=available_datasets[tf],
+            symbol="XAUUSD",
+            timeframe=tf,
+            start_date="2025-01-01",
+            end_date="2026-12-31",
+        )
+        # resolve_historical_dataset enforces manifest dataset_id/symbol/
+        # timeframe identity against the requested scope: each timeframe can
+        # only ever resolve its own artifact.
+        df = resolve_historical_dataset(ds)
+        assert not df.empty
 
 def test_real_manifest_backed_15m_research_qualification(tmp_path):
     """Evaluate real repository data using canonical research and unchanged policy."""
@@ -958,6 +975,74 @@ def test_real_manifest_backed_15m_research_qualification(tmp_path):
     # The checked-in 15m sample currently fails real robustness criteria.
     # Keep this as a fail-closed regression: never manufacture promotion for it.
     assert not qualification.qualified
+    assert "FAILED_PARAMETER_SENSITIVITY" in {r.value for r in qualification.rejection_reasons}
+    assert "FAILED_STATISTICAL_VALIDATION" in {r.value for r in qualification.rejection_reasons}
+
+@pytest.mark.parametrize(
+    ("subdir", "dataset_id"),
+    [
+        ("xauusd_1m", "ds_moving_average_1m"),
+        ("xauusd_5m", "ds_moving_average_5m"),
+        ("xauusd_15m", "ds_moving_average_15m"),
+        ("xauusd_30m", "ds_moving_average_30m"),
+        ("xauusd_1h", "ds_moving_average_1h"),
+        ("xauusd_4h", "ds_moving_average_4h"),
+    ],
+)
+def test_real_manifest_backed_datasets_fail_closed(tmp_path, subdir, dataset_id):
+    """1m/5m/15m/30m/1H/4H real datasets honestly fail qualification under unchanged policy.
+
+    Fail-closed regression across every manifest-backed intraday timeframe:
+    none of these datasets may become releasable without genuine canonical
+    research that passes robustness. Never manufacture promotion for them.
+    The 1m/5m datasets are genuine MIT-licensed public-market data ingested via
+    src.data.ingest_xauusd_intervals (see tests/test_ingest_xauusd_intervals.py).
+    """
+    from src.data.ingest_xauusd_15m import verify_dataset_and_manifest_integrity
+    from src.evaluation.research_constitution import (
+        ResearchHypothesis,
+        ExecutionAssumptions,
+        CodeProvenance,
+        WalkForwardProtocol,
+        HypothesisStatus,
+    )
+    from src.evaluation.research_runner import run_research_experiment, validate_and_prepare_dataset
+    from src.evaluation.research_robustness import assess_research_robustness
+    from src.evaluation.research_qualification import qualify_research_evidence
+
+    data_dir = Path("data/raw") / subdir
+    raw_df, manifest = verify_dataset_and_manifest_integrity(
+        data_dir / f"{dataset_id}.csv",
+        data_dir / f"{dataset_id}.manifest.json",
+        data_dir / f"{dataset_id}.commit.json",
+    )
+    assert manifest["dataset_id"] == dataset_id
+    scope = DatasetScope(
+        dataset_id=manifest["dataset_id"],
+        symbol=manifest["symbol"],
+        timeframe=manifest["timeframe"],
+        start_date=manifest["start_timestamp_utc"][:10],
+        end_date=manifest["end_timestamp_utc"][:10],
+    )
+    df = validate_and_prepare_dataset(raw_df, scope)
+    hypothesis = ResearchHypothesis(
+        statement=f"Moving Average 20/50 on actual manifest-backed XAUUSD {manifest['timeframe']} data",
+        methodology_version="1.0",
+        strategy_name="moving_average",
+        strategy_version="1.0",
+        dataset_scope=scope,
+        execution_assumptions=ExecutionAssumptions(0.0001, 0.0001, 10.0),
+        code_provenance=CodeProvenance("7b34bdf4f81d40abd4274ac41ebfe9f2b6222255"),
+        benchmark_reference="buy_and_hold",
+        parameters={"fast_window": 20, "slow_window": 50, "stop_loss_pct": 0.01, "take_profit_pct": 0.02},
+        walk_forward_protocol=WalkForwardProtocol(train_size=1000, test_size=250),
+        status=HypothesisStatus.ACCEPTED_FOR_RESEARCH,
+    )
+    evidence = run_research_experiment(hypothesis, df=df, persist_evidence=True, base_dir=tmp_path / "research")
+    robustness = assess_research_robustness(evidence)
+    qualification = qualify_research_evidence(evidence, robustness_assessment=robustness)
+    assert not qualification.qualified
+    assert evidence.promotion_status == PromotionStatus.REJECTED
     assert "FAILED_PARAMETER_SENSITIVITY" in {r.value for r in qualification.rejection_reasons}
     assert "FAILED_STATISTICAL_VALIDATION" in {r.value for r in qualification.rejection_reasons}
 

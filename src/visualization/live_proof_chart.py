@@ -132,6 +132,17 @@ def build_live_proof_chart(
             )
         )
 
+    if signal == -1 and entry is not None:
+        figure.add_trace(
+            go.Scatter(
+                x=[data.index[-1]],
+                y=[float(entry)],
+                mode="markers",
+                marker={"size": 12},
+                name="SELL Signal",
+            )
+        )
+
     interval = str(
         snapshot.get("interval", "")
     )

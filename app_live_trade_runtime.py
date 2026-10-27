@@ -171,7 +171,7 @@ def main() -> None:
             str(quote.get("marketState", "unknown")),
         )
 
-    if overlay["decision"] == "BUY":
+    if overlay["decision"] in {"BUY", "SELL"}:
         levels = overlay["levels"]
 
         level_columns = st.columns(5)

@@ -46,7 +46,7 @@ def test_main_runs_complete_production_end_to_end(
     monkeypatch.setattr(
         run_production_end_to_end,
         "run_production_end_to_end",
-        lambda data, results_dir, symbol, interval: {
+        lambda data, **kwargs: {
             "end_to_end_ready": True,
             "decision": {
                 "decision": "BUY",
@@ -104,7 +104,7 @@ def test_main_fails_when_end_to_end_is_not_ready(
     monkeypatch.setattr(
         run_production_end_to_end,
         "run_production_end_to_end",
-        lambda data, results_dir, symbol, interval: {
+        lambda data, **kwargs: {
             "end_to_end_ready": False,
             "decision": {
                 "decision": "NO TRADE",
@@ -134,6 +134,59 @@ def test_main_fails_when_end_to_end_is_not_ready(
         run_production_end_to_end.main()
 
 
+def test_main_reports_fail_closed_on_stale_market_data(
+    monkeypatch,
+    capsys,
+):
+    """The committed historical dataset must fail closed on staleness and the
+    entrypoint must report that honest readiness outcome — not a crash and not
+    a fake release."""
+    data = _rising_data()
+
+    monkeypatch.setattr(
+        run_production_end_to_end,
+        "load_production_market_data",
+        lambda path: data,
+    )
+
+    monkeypatch.setattr(
+        run_production_end_to_end,
+        "run_production_end_to_end",
+        lambda data, **kwargs: {
+            "end_to_end_ready": False,
+            "decision": {
+                "decision": "NO TRADE",
+                "quote_stale": True,
+                "reason": "stale_market_data",
+                "trend": "NEUTRAL",
+            },
+            "production_selection": {
+                "stable_strategy": "moving_average",
+                "stability_score": 0.5418264967501166,
+            },
+            "display": {
+                "entry_price": None,
+                "stop_loss": None,
+                "tp1": None,
+                "tp2": None,
+                "tp3": None,
+            },
+            "release_gate": {
+                "release_ready": False,
+            },
+        },
+    )
+
+    run_production_end_to_end.main()
+
+    output = capsys.readouterr().out
+
+    assert (
+        "PRODUCTION END-TO-END FAIL-CLOSED ON STALE MARKET DATA"
+        in output
+    )
+
+
 def test_main_uses_production_configuration(
     monkeypatch,
 ):
@@ -147,13 +200,9 @@ def test_main_uses_production_configuration(
 
     def fake_runner(
         data,
-        results_dir,
-        symbol,
-        interval,
+        **kwargs,
     ):
-        calls["results_dir"] = results_dir
-        calls["symbol"] = symbol
-        calls["interval"] = interval
+        calls.update(kwargs)
 
         return {
             "end_to_end_ready": True,
@@ -188,3 +237,5 @@ def test_main_uses_production_configuration(
     assert calls["results_dir"] == "results/production"
     assert calls["symbol"] == "XAUUSD"
     assert calls["interval"] == "1d"
+    assert calls["candidate_id"] == "cand_moving_average_1d_verified_20261020"
+    assert calls["strategy_id"] == "moving_average"

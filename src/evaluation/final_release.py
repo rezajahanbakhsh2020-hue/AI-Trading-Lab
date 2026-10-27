@@ -3,15 +3,26 @@ from __future__ import annotations
 from typing import Any
 
 
-REQUIRED_DECISION = "BUY"
-REQUIRED_STRATEGY = "momentum"
+VALID_RELEASE_DECISIONS = {"BUY", "SELL", "NO TRADE"}
 MIN_STABILITY_SCORE = 0.50
 
 
 def validate_final_release(
     result: dict[str, Any],
 ) -> dict[str, Any]:
-    """Perform the final production release validation."""
+    """Perform the final production release validation.
+
+    Contract:
+    - BUY, SELL, and NO TRADE are first-class outcomes.
+    - BUY / SELL are releasable only when every mandatory decision,
+      authorization, stability, display-consistency, overlay-consistency,
+      and trade-geometry gate passes.
+    - NO TRADE is releasable only when every mandatory gate also passes
+      AND the market data is fresh (a stale/invalid/provisional market
+      state must never become releasable merely by emitting NO TRADE).
+    - Stale market data (``quote_stale`` missing or True) fails closed
+      for every decision outcome.
+    """
 
     if not isinstance(result, dict):
         raise TypeError("result must be a dictionary.")
@@ -39,6 +50,8 @@ def validate_final_release(
     release_gate = result["release_gate"]
     selection = result["production_selection"]
 
+    release_decision = str(decision.get("decision"))
+
     checks = {
         "end_to_end_ready": (
             result["end_to_end_ready"] is True
@@ -46,12 +59,18 @@ def validate_final_release(
         "release_gate_ready": (
             release_gate.get("release_ready") is True
         ),
-        "decision_present": (
-            decision.get("decision") == REQUIRED_DECISION
+        "decision_supported": (
+            release_decision in VALID_RELEASE_DECISIONS
+        ),
+        "market_data_fresh": (
+            decision.get("quote_stale") is False
         ),
         "strategy_stable": (
-            selection.get("stable_strategy")
-            == REQUIRED_STRATEGY
+            # Strategy identity must be bound and consistent across the
+            # authorized selection, decision, and display — never hardcoded.
+            bool(str(selection.get("stable_strategy") or "").strip())
+            and selection.get("stable_strategy") == decision.get("stable_strategy")
+            and selection.get("stable_strategy") == display.get("stable_strategy")
         ),
         "stability_score_valid": (
             float(selection.get("stability_score", 0.0))
@@ -67,10 +86,10 @@ def validate_final_release(
         ),
     }
 
-    if decision.get("decision") == REQUIRED_DECISION:
+    if release_decision == "BUY":
         levels = overlay.get("levels", {})
 
-        checks["trade_levels_complete"] = all(
+        complete = all(
             levels.get(field) is not None
             for field in (
                 "entry",
@@ -81,16 +100,52 @@ def validate_final_release(
             )
         )
 
+        checks["trade_levels_complete"] = complete
         checks["trade_levels_ordered"] = (
-            checks["trade_levels_complete"]
+            complete
             and levels["stop_loss"] < levels["entry"]
             and levels["entry"] < levels["tp1"]
             and levels["tp1"] < levels["tp2"]
             and levels["tp2"] < levels["tp3"]
         )
+    elif release_decision == "SELL":
+        levels = overlay.get("levels", {})
+
+        complete = all(
+            levels.get(field) is not None
+            for field in (
+                "entry",
+                "stop_loss",
+                "tp1",
+                "tp2",
+                "tp3",
+            )
+        )
+
+        checks["trade_levels_complete"] = complete
+        checks["trade_levels_ordered"] = (
+            complete
+            and levels["tp3"] < levels["tp2"]
+            and levels["tp2"] < levels["tp1"]
+            and levels["tp1"] < levels["entry"]
+            and levels["entry"] < levels["stop_loss"]
+        )
     else:
-        checks["trade_levels_complete"] = False
-        checks["trade_levels_ordered"] = False
+        # NO TRADE: trade-level completeness and ordering do not apply.
+        # The decision must not carry fabricated trade levels.
+        levels = overlay.get("levels", {})
+
+        checks["trade_levels_complete"] = all(
+            levels.get(field) is None
+            for field in (
+                "entry",
+                "stop_loss",
+                "tp1",
+                "tp2",
+                "tp3",
+            )
+        )
+        checks["trade_levels_ordered"] = True
 
     ready = all(checks.values())
 

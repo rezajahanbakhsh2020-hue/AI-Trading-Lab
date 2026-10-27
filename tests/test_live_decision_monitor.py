@@ -217,3 +217,22 @@ def test_validation_rejects_wrong_count_type():
                 "health": {},
             }
         )
+
+
+def test_monitor_counts_sell_signals():
+    history = [
+        _record("2026-09-10T05:45:00+00:00", "SELL", "DOWN"),
+        _record(
+            "2026-09-10T05:50:00+00:00",
+            "NO TRADE",
+            "FLAT",
+        ),
+        _record("2026-09-10T05:55:00+00:00", "SELL", "DOWN"),
+    ]
+
+    result = monitor_live_decision_history(history)
+
+    assert result["buy_count"] == 0
+    assert result["sell_count"] == 2
+    assert result["no_trade_count"] == 1
+    assert validate_live_decision_monitor(result) is True

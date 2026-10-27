@@ -143,15 +143,18 @@ class Project2Publisher:
         skip_if_no_trade: bool = False,
     ) -> Dict[str, Any]:
         """Deliver contract payload to Project 2."""
+        from src.evaluation.live_market_observation import MarketObservationPublication
         from src.evaluation.live_production_decision import ProductionIntelligencePublication
 
         if isinstance(payload, ProductionIntelligencePublication):
+            payload_dict = payload.to_contract_v1_payload()
+        elif isinstance(payload, MarketObservationPublication):
             payload_dict = payload.to_contract_v1_payload()
         else:
             return {
                 "status": "INVALID_RESPONSE",
                 "published": False,
-                "reason": f"Outbound payload must be a ProductionIntelligencePublication instance, got {type(payload).__name__}",
+                "reason": f"Outbound payload must be a ProductionIntelligencePublication or MarketObservationPublication instance, got {type(payload).__name__}",
                 "error": f"Invalid payload type: {type(payload).__name__}",
             }
 

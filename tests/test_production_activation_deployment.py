@@ -31,8 +31,13 @@ def test_render_yaml_configuration() -> None:
     assert "env: python" in content
     assert "run_live_execution.py --continuous" in content
     assert "--symbol XAUUSD" in content
+    # All canonical timeframes must run independently; only the known 1D
+    # candidate is explicitly bound. Missing candidates on other frames must
+    # not be disguised by mapping or copying the 1D candidate.
     assert "--timeframes 1m,5m,15m,30m,1H,4H,1D" in content
-    assert "--candidate-id 5m=cand_moving_average_5m,1D=cand_moving_average_1d" in content
+    assert "--candidate-id 1D=cand_moving_average_1d_verified_20261020" in content
+    assert "5m=cand_moving_average_5m" not in content
+    assert "15m=cand_moving_average_1d_verified_20261020" not in content
     assert "--publish" in content
     assert "PROJECT2_PUBLISH_ENABLED" in content
     assert "PROJECT2_PUBLISH_URL" in content
@@ -41,8 +46,11 @@ def test_render_yaml_configuration() -> None:
     assert "sync: false" in content
 
 
-def test_startup_preflight_fails_closed_when_promoted_candidate_absent(tmp_path) -> None:
-    """2. Production readiness preflight fails closed when required promoted candidate artifact is absent."""
+def test_startup_preflight_reports_blocked_timeframe_without_aborting_worker(tmp_path) -> None:
+    """Pre-quia candidate absence is a per-timeframe condition: the preflight records
+    BLOCKED for the affected timeframe, keeps the worker running, and does NOT abort
+    the loop for other timeframes. Only unusable runtime/publisher configuration may
+    fail the whole process."""
     cont = ContinuousLiveRuntime(
         symbol="XAUUSD",
         timeframes=["5m"],
@@ -54,12 +62,20 @@ def test_startup_preflight_fails_closed_when_promoted_candidate_absent(tmp_path)
         market_data_loaders=lambda tf: make_tf_market_data("2025-01-01 10:00", "5m"),
     )
 
-    with pytest.raises(PromotionUnavailable, match="Startup readiness preflight failed"):
-        cont.verify_startup_readiness()
+    readiness = cont.verify_startup_readiness()
+    assert readiness["5m"]["status"] == "BLOCKED"
+    assert readiness["5m"]["reason_code"] == "PromotionUnavailable"
 
-    # Verify run_continuous fails closed before starting loop
-    with pytest.raises(PromotionUnavailable):
-        cont.run_continuous(max_ticks=1)
+    # The continuous loop proceeds and each tick reports the blocked timeframe
+    # without aborting the worker. The fixture's candles are stale relative to
+    # real time, so the timeframe fails closed on the freshness/closure gate,
+    # with the candidate blocker honestly disclosed in blocked_state.
+    ticks = cont.run_ticks(1)
+    assert len(ticks) == 1
+    eval_5m = ticks[0]["evaluations"]["5m"]
+    assert eval_5m["blocked"] is True
+    assert eval_5m["reason"] == "stale_market_data"
+    assert eval_5m["blocked_state"]["reason"] == "PromotionUnavailable"
 
 
 def test_startup_preflight_accepts_valid_authoritative_promoted_candidate(tmp_path) -> None:

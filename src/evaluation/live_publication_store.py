@@ -10,6 +10,7 @@ from src.evaluation.live_decision_lifecycle import (
     CanonicalLiveDecision,
     LiveDecisionLifecycleError,
     LiveDecisionLifecycleState,
+    strip_volatile_canonical_fields,
     transition_live_decision,
     validate_live_decision_lifecycle,
 )
@@ -133,7 +134,9 @@ def append_publication_record(
                     )
 
                 # Compare entire publication record representation for exact match
-                if existing == new_record:
+                # (volatile wall-clock fields excluded: re-persisting the same
+                # publication after re-authorization must remain idempotent)
+                if strip_volatile_canonical_fields(existing) == strip_volatile_canonical_fields(new_record):
                     # Identical replay: safe no-op
                     return history
 

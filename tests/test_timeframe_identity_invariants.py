@@ -173,7 +173,9 @@ def test_exact_timeframe_identity_enforcement(tmp_path: Path) -> None:
     assert res_30m["blocked"] is True
     assert res_30m["reason"] == "PromotionEligibilityError"
 
-    # 3. ContinuousLiveRuntime candidate timeframe mismatch -> blocked
+    # 3. ContinuousLiveRuntime candidate timeframe mismatch -> fails closed for
+    # ACTIONS while still producing its own truthful NO_TRADE observation
+    # (declining to act is not the same as suppressing evaluation).
     cont_runtime = ContinuousLiveRuntime(
         symbol="XAUUSD",
         timeframes=["15m"],
@@ -193,8 +195,12 @@ def test_exact_timeframe_identity_enforcement(tmp_path: Path) -> None:
     with patch.object(cont_runtime, "_acquire_market_data", return_value=df_15m):
         tick_res = cont_runtime.tick(reference_now=now_dt)
         eval_15m = tick_res["evaluations"]["15m"]
-        assert eval_15m["blocked"] is True
-        assert eval_15m["reason"] == "PromotionEligibilityError"
+        assert eval_15m.get("observation") is True
+        assert eval_15m.get("blocked") is False
+        assert eval_15m.get("decision") == "NO TRADE"
+        assert eval_15m.get("candidate_id") is None
+        assert eval_15m.get("reason") == "PromotionEligibilityError"
+        assert eval_15m.get("publish_result", {}).get("status") == "SKIPPED_DISABLED"
 
 
 def test_fail_closed_missing_candidate_and_stale_data(tmp_path: Path) -> None:
@@ -798,9 +804,14 @@ def test_cross_timeframe_isolation_mixed_outcomes(tmp_path: Path) -> None:
         assert evals["1m"]["blocked"] is False
         assert evals["1m"]["interval"] == "1m"
 
-        # 5m is blocked
-        assert evals["5m"]["blocked"] is True
-        assert evals["5m"]["reason"] == "PromotionUnavailable"
+        # 5m: no candidate of its own -> truthful NO_TRADE observation (its own
+        # evaluation/publication outcome, unimpaired by 1m's success).
+        assert evals["5m"].get("observation") is True
+        assert evals["5m"].get("blocked") is False
+        assert evals["5m"].get("decision") == "NO TRADE"
+        assert evals["5m"].get("candidate_id") is None
+        assert evals["5m"].get("reason") == "PromotionUnavailable"
+        assert evals["5m"].get("publish_result", {}).get("status") == "SKIPPED_DISABLED"
 
 
 def test_moving_average_integration_conflict_uninhibited_by_momentum_signal(tmp_path: Path) -> None:

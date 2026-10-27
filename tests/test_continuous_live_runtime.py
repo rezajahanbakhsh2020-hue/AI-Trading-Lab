@@ -126,6 +126,28 @@ def make_tf_market_data(start_time="2025-01-01 10:00", timeframe="5m", count=10)
     })
 
 
+def make_fresh_tf_data(timeframe: str, ref_now: datetime.datetime, count: int = 10) -> pd.DataFrame:
+    """Hermetic fresh candle slice for a timeframe, mirroring real provider shape.
+
+    The last row is the currently OPEN candle (opens at ref_now). The second-to-last
+    candle opens one duration earlier and is therefore CLOSED by ref_now, and every
+    closed candle's age is within duration + max_age tolerance."""
+    duration = {
+        "1m": 60, "5m": 300, "15m": 900, "30m": 1800,
+        "1H": 3600, "4H": 14400, "1D": 86400,
+    }[timeframe]
+    dates = [ref_now - datetime.timedelta(seconds=duration * i) for i in range(count - 1, -1, -1)]
+    prices = [2000.0 + (i * 2.0) for i in range(count)]
+    return pd.DataFrame({
+        "openTime": [d.isoformat() for d in dates],
+        "open": [p - 1.0 for p in prices],
+        "high": [p + 3.0 for p in prices],
+        "low": [p - 2.0 for p in prices],
+        "close": prices,
+        "timestamp": dates,
+    })
+
+
 # -----------------------------------------------------------------------------
 # Closed-candle tests (1-7)
 # -----------------------------------------------------------------------------
@@ -424,7 +446,11 @@ def test_13_14_exact_timeframe_candidate_used(tmp_path) -> None:
 
 
 def test_15_explicit_candidate_timeframe_mismatch_fails_closed(tmp_path) -> None:
-    """15. Explicit candidate with mismatched DatasetScope timeframe fails closed."""
+    """15. Explicit candidate with mismatched DatasetScope timeframe fails closed.
+
+    Fails closed for ACTIONS (no authorized candidate, no trade executed), while
+    still producing the timeframe's own truthful NO_TRADE market observation with
+    the eligibility blocker disclosed."""
     persist_momentum_candidate(tmp_path, candidate_id="cand_5m", timeframe="5m")
 
     cont = ContinuousLiveRuntime(
@@ -442,11 +468,16 @@ def test_15_explicit_candidate_timeframe_mismatch_fails_closed(tmp_path) -> None
     res = cont.tick(reference_now=ref_now)
 
     eval_15m = res["evaluations"]["15m"]
-    assert eval_15m["blocked"] is True
-    assert eval_15m["reason"] == "PromotionEligibilityError"
-    assert "timeframe '5m'" in eval_15m["detail"]
-    assert "15m" in eval_15m["detail"]
-    assert len(cont._evaluated_candles) == 0
+    # No authorized action: the mismatched candidate must never act on this timeframe.
+    assert eval_15m.get("observation") is True
+    assert eval_15m.get("blocked") is False
+    assert eval_15m.get("decision") == "NO TRADE"
+    assert eval_15m.get("candidate_id") is None
+    assert eval_15m.get("publish_result", {}).get("status") == "SKIPPED_DISABLED"
+    # The eligibility blocker is honestly disclosed, naming the misconfigured scope.
+    assert eval_15m.get("reason") == "PromotionEligibilityError"
+    assert "timeframe '5m'" in eval_15m.get("detail", "")
+    assert "15m" in eval_15m.get("detail", "")
 
 
 def test_16_missing_candidate_fails_closed(tmp_path) -> None:
@@ -466,8 +497,13 @@ def test_16_missing_candidate_fails_closed(tmp_path) -> None:
     res = cont.tick(reference_now=ref_now)
 
     eval_5m = res["evaluations"]["5m"]
+    # Fail-closed: no authorized candidate AND no trade action. The freshest
+    # truth (stale market data failed the freshness/closure gate for this
+    # candle) is reported at top level, with the missing candidate blocker
+    # disclosed in blocked_state.
     assert eval_5m["blocked"] is True
-    assert eval_5m["reason"] == "PromotionUnavailable"
+    assert eval_5m["reason"] == "stale_market_data"
+    assert eval_5m["blocked_state"]["reason"] == "PromotionUnavailable"
 
 
 def test_candidate_mapping_parser_exact_duplicate_key_rejected() -> None:
@@ -993,15 +1029,143 @@ def test_independent_startup_readiness_partial_blocked_runs_healthy_timeframe(tm
         assert eval_5m["blocked"] is False
         assert eval_5m["candidate_id"] == "cand_5m_only"
 
-        assert eval_15m["blocked"] is True
-        assert eval_15m["reason"] == "PromotionUnavailable"
-        assert eval_15m["candidate_id"] == "missing_15m_cand"
+        assert eval_15m.get("observation") is True
+        assert eval_15m.get("blocked") is False
+        assert eval_15m.get("decision") == "NO TRADE"
+        assert eval_15m.get("candidate_id") is None
+        assert eval_15m.get("reason") == "PromotionUnavailable"
+        assert eval_15m.get("publish_result", {}).get("status") == "SKIPPED_DISABLED"
+
+
+def test_blocked_timeframe_does_not_suppress_other_timeframes_publication(tmp_path: Path) -> None:
+    """Acceptance: a missing/unqualified candidate on one timeframe must not suppress that
+    timeframe's own evaluation outcome nor prevent another timeframe's valid decision from
+    reaching the P2 publisher. Publication is per-timeframe independent."""
+    from unittest.mock import MagicMock
+    from src.evaluation.research_store import save_research_candidate
+    from tests.test_timeframe_identity_invariants import _make_test_evidence
+
+    save_research_candidate(
+        candidate_id="cand_5m_pub",
+        evidence=_make_test_evidence("5m"),
+        operational_stability_score=0.88,
+        base_dir=tmp_path,
+    )
+
+    mock_publisher = MagicMock()
+    mock_publisher.enabled = True
+    mock_publisher.publish_url = "https://project2.example/api/v1/integration/project1/ingest"
+    mock_publisher.api_key = "test_api_key"
+    mock_publisher.publish.return_value = {
+        "status": "PUBLISHED",
+        "published": True,
+        "delivery_status": "DELIVERED",
+    }
+
+    cont_runtime = ContinuousLiveRuntime(
+        symbol="XAUUSD",
+        timeframes=["5m", "15m"],
+        research_dir=tmp_path,
+        store_path=tmp_path / "decisions.json",
+        snapshot_path=tmp_path / "snapshots.json",
+        candidate_ids={"5m": "cand_5m_pub", "15m": "missing_15m_cand"},
+        publish=True,
+        publisher=mock_publisher,
+        max_age_seconds=3600.0,
+    )
+
+    now_dt = datetime.datetime.now(datetime.timezone.utc)
+    dates = [now_dt - datetime.timedelta(minutes=5 * i) for i in range(100)]
+    dates.reverse()
+    prices = [2000.0 + (i * 2.0) for i in range(100)]
+    df_5m = pd.DataFrame({
+        "openTime": [d.isoformat() for d in dates],
+        "open": [p - 1.0 for p in prices],
+        "high": [p + 3.0 for p in prices],
+        "low": [p - 2.0 for p in prices],
+        "close": prices,
+    })
+
+    def loader(tf: str) -> pd.DataFrame:
+        return df_5m
+
+    cont_runtime.verify_startup_readiness()
+    tick_res = cont_runtime.tick(reference_now=now_dt)
+
+    # 15m is independently evaluated on its own real candle slice; with no
+    # candidate of its own it fails closed for ACTIONS and publishes its own
+    # truthful NO_TRADE market observation (never claiming the 5m candidate).
+    eval_15m = tick_res["evaluations"]["15m"]
+    assert eval_15m.get("observation") is True
+    assert eval_15m.get("blocked") is False
+    assert eval_15m.get("decision") == "NO TRADE"
+    assert eval_15m.get("candidate_id") is None
+    assert eval_15m.get("reason") == "PromotionUnavailable"
+    assert eval_15m.get("publish_result", {}).get("published") is True
+    assert eval_15m.get("publication", {}).get("signal", {}).get("decision") == "NO TRADE"
+    assert eval_15m.get("publication", {}).get("provenance", {}).get("authorized") is False
+
+    # 5m evaluated independently and its valid decision was delivered to P2
+    # even without the 15m candidate.
+    eval_5m = tick_res["evaluations"]["5m"]
+    assert eval_5m["blocked"] is False
+    assert eval_5m["symbol"] == "XAUUSD"
+    assert eval_5m["interval"] == "5m"
+    assert eval_5m["candidate_id"] == "cand_5m_pub"
+    assert eval_5m["decision"] in ("BUY", "SELL", "NO TRADE")
+    assert eval_5m["publish_result"]["published"] is True
+    assert eval_5m["publish_result"]["status"] == "PUBLISHED"
+
+    # Both timeframes reached the single publisher path independently.
+    assert mock_publisher.publish.call_count == 2
+
+
+def test_all_seven_configured_timeframes_independently_attempted(tmp_path: Path) -> None:
+    """Acceptance: all seven canonical timeframes are configured and independently attempted;
+    candidate absence yields per-timeframe truthful NO_TRADE observations without crashing
+    the worker."""
+    now_dt = datetime.datetime.now(datetime.timezone.utc)
+    cont_runtime = ContinuousLiveRuntime(
+        symbol="XAUUSD",
+        timeframes=["1m", "5m", "15m", "30m", "1H", "4H", "1D"],
+        poll_interval=0.0,
+        research_dir=tmp_path,
+        store_path=tmp_path / "decisions.json",
+        snapshot_path=tmp_path / "snapshots.json",
+        candidate_ids={"1D": "missing_1d"},
+        publish=False,
+        persist=False,
+        market_data_loaders=lambda tf: make_fresh_tf_data(tf, now_dt),
+    )
+
+    readiness = cont_runtime.verify_startup_readiness()
+    assert set(readiness.keys()) == {"1m", "5m", "15m", "30m", "1H", "4H", "1D"}
+    assert readiness["1m"]["status"] == "BLOCKED"
+    assert readiness["1D"]["status"] == "BLOCKED"
+
+    tick_res = cont_runtime.tick(reference_now=now_dt)
+    evaluations = tick_res["evaluations"]
+    assert set(evaluations.keys()) == {"1m", "5m", "15m", "30m", "1H", "4H", "1D"}
+    for tf in ("1m", "5m", "15m", "30m", "1H", "4H", "1D"):
+        # Each timeframe publishes its own truthful NO_TRADE observation when no
+        # authorized candidate exists (publication disabled in this test), with
+        # the candidate blocker honestly disclosed in its own result.
+        assert evaluations[tf].get("observation") is True, tf
+        assert evaluations[tf].get("blocked") is False, tf
+        assert evaluations[tf].get("decision") == "NO TRADE", tf
+        assert evaluations[tf].get("candidate_id") is None, tf
+        assert evaluations[tf].get("reason") == "PromotionUnavailable", tf
+        assert evaluations[tf].get("publish_result", {}).get("status") == "SKIPPED_DISABLED", tf
+
+    # The runtime is still alive and will recover a timeframe automatically when its
+    # prerequisite becomes available without any restart.
+    assert cont_runtime.is_running
 
 
 def test_stale_timeframe_readiness_cache_invalidation_on_failed_preflight(tmp_path: Path) -> None:
     """Verify that a failed preflight invalidates any previous cached _timeframe_readiness matrix."""
     from unittest.mock import patch
-    from src.evaluation.research_store import PromotionUnavailable, save_research_candidate
+    from src.evaluation.research_store import save_research_candidate
     from tests.test_timeframe_identity_invariants import _make_test_evidence
 
     # 1. Create candidate artifact for 5m
@@ -1037,29 +1201,68 @@ def test_stale_timeframe_readiness_cache_invalidation_on_failed_preflight(tmp_pa
         "candidate_id": "cand_5m_cache",
     }
     with patch("src.evaluation.live_execution_runtime.verify_timeframe_production_readiness", return_value=blocked_mock):
-        with pytest.raises(PromotionUnavailable, match="0 of 2 configured timeframes are READY"):
-            cont_runtime.verify_startup_readiness()
+        # Candidate unavailability must NOT abort the worker: it is cached as per-timeframe
+        # BLOCKED state and reported independently, while the process keeps running.
+        second_res = cont_runtime.verify_startup_readiness()
+        assert second_res["5m"]["status"] == "BLOCKED"
+        assert second_res["15m"]["status"] == "BLOCKED"
 
-    # Assert that stale readiness cache from first preflight was cleared and is empty
-    assert cont_runtime._timeframe_readiness == {}
+    # Assert that stale readiness cache from first preflight was cleared and replaced
+    assert cont_runtime._timeframe_readiness["5m"]["status"] == "BLOCKED"
+    assert cont_runtime._timeframe_readiness["15m"]["status"] == "BLOCKED"
 
 
-def test_independent_startup_readiness_all_blocked_fails_closed(tmp_path: Path) -> None:
-    """Test C: All timeframes BLOCKED must fail closed with PromotionUnavailable on startup preflight."""
-    from src.evaluation.research_store import PromotionUnavailable
+def test_all_blocked_timeframes_do_not_abort_worker(tmp_path: Path) -> None:
+    """A worker with 0 READY timeframes must NOT crash: each timeframe independently
+    reports its own truthful outcome on preflight and on every tick."""
+    now_dt = datetime.datetime.now(datetime.timezone.utc)
     cont_runtime = ContinuousLiveRuntime(
         symbol="XAUUSD",
         timeframes=["1m", "15m"],
         research_dir=tmp_path,
+        store_path=tmp_path / "decisions.json",
+        snapshot_path=tmp_path / "snapshots.json",
         candidate_ids={
             "1m": "missing_1m",
             "15m": "missing_15m",
         },
         publish=False,
+        persist=False,
+        market_data_loaders=lambda tf: make_fresh_tf_data(tf, now_dt),
     )
 
-    with pytest.raises(PromotionUnavailable, match="0 of 2 configured timeframes are READY"):
-        cont_runtime.verify_startup_readiness()
+    # Preflight must NOT raise: candidate unavailability is per-timeframe.
+    readiness = cont_runtime.verify_startup_readiness()
+    assert readiness["1m"]["status"] == "BLOCKED"
+    assert readiness["1m"]["reason_code"] == "PromotionUnavailable"
+    assert readiness["15m"]["status"] == "BLOCKED"
+    assert readiness["15m"]["reason_code"] == "PromotionUnavailable"
+
+    # Continuous ticks proceed and each timeframe produces its own truthful
+    # NO_TRADE observation with the missing-candidate blocker disclosed
+    # (publication disabled in this test).
+    tick_res = cont_runtime.tick(reference_now=now_dt)
+    assert tick_res["evaluations"]["1m"].get("observation") is True
+    assert tick_res["evaluations"]["1m"].get("blocked") is False
+    assert tick_res["evaluations"]["1m"].get("decision") == "NO TRADE"
+    assert tick_res["evaluations"]["1m"].get("reason") == "PromotionUnavailable"
+    assert tick_res["evaluations"]["15m"].get("observation") is True
+    assert tick_res["evaluations"]["15m"].get("blocked") is False
+    assert tick_res["evaluations"]["15m"].get("decision") == "NO TRADE"
+    assert tick_res["evaluations"]["15m"].get("reason") == "PromotionUnavailable"
+
+    # The rejection remains for publish-mode misuse: publishing requested while the
+    # publisher configuration is unusable is a process-level failure.
+    unusable = ContinuousLiveRuntime(
+        symbol="XAUUSD",
+        timeframes=["1D"],
+        research_dir=tmp_path,
+        candidate_ids={"1D": "missing_1d"},
+        publish=True,
+    )
+    from src.evaluation.research_store import PromotionUnavailable
+    with pytest.raises(PromotionUnavailable, match="unusable"):
+        unusable.verify_startup_readiness()
 
 
 def test_independent_startup_readiness_seven_timeframe_ladder(tmp_path: Path) -> None:

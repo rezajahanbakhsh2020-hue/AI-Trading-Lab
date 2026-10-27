@@ -1,5 +1,6 @@
 """Comprehensive focused test suite for Canonical Live Decision Lifecycle (PR #47 Follow-up)."""
 
+import copy
 from datetime import datetime, timezone
 from unittest.mock import MagicMock
 import pytest
@@ -167,6 +168,58 @@ def test_artifact_immutability():
 
     with pytest.raises(AttributeError):
         cld.live_decision_id = "hacked_id"
+
+
+# --- Test C2: Canonical fingerprint is independent of the wall clock ---
+def test_canonical_fingerprint_is_clock_independent():
+    """Two canonical decisions with identical semantic content but different
+    wall-clock creation/decision timestamps MUST share the canonical
+    fingerprint; otherwise every re-execution of the same candle produces a
+    conflicting canonical_live_decision_fingerprint."""
+    receipt, decision, signal, risk, _ = _setup_canonical_components()
+
+    ts_a = "2026-10-26T05:00:00+00:00"
+    ts_b = "2026-10-26T05:07:00+00:00"
+
+    dec_a = ProductionDecision(
+        candidate_id=decision.candidate_id,
+        evidence_id=decision.evidence_id,
+        experiment_fingerprint=decision.experiment_fingerprint,
+        symbol="XAUUSD",
+        timeframe="5m",
+        decision_timestamp=ts_a,
+        market_timestamp=decision.market_timestamp,
+        direction=Direction.BUY,
+        reason=decision.reason,
+        entry_price=2000.0,
+        invalidation_condition="Close below SL",
+        confidence=0.85,
+        parameters=decision.parameters,
+    )
+    dec_b = ProductionDecision(
+        candidate_id=decision.candidate_id,
+        evidence_id=decision.evidence_id,
+        experiment_fingerprint=decision.experiment_fingerprint,
+        symbol="XAUUSD",
+        timeframe="5m",
+        decision_timestamp=ts_b,
+        market_timestamp=decision.market_timestamp,
+        direction=Direction.BUY,
+        reason=decision.reason,
+        entry_price=2000.0,
+        invalidation_condition="Close below SL",
+        confidence=0.85,
+        parameters=decision.parameters,
+    )
+
+    cld_a = create_canonical_live_decision(receipt, dec_a, signal, risk, timestamp_utc=ts_a)
+    cld_b = create_canonical_live_decision(receipt, dec_b, signal, risk, timestamp_utc=ts_b)
+
+    assert cld_a.canonical_live_decision_fingerprint == cld_b.canonical_live_decision_fingerprint
+
+    # Chronology validation still holds with distinct volatile timestamps.
+    assert validate_live_decision_lifecycle(cld_a)
+    assert validate_live_decision_lifecycle(cld_b)
 
 
 # --- Test D: Authorization Mismatch Rejection ---
@@ -422,8 +475,43 @@ def test_persistence_replay_idempotency_and_conflict(tmp_path):
         append_live_decision_to_store(rec_conflict, store_path)
 
 
-# --- Test N: Missing Authorization Blocks Execution ---
-def test_missing_authorization_blocks_execution(tmp_path):
+def test_publication_replay_with_later_clock_is_idempotent(tmp_path):
+    """Re-persisting the same publication after re-authorization must be an
+    idempotent no-op: provenance wall-clock fields must not converge identical
+    replays into a 'conflicting publication replay'."""
+    pub_path = tmp_path / "pub.json"
+    base = {
+        "publication_id": "pub_replay_clock",
+        "decision_id": "dec_replay_clock",
+        "decision": "BUY",
+        "decision_timestamp": "2026-09-10T05:45:00+00:00",
+        "market_data_timestamp": "2026-09-10T05:40:00+00:00",
+        "provenance": {
+            "runtime_authorization_fingerprint": "auth_fp_clock",
+            "canonical_live_decision_fingerprint": "cld_fp_clock",
+            "authorized_at_utc": "2026-09-10T05:45:00+00:00",
+        },
+    }
+
+    append_publication_record(base, pub_path)
+
+    replay = copy.deepcopy(base)
+    replay["decision_timestamp"] = "2026-09-10T05:52:00+00:00"
+    replay["provenance"]["authorized_at_utc"] = "2026-09-10T05:52:00+00:00"
+
+    append_publication_record(replay, pub_path)
+
+    from src.evaluation.live_publication_store import load_publication_history
+    assert len(load_publication_history(pub_path)) == 1
+
+    # Genuine content drift is still a conflict.
+    conflicting = copy.deepcopy(base)
+    conflicting["provenance"]["canonical_live_decision_fingerprint"] = "DIFF_FP"
+    with pytest.raises(PublicationIntegrityError, match="Conflicting publication replay"):
+        append_publication_record(conflicting, pub_path)
+
+
+# --- Test N: Missing Authorization Blocks Execution ---def test_missing_authorization_blocks_execution(tmp_path):
     from tests.test_production_decision_integrity import make_promoted_evidence
     from src.evaluation.research_store import save_research_candidate
 

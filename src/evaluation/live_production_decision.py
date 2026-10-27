@@ -226,9 +226,12 @@ class ProductionRuntimeAuthorization:
             "governance_decision_fingerprint": self.governance_decision_fingerprint,
             "campaign_selection_decision_fingerprint": self.campaign_selection_decision_fingerprint,
             "authorization_policy_version": self.authorization_policy_version,
-            "authorized_at_utc": self.authorized_at_utc,
             "operational_stability_score": self.operational_stability_score,
         }
+        # authorized_at_utc is volatile wall-clock metadata: it is recorded on the
+        # receipt for audit but MUST NOT enter the authorization fingerprint, or
+        # every re-authorization of identical content produces a conflicting
+        # runtime_authorization_fingerprint for the same canonical decision identity.
         serialized = json.dumps(payload, sort_keys=True, ensure_ascii=True)
         object.__setattr__(
             self,
