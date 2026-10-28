@@ -1122,8 +1122,9 @@ def test_blocked_timeframe_does_not_suppress_other_timeframes_publication(tmp_pa
 
 def test_all_seven_configured_timeframes_independently_attempted(tmp_path: Path) -> None:
     """Acceptance: all seven canonical timeframes are configured and independently attempted;
-    candidate absence yields per-timeframe truthful NO_TRADE observations without crashing
-    the worker."""
+    candidate-less timeframes are evaluated by the direct strategy WITHOUT any candidate or
+    promotion artifact (no candidate blockers, no borrowed data), while an explicitly
+    configured-but-missing candidate still fails closed for that timeframe alone."""
     now_dt = datetime.datetime.now(datetime.timezone.utc)
     cont_runtime = ContinuousLiveRuntime(
         symbol="XAUUSD",
@@ -1140,25 +1141,50 @@ def test_all_seven_configured_timeframes_independently_attempted(tmp_path: Path)
 
     readiness = cont_runtime.verify_startup_readiness()
     assert set(readiness.keys()) == {"1m", "5m", "15m", "30m", "1H", "4H", "1D"}
-    assert readiness["1m"]["status"] == "BLOCKED"
+
+    # Candidate-less timeframes are READY without any promotion artifact.
+    for tf in ("1m", "5m", "15m", "30m", "1H", "4H"):
+        assert readiness[tf]["status"] == "READY", tf
+        assert readiness[tf]["candidate_id"] is None, tf
+        assert readiness[tf]["reason_code"] == "READY", tf
+
+    # 1D explicitly maps a candidate ID that does not exist -> promoted-candidate
+    # path fails closed for that timeframe alone.
     assert readiness["1D"]["status"] == "BLOCKED"
+    assert readiness["1D"]["reason_code"] == "PromotionUnavailable"
 
     tick_res = cont_runtime.tick(reference_now=now_dt)
     evaluations = tick_res["evaluations"]
     assert set(evaluations.keys()) == {"1m", "5m", "15m", "30m", "1H", "4H", "1D"}
-    for tf in ("1m", "5m", "15m", "30m", "1H", "4H", "1D"):
-        # Each timeframe publishes its own truthful NO_TRADE observation when no
-        # authorized candidate exists (publication disabled in this test), with
-        # the candidate blocker honestly disclosed in its own result.
-        assert evaluations[tf].get("observation") is True, tf
-        assert evaluations[tf].get("blocked") is False, tf
-        assert evaluations[tf].get("decision") == "NO TRADE", tf
-        assert evaluations[tf].get("candidate_id") is None, tf
-        assert evaluations[tf].get("reason") == "PromotionUnavailable", tf
-        assert evaluations[tf].get("publish_result", {}).get("status") == "SKIPPED_DISABLED", tf
 
-    # The runtime is still alive and will recover a timeframe automatically when its
-    # prerequisite becomes available without any restart.
+    for tf in ("1m", "5m", "15m", "30m", "1H", "4H"):
+        # Each candidate-less timeframe produces its own direct-strategy
+        # decision derived ONLY from its own data (no candidate consulted),
+        # with publication disabled in this test.
+        ev = evaluations[tf]
+        assert ev.get("direct_signal") is True, tf
+        assert ev.get("blocked") is False, tf
+        assert ev.get("decision") in ("BUY", "SELL", "NO TRADE"), tf
+        assert ev.get("candidate_id") is None, tf
+        assert ev.get("interval") == tf, tf
+        assert ev.get("publish_result", {}).get("status") == "SKIPPED_DISABLED", tf
+        # Deterministic outcome for the monotonically rising fresh fixture with
+        # 10 candles: insufficient history for the slow MA -> truthful NO TRADE.
+        assert ev.get("decision") == "NO TRADE", tf
+        assert ev.get("reason") == "insufficient_history", tf
+        assert ev.get("trade_levels") is None, tf
+
+    # 1D keeps its own truthful candidate-gated observation: no authorized
+    # candidate for that timeframe, never borrowing another frame's decision.
+    ev_1d = evaluations["1D"]
+    assert ev_1d.get("observation") is True
+    assert ev_1d.get("blocked") is False
+    assert ev_1d.get("decision") == "NO TRADE"
+    assert ev_1d.get("candidate_id") is None
+    assert ev_1d.get("reason") == "PromotionUnavailable"
+    assert ev_1d.get("publish_result", {}).get("status") == "SKIPPED_DISABLED"
+
+    # The runtime is still alive and each frame remains independently recoverable.
     assert cont_runtime.is_running
 
 
@@ -1298,12 +1324,16 @@ def test_independent_startup_readiness_seven_timeframe_ladder(tmp_path: Path) ->
     readiness = cont_runtime.verify_startup_readiness()
     assert len(readiness) == 7
 
+    # Explicitly configured candidates remain gated by promotion artifacts.
     assert readiness["5m"]["status"] == "READY"
     assert readiness["1D"]["status"] == "READY"
 
-    for blocked_tf in ("1m", "15m", "30m", "1H", "4H"):
-        assert readiness[blocked_tf]["status"] == "BLOCKED"
-        assert readiness[blocked_tf]["reason_code"] == "PromotionUnavailable"
+    # Candidate-less timeframes are direct-strategy frames: READY without any
+    # promotion artifact and never borrowing another timeframe's candidate.
+    for direct_tf in ("1m", "15m", "30m", "1H", "4H"):
+        assert readiness[direct_tf]["status"] == "READY"
+        assert readiness[direct_tf]["candidate_id"] is None
+        assert readiness[direct_tf]["reason_code"] == "READY"
 
 
 def test_timeframe_scoped_persistence_path_isolation(tmp_path: Path) -> None:
