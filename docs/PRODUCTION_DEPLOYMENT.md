@@ -77,3 +77,25 @@ When the worker starts (`run_live_execution.py --continuous`), it executes a man
 3. **Secret Configuration:** Supply `PROJECT2_API_KEY` in Render Dashboard.
 4. **Authoritative Artifact Provisioning:** Ensure tracked candidate artifacts in `results/research_experiments/` are present.
 5. **Live P1->P2 Delivery Proof:** Confirmed by inspecting Render worker logs for `Publish Result: {'status': 'PUBLISHED', ...}` or reviewing Project 2 dashboard/ingest logs.
+
+## 6. Migration Notes: Direct Live Signals (Candidate-Free Default)
+
+Since the simplification of the live runtime (Issue #100), each canonical
+timeframe (`1m, 5m, 15m, 30m, 1H, 4H, 1D`) no longer requires a persisted
+promoted candidate to produce a live decision. The default path is ONE
+deterministic strategy (`ma_crossover_direct`, fast=5 / slow=20 closes,
+risk/reward=2.0 with stop at the evaluated candle's low/high), evaluated
+independently on each timeframe's own closed, fresh candle data, and published
+through the existing P1->P2 `DirectSignalPublication` Contract v1.0 payload.
+
+- Timeframes configured WITHOUT `--candidate-id` per-timeframe mappings run in
+  direct mode (`src/evaluation/live_direct_strategy.py`); operations require no
+  candidate artifacts and no research store.
+- Timeframes configured WITH an explicit per-timeframe mapping (e.g.
+  `5m=cand_moving_average_5m`) keep the existing authorized promoted-candidate
+  path unchanged; a missing/mismatched candidate there still fails closed for
+  that timeframe alone.
+- Stale, future, unclosed, or invalid market data fail closed with a
+  machine-readable reason (`stale_market_data`, `unclosed_market_data`,
+  `invalid_market_data`); trade levels are null on every NO TRADE outcome.
+

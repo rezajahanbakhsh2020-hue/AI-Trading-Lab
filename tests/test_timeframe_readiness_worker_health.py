@@ -743,7 +743,12 @@ def test_repeated_deduplicated_candles_remain_operationally_healthy():
 def test_multi_tick_failed_publication_then_recovery_sequence():
     """Verify that a tick with failed publication is not deduplicated and retries until healthy."""
     now_dt = datetime.datetime(2026, 10, 9, 12, 0, 0, tzinfo=datetime.timezone.utc)
-    runtime = ContinuousLiveRuntime(symbol="XAUUSD", timeframes=["5m"], clock=lambda: now_dt)
+    runtime = ContinuousLiveRuntime(
+        symbol="XAUUSD",
+        timeframes=["5m"],
+        clock=lambda: now_dt,
+        candidate_ids={"5m": "cand_moving_average_5m"},
+    )
 
     mock_df = pd.DataFrame(
         {
@@ -814,7 +819,12 @@ def test_multi_tick_failed_publication_then_recovery_sequence():
 def test_multi_tick_persistent_publication_failure_remains_degraded():
     """Verify that persistent publication failure prevents false-positive deduplicated health."""
     now_dt = datetime.datetime(2026, 10, 9, 12, 0, 0, tzinfo=datetime.timezone.utc)
-    runtime = ContinuousLiveRuntime(symbol="XAUUSD", timeframes=["5m"], clock=lambda: now_dt)
+    runtime = ContinuousLiveRuntime(
+        symbol="XAUUSD",
+        timeframes=["5m"],
+        clock=lambda: now_dt,
+        candidate_ids={"5m": "cand_moving_average_5m"},
+    )
 
     mock_df = pd.DataFrame(
         {

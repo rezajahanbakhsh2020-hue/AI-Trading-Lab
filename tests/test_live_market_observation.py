@@ -271,7 +271,7 @@ def test_missing_candidate_timeframe_evaluates_and_publishes_no_trade_observatio
     evaluation result, and publication outcome in the same tick."""
     pub_mock = _enabled_publisher()
     loaders = {"15m": SequenceLoader(candles_ending_before("15m", last_open=datetime.datetime(2025, 1, 1, 12, 10, tzinfo=datetime.timezone.utc)))}
-    cont = _runtime(tmp_path, loaders, publisher=pub_mock)
+    cont = _runtime(tmp_path, loaders, candidate_ids={"15m": "missing_15m"}, publisher=pub_mock)
     tick_summary = cont.tick(reference_now=REF_NOW)
 
     res = tick_summary["evaluations"]["15m"]
@@ -311,7 +311,7 @@ def test_unqualified_timeframe_does_not_prevent_qualified_timeframe_evaluation_a
         "5m": SequenceLoader(candles_ending_before("5m", last_open=datetime.datetime(2025, 1, 1, 12, 25, tzinfo=datetime.timezone.utc))),
         "15m": SequenceLoader(candles_ending_before("15m", last_open=datetime.datetime(2025, 1, 1, 12, 10, tzinfo=datetime.timezone.utc))),
     }
-    cont = _runtime(tmp_path, loaders, candidate_ids={"5m": cand_5m}, publisher=pub_mock, persist=True)
+    cont = _runtime(tmp_path, loaders, candidate_ids={"5m": cand_5m, "15m": "missing_15m"}, publisher=pub_mock, persist=True)
     tick_summary = cont.tick(reference_now=REF_NOW)
 
     evals = tick_summary["evaluations"]
@@ -349,7 +349,7 @@ def test_unqualified_timeframe_with_stale_data_fails_closed_without_publication(
     pub_mock = _enabled_publisher()
     # Last candle closes 12:00 -> ~30 minutes stale relative to REF_NOW for the 15m slice.
     loaders = {"15m": SequenceLoader(candles_ending_before("15m", last_open=datetime.datetime(2025, 1, 1, 11, 45, tzinfo=datetime.timezone.utc)))}
-    cont = _runtime(tmp_path, loaders, publisher=pub_mock)
+    cont = _runtime(tmp_path, loaders, candidate_ids={"15m": "missing_15m"}, publisher=pub_mock)
     tick_summary = cont.tick(reference_now=REF_NOW)
 
     res = tick_summary["evaluations"]["15m"]
@@ -358,7 +358,7 @@ def test_unqualified_timeframe_with_stale_data_fails_closed_without_publication(
     assert res.get("reason") == "stale_market_data"
     assert res.get("observation") is None
     assert res.get("blocked_state", {}).get("reason") == "PromotionUnavailable"
-    assert res.get("blocked_state", {}).get("candidate_id") is None
+    assert res.get("blocked_state", {}).get("candidate_id") == "missing_15m"
     assert res.get("blocked_state", {}).get("market_data_fresh") is False
     pub_mock.publish.assert_not_called()
 
@@ -389,14 +389,14 @@ def test_observation_publication_failure_retries_next_tick_and_then_deduplicates
         _fake_published(),
     ])
     loaders = {"15m": SequenceLoader(candles_ending_before("15m", last_open=datetime.datetime(2025, 1, 1, 12, 10, tzinfo=datetime.timezone.utc)))}
-    cont = _runtime(tmp_path, loaders, publisher=pub_mock)
+    cont = _runtime(tmp_path, loaders, candidate_ids={"15m": "missing_15m"}, publisher=pub_mock)
 
     tick1 = cont.tick(reference_now=REF_NOW)
     res1 = tick1["evaluations"]["15m"]
     assert res1["publish_result"]["status"] == "FAILED"
     assert tick1["health"]["status"] == "WORKER_DEGRADED"
 
-    dedup_key = ("XAUUSD", "15m", "2025-01-01T12:10:00+00:00", None)
+    dedup_key = ("XAUUSD", "15m", "2025-01-01T12:10:00+00:00", "missing_15m")
     assert dedup_key not in cont._evaluated_candles
 
     tick2 = cont.tick(reference_now=REF_NOW)
@@ -419,14 +419,14 @@ def test_observation_dedup_key_is_per_timeframe_and_candle(tmp_path) -> None:
     loader_1 = candles_ending_before("15m", last_open=datetime.datetime(2025, 1, 1, 12, 10, tzinfo=datetime.timezone.utc))
     loader_2 = candles_ending_before("15m", last_open=datetime.datetime(2025, 1, 1, 12, 20, tzinfo=datetime.timezone.utc))
     loaders = {"15m": SequenceLoader(loader_1, loader_2)}
-    cont = _runtime(tmp_path, loaders, publisher=pub_mock)
+    cont = _runtime(tmp_path, loaders, candidate_ids={"15m": "missing_15m"}, publisher=pub_mock)
 
     cont.tick(reference_now=REF_NOW)  # first candle (open 12:10) closed 12:25
     cont.tick(reference_now=datetime.datetime(2025, 1, 1, 12, 40, tzinfo=datetime.timezone.utc))  # second candle (open 12:20) closes 12:35
 
     dedup_keys = cont._evaluated_candles
-    assert ("XAUUSD", "15m", "2025-01-01T12:10:00+00:00", None) in dedup_keys
-    assert ("XAUUSD", "15m", "2025-01-01T12:20:00+00:00", None) in dedup_keys
+    assert ("XAUUSD", "15m", "2025-01-01T12:10:00+00:00", "missing_15m") in dedup_keys
+    assert ("XAUUSD", "15m", "2025-01-01T12:20:00+00:00", "missing_15m") in dedup_keys
     assert len(dedup_keys) == 2
 
 
@@ -437,7 +437,7 @@ def test_multiple_candidate_less_timeframes_are_independently_attempted(tmp_path
         "15m": SequenceLoader(candles_ending_before("15m", last_open=datetime.datetime(2025, 1, 1, 12, 10, tzinfo=datetime.timezone.utc))),
         "30m": SequenceLoader(candles_ending_before("30m", last_open=datetime.datetime(2025, 1, 1, 12, 0, tzinfo=datetime.timezone.utc))),
     }
-    cont = _runtime(tmp_path, loaders, publisher=pub_mock)
+    cont = _runtime(tmp_path, loaders, candidate_ids={"15m": "missing_15m", "30m": "missing_30m"}, publisher=pub_mock)
     tick_summary = cont.tick(reference_now=REF_NOW)
 
     assert tick_summary["evaluations"]["15m"].get("observation") is True
@@ -454,7 +454,7 @@ def test_startup_preflight_blocked_timeframes_are_still_attempted_each_tick(tmp_
     # No candidate at all -> all configured timeframes BLOCKED in preflight.
     pub_mock = _enabled_publisher()
     loaders = {"15m": SequenceLoader(candles_ending_before("15m", last_open=datetime.datetime(2025, 1, 1, 12, 10, tzinfo=datetime.timezone.utc)))}
-    cont = _runtime(tmp_path, loaders, publisher=pub_mock)
+    cont = _runtime(tmp_path, loaders, candidate_ids={"15m": "missing_15m"}, publisher=pub_mock)
     cont._timeframe_readiness = {
         "15m": {"status": "BLOCKED", "reason_code": "PromotionUnavailable", "candidate_id": None},
     }

@@ -776,14 +776,14 @@ def test_cross_timeframe_isolation_mixed_outcomes(tmp_path: Path) -> None:
     )
 
     now_dt = datetime.now(timezone.utc)
-    dates_1m = [now_dt - timedelta(minutes=1 * i) for i in range(20)]
+    dates_1m = [now_dt - timedelta(minutes=1 * i) for i in range(30)]
     dates_1m.reverse()
     df_1m = pd.DataFrame({
         "openTime": [d.isoformat() for d in dates_1m],
-        "open": [100.0] * 20,
-        "high": [101.0] * 20,
-        "low": [99.0] * 20,
-        "close": [100.0] * 20,
+        "open": [100.0] * 30,
+        "high": [101.0] * 30,
+        "low": [99.0] * 30,
+        "close": [100.0] * 30,
     })
 
     cont_runtime = ContinuousLiveRuntime(
@@ -804,13 +804,14 @@ def test_cross_timeframe_isolation_mixed_outcomes(tmp_path: Path) -> None:
         assert evals["1m"]["blocked"] is False
         assert evals["1m"]["interval"] == "1m"
 
-        # 5m: no candidate of its own -> truthful NO_TRADE observation (its own
-        # evaluation/publication outcome, unimpaired by 1m's success).
-        assert evals["5m"].get("observation") is True
+        # 5m: candidate omitted -> direct-strategy evaluation on its own real
+        # closed-candle slice (flat data -> truthful NO TRADE, no crossover),
+        # unimpaired by 1m's authorized evaluation.
+        assert evals["5m"].get("direct_signal") is True
         assert evals["5m"].get("blocked") is False
         assert evals["5m"].get("decision") == "NO TRADE"
         assert evals["5m"].get("candidate_id") is None
-        assert evals["5m"].get("reason") == "PromotionUnavailable"
+        assert evals["5m"].get("reason") == "no_crossover"
         assert evals["5m"].get("publish_result", {}).get("status") == "SKIPPED_DISABLED"
 
 

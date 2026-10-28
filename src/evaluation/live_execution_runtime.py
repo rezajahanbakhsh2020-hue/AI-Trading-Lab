@@ -75,6 +75,18 @@ PUB_FAILURE_STATUSES: tuple[str, ...] = (
 
 _UNSPECIFIED = object()
 
+# Explicit canonical-timeframe -> provider interval mapping. Fails closed for
+# canonical timeframes without a provider interval (should be impossible).
+PROVIDER_INTERVAL_MAP: dict[str, str] = {
+    "1m": "1m",
+    "5m": "5m",
+    "15m": "15m",
+    "30m": "30m",
+    "1H": "1h",
+    "4H": "4h",
+    "1D": "1d",
+}
+
 
 @dataclass(frozen=True)
 class ProductionRuntimeConfig:
@@ -314,16 +326,7 @@ def verify_timeframe_production_readiness(
         ref_now = ref_now.replace(tzinfo=datetime.timezone.utc)
 
     # 1. Provider interval support check
-    provider_interval_map = {
-        "1m": "1m",
-        "5m": "5m",
-        "15m": "15m",
-        "30m": "30m",
-        "1H": "1h",
-        "4H": "4h",
-        "1D": "1d",
-    }
-    provider_interval = provider_interval_map.get(canonical_tf)
+    provider_interval = PROVIDER_INTERVAL_MAP.get(canonical_tf)
     if not provider_interval:
         return {
             "timeframe": canonical_tf,
@@ -455,6 +458,94 @@ def verify_all_canonical_timeframes_readiness(
         )
         results[tf_val] = res
     return results
+
+
+def verify_timeframe_direct_readiness(
+    symbol: str = "XAUUSD",
+    timeframe: str | CanonicalTimeframe = "5m",
+    publisher: Project2Publisher | None = None,
+    reference_now: datetime.datetime | None = None,
+    check_provider_data: bool = False,
+) -> dict[str, Any]:
+    """Perform deterministic readiness evaluation for a direct-strategy timeframe.
+
+    Direct mode requires NO candidate artifact, NO promotion, and NO research
+    qualification: readiness depends only on a canonical timeframe identity and
+    provider interval support, optional real provider-data availability, and a
+    usable publication configuration when publishing is enabled.
+    """
+    try:
+        canonical_tf = CanonicalTimeframe.from_str(timeframe).value
+    except (ValueError, TypeError) as exc:
+        return {
+            "timeframe": str(timeframe),
+            "status": "BLOCKED",
+            "reason_code": "INVALID_TIMEFRAME",
+            "detail": str(exc),
+            "candidate_id": None,
+        }
+
+    provider_interval = PROVIDER_INTERVAL_MAP.get(canonical_tf)
+    if not provider_interval:
+        return {
+            "timeframe": canonical_tf,
+            "status": "BLOCKED",
+            "reason_code": "UNSUPPORTED_PROVIDER_INTERVAL",
+            "detail": f"Timeframe '{canonical_tf}' has no mapped provider interval.",
+            "candidate_id": None,
+        }
+
+    if check_provider_data:
+        try:
+            prov = resolve_live_provider(symbol)
+            candles = prov.get_candles(symbol, timeframe=canonical_tf, limit=5)
+            if candles is None or candles.empty:
+                return {
+                    "timeframe": canonical_tf,
+                    "status": "BLOCKED",
+                    "reason_code": "NO_PROVIDER_CANDLES",
+                    "detail": f"Provider returned empty candle data for {symbol} {canonical_tf}.",
+                    "candidate_id": None,
+                }
+        except Exception as exc:
+            return {
+                "timeframe": canonical_tf,
+                "status": "BLOCKED",
+                "reason_code": "PROVIDER_FETCH_FAILED",
+                "detail": f"Failed to fetch market candles for {symbol} {canonical_tf}: {exc}",
+                "candidate_id": None,
+            }
+
+    from src.evaluation.live_direct_strategy import DIRECT_STRATEGY_ID, DIRECT_STRATEGY_VERSION
+
+    pub = publisher or Project2Publisher()
+    if pub.enabled:
+        from src.integration.project2_publisher import validate_publication_configuration
+        valid_pub_config, pub_config_reason = validate_publication_configuration(
+            pub.publish_url,
+            getattr(pub, "api_key", None),
+        )
+        if not valid_pub_config:
+            return {
+                "timeframe": canonical_tf,
+                "status": "BLOCKED",
+                "reason_code": "PUBLICATION_MISCONFIGURED",
+                "detail": f"Project 2 publication is enabled but misconfigured: {pub_config_reason}",
+                "candidate_id": None,
+            }
+
+    return {
+        "timeframe": canonical_tf,
+        "status": "READY",
+        "reason_code": "READY",
+        "detail": (
+            f"Direct strategy '{DIRECT_STRATEGY_ID}' v{DIRECT_STRATEGY_VERSION} ready for "
+            f"{symbol} {canonical_tf} (no candidate required)."
+        ),
+        "candidate_id": None,
+        "strategy_name": DIRECT_STRATEGY_ID,
+        "strategy_version": DIRECT_STRATEGY_VERSION,
+    }
 
 
 def resolve_authoritative_promoted_candidate(
@@ -1567,6 +1658,41 @@ class ContinuousLiveRuntime:
                 return False
             return True
 
+        # Direct-strategy evaluations: truthful per-timeframe strategy decisions
+        # produced WITHOUT candidates, promotion, or research qualification.
+        # They carry no candidate identity and must never claim authorization.
+        if res.get("direct_signal") is True:
+            if res.get("decision") not in ("BUY", "SELL", "NO TRADE"):
+                return False
+            # A direct evaluation must never claim candidate identity or promotion.
+            if res.get("candidate_id") is not None:
+                return False
+            if expected_candidate_id is not _UNSPECIFIED:
+                if expected_candidate_id is not None:
+                    return False
+            if not isinstance(res.get("reason"), str) or not res["reason"].strip():
+                return False
+            if not isinstance(res.get("record"), dict) or not res["record"]:
+                return False
+            if not isinstance(res.get("publication"), dict) or not res["publication"]:
+                return False
+            direct_pub_res = res.get("publish_result")
+            if not isinstance(direct_pub_res, dict):
+                return False
+            direct_pub_status = direct_pub_res.get("status")
+            direct_published = direct_pub_res.get("published")
+            if direct_published is True:
+                if not direct_pub_status or direct_pub_status not in (
+                    "PUBLISHED", "DELIVERED", "ACCEPTED", "OK", "ACKNOWLEDGED", "INGESTED",
+                ):
+                    return False
+            elif direct_published is False:
+                if direct_pub_status not in ("SKIPPED_DISABLED", "SKIPPED_NO_TRADE"):
+                    return False
+            else:
+                return False
+            return True
+
         # 1. Recognized benign worker operational skips (exact match of status + reason)
         if st == "SKIPPED_DEDUPLICATED":
             if res.get("reason") != "candle_already_evaluated":
@@ -2143,6 +2269,201 @@ class ContinuousLiveRuntime:
             },
         }
 
+    def _evaluate_direct_signal(
+        self,
+        *,
+        canonical_tf: str,
+        eval_df: pd.DataFrame,
+        reference_now: datetime.datetime,
+    ) -> dict[str, Any]:
+        """Evaluate the direct deterministic strategy on this timeframe's own closed-candle slice.
+
+        Direct mode requires NO candidate, NO promotion, and NO research
+        qualification. A fresh, closed slice yields a real strategy decision
+        (BUY / SELL / NO TRADE) with trade levels derived only from the
+        evaluated closed candle and explicit risk rules. A stale/invalid slice
+        fail-closes to a blocked, unpublished result: invalid data must never be
+        laundered into a releasable outcome.
+        """
+        from src.evaluation.live_direct_strategy import (
+            DIRECT_STRATEGY_ID,
+            DIRECT_STRATEGY_VERSION,
+            DirectSignalDataError,
+            evaluate_direct_live_signal,
+        )
+
+        try:
+            signal = evaluate_direct_live_signal(
+                data=eval_df,
+                symbol=self.symbol,
+                timeframe=canonical_tf,
+                reference_now=reference_now,
+                max_age_seconds=self.max_age_seconds,
+            )
+        except DirectSignalDataError as exc:
+            return {
+                "direct_signal": True,
+                "blocked": True,
+                "status": "BLOCKED",
+                "reason": exc.reason,
+                "detail": (
+                    f"Direct strategy evaluation for {self.symbol} {canonical_tf} fail-closed: "
+                    f"{exc.detail}"
+                ),
+                "decision": "NO TRADE",
+                "strategy": DIRECT_STRATEGY_ID,
+                "symbol": self.symbol,
+                "timeframe": canonical_tf,
+                "candidate_id": None,
+                "trade_levels": None,
+                "record": {
+                    "signal_id": None,
+                    "decision": "NO TRADE",
+                    "symbol": self.symbol,
+                    "timeframe": canonical_tf,
+                    "strategy_id": DIRECT_STRATEGY_ID,
+                    "reason": exc.reason,
+                    "candidate_id": None,
+                    "authorized": False,
+                    "market_fresh": False,
+                },
+                "publication": None,
+                "publish_result": {
+                    "status": "SKIPPED_BLOCKED",
+                    "published": False,
+                    "reason": exc.reason,
+                },
+                "blocked_state": {
+                    "blocked": True,
+                    "reason": exc.reason,
+                    "detail": exc.detail,
+                    "symbol": self.symbol,
+                    "timeframe": canonical_tf,
+                    "market_data_fresh": False,
+                },
+                "market_freshness": {
+                    "fresh": False,
+                    "reason": exc.reason,
+                },
+                "decision_timestamp": reference_now.isoformat(),
+            }
+        except Exception as exc:
+            return {
+                "direct_signal": True,
+                "blocked": True,
+                "status": "BLOCKED",
+                "reason": "DIRECT_EVALUATION_FAILED",
+                "detail": f"Direct strategy evaluation for {self.symbol} {canonical_tf} failed: {exc}",
+                "decision": "NO TRADE",
+                "strategy": DIRECT_STRATEGY_ID,
+                "symbol": self.symbol,
+                "timeframe": canonical_tf,
+                "candidate_id": None,
+                "trade_levels": None,
+                "record": {
+                    "signal_id": None,
+                    "decision": "NO TRADE",
+                    "symbol": self.symbol,
+                    "timeframe": canonical_tf,
+                    "strategy_id": DIRECT_STRATEGY_ID,
+                    "reason": "DIRECT_EVALUATION_FAILED",
+                    "candidate_id": None,
+                    "authorized": False,
+                    "market_fresh": False,
+                },
+                "publication": None,
+                "publish_result": {
+                    "status": "SKIPPED_BLOCKED",
+                    "published": False,
+                    "reason": "DIRECT_EVALUATION_FAILED",
+                },
+                "blocked_state": {
+                    "blocked": True,
+                    "reason": "DIRECT_EVALUATION_FAILED",
+                    "detail": str(exc),
+                    "symbol": self.symbol,
+                    "timeframe": canonical_tf,
+                    "market_data_fresh": False,
+                },
+                "market_freshness": {
+                    "fresh": False,
+                    "reason": "DIRECT_EVALUATION_FAILED",
+                },
+                "decision_timestamp": reference_now.isoformat(),
+            }
+
+        if self.publish and self.publisher is not None:
+            try:
+                pub_res = self.publisher.publish(
+                    signal,
+                    skip_if_no_trade=self.skip_if_no_trade,
+                )
+            except Exception as exc:
+                pub_res = {
+                    "status": "FAILED",
+                    "published": False,
+                    "reason": "Direct signal publication exception",
+                    "error": str(exc),
+                }
+        else:
+            pub_res = {
+                "status": "SKIPPED_DISABLED",
+                "published": False,
+                "reason": "Publisher disabled in configuration",
+            }
+
+        publication = signal.to_contract_v1_payload()
+        trade_levels = {
+            "entry_price": signal.entry_price,
+            "stop_loss": signal.stop_loss,
+            "take_profit": signal.take_profit,
+            "risk_reward_ratio": signal.risk_reward_ratio,
+        } if signal.decision in ("BUY", "SELL") else None
+
+        return {
+            "direct_signal": True,
+            "blocked": False,
+            "status": pub_res.get("status"),
+            "decision": signal.decision,
+            "reason": signal.reason,
+            "detail": signal.detail,
+            "strategy": DIRECT_STRATEGY_ID,
+            "strategy_version": DIRECT_STRATEGY_VERSION,
+            "symbol": self.symbol,
+            "interval": canonical_tf,
+            "timeframe": canonical_tf,
+            "candle_timestamp": signal.candle_timestamp_utc,
+            "decision_timestamp": signal.decision_timestamp_utc,
+            "candidate_id": None,
+            "trade_levels": trade_levels,
+            "record": {
+                "signal_id": signal.signal_id,
+                "decision": signal.decision,
+                "symbol": self.symbol,
+                "interval": canonical_tf,
+                "timeframe": canonical_tf,
+                "strategy_id": DIRECT_STRATEGY_ID,
+                "strategy_version": DIRECT_STRATEGY_VERSION,
+                "reason": signal.reason,
+                "candidate_id": None,
+                "authorized": False,
+                "market_fresh": True,
+                "candle_timestamp_utc": signal.candle_timestamp_utc,
+                "decision_timestamp_utc": signal.decision_timestamp_utc,
+                "entry_price": signal.entry_price,
+                "stop_loss": signal.stop_loss,
+                "take_profit": signal.take_profit,
+                "risk_reward_ratio": signal.risk_reward_ratio,
+            },
+            "publication": publication,
+            "publish_result": pub_res,
+            "market_freshness": {
+                "fresh": True,
+                "reason": "fresh",
+                "candle_timestamp": signal.candle_timestamp_utc,
+            },
+        }
+
     def tick(self, reference_now: datetime.datetime | None = None) -> dict[str, Any]:
         """Execute one continuous orchestration tick across all configured canonical timeframes."""
         if not self._lock.acquire(blocking=False):
@@ -2203,6 +2524,53 @@ class ContinuousLiveRuntime:
 
                 # Slice market data up to and including the closed candle
                 eval_df = prepared_df.iloc[: closed_idx + 1].copy()
+
+                # Direct mode: timeframes NOT explicitly configured with a
+                # candidate are evaluated by the one deterministic live
+                # strategy on their OWN closed-candle data. No candidate,
+                # promotion, or research qualification is consulted, and no
+                # data, candidate, signal, readiness, or health is borrowed
+                # from any other timeframe. Failures here are isolated to
+                # this timeframe (continue) and never stop the other frames.
+                if canonical_tf not in self.candidate_ids:
+                    dedup_key = (self.symbol, canonical_tf, closed_ts_iso, "direct:ma_crossover_direct")
+
+                    if dedup_key in self._evaluated_candles:
+                        tick_evaluations[canonical_tf] = {
+                            "status": "SKIPPED_DEDUPLICATED",
+                            "reason": "candle_already_evaluated",
+                            "candle_timestamp": closed_ts_iso,
+                            "candidate_id": None,
+                            "timeframe": canonical_tf,
+                        }
+                        continue
+
+                    result = self._evaluate_direct_signal(
+                        canonical_tf=canonical_tf,
+                        eval_df=eval_df,
+                        reference_now=ref_now,
+                    )
+                    tick_evaluations[canonical_tf] = result
+
+                    # Deduplicated only after a healthy direct evaluation; unhealthy
+                    # outcomes (failed publication, stale data, unclosed gate)
+                    # remain retryable on the next tick without suppression.
+                    if self._is_healthy_evaluation(
+                        result,
+                        expected_timeframe=canonical_tf,
+                        expected_symbol=self.symbol,
+                        expected_candidate_id=None,
+                    ):
+                        self._evaluated_candles.add(dedup_key)
+                        self._last_successful_evaluation_at_utc = ref_now.isoformat()
+                        pub_direct_res = result.get("publish_result")
+                        if pub_direct_res and pub_direct_res.get("published") is True:
+                            self._last_successful_publication_at_utc = ref_now.isoformat()
+                    else:
+                        self._last_failure_reason = (
+                            result.get("reason") or result.get("error") or "DIRECT_EVALUATION_UNHEALTHY"
+                        )
+                    continue
 
                 # 3. Candidate resolution for exact timeframe
                 config = ProductionRuntimeConfig(
@@ -2420,14 +2788,24 @@ class ContinuousLiveRuntime:
         for tf in self.timeframes:
             canonical_tf = CanonicalTimeframe.from_str(tf).value
             cand_id = self.candidate_ids.get(canonical_tf)
-            readiness = verify_timeframe_production_readiness(
-                symbol=self.symbol,
-                timeframe=canonical_tf,
-                candidate_id=cand_id,
-                research_dir=self.research_dir,
-                publisher=self.publisher,
-                reference_now=self.clock(),
-            )
+            if cand_id is None:
+                # Direct mode: no candidate is required or consulted; readiness
+                # depends on timeframe/provider/publication configuration only.
+                readiness = verify_timeframe_direct_readiness(
+                    symbol=self.symbol,
+                    timeframe=canonical_tf,
+                    publisher=self.publisher,
+                    reference_now=self.clock(),
+                )
+            else:
+                readiness = verify_timeframe_production_readiness(
+                    symbol=self.symbol,
+                    timeframe=canonical_tf,
+                    candidate_id=cand_id,
+                    research_dir=self.research_dir,
+                    publisher=self.publisher,
+                    reference_now=self.clock(),
+                )
             readiness_results[canonical_tf] = readiness
             if readiness.get("status") == "READY":
                 ready_count += 1
@@ -2445,10 +2823,10 @@ class ContinuousLiveRuntime:
                 f"{tf}: [{res.get('reason_code')}] {res.get('detail')}"
                 for tf, res in readiness_results.items()
             ]
-            # Candidate/readiness unavailability is a per-timeframe condition, NOT a
-            # process-level failure. The worker proceeds so ready timeframes can run
-            # and blocked timeframes report their own BLOCKED/NO-TRADE reason and
-            # recover automatically once their prerequisite becomes available.
+            # Per-frame readiness unavailability is a per-timeframe condition,
+            # NOT a process-level failure. The worker proceeds so ready
+            # timeframes can run and blocked timeframes report their own
+            # BLOCKED reason and recover automatically.
             logger.error(
                 "Startup readiness preflight: 0 of %d configured timeframes are READY for %s. "
                 "Continuing with per-timeframe BLOCKED reporting. Failure details:\n%s",
