@@ -2533,7 +2533,8 @@ class ContinuousLiveRuntime:
                 # from any other timeframe. Failures here are isolated to
                 # this timeframe (continue) and never stop the other frames.
                 if canonical_tf not in self.candidate_ids:
-                    dedup_key = (self.symbol, canonical_tf, closed_ts_iso, "direct:ma_crossover_direct")
+                    from src.evaluation.live_direct_strategy import DIRECT_STRATEGY_ID as _direct_strategy_id
+                    dedup_key = (self.symbol, canonical_tf, closed_ts_iso, f"direct:{_direct_strategy_id}")
 
                     if dedup_key in self._evaluated_candles:
                         tick_evaluations[canonical_tf] = {

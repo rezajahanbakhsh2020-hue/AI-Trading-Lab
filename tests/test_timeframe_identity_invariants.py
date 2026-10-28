@@ -805,13 +805,13 @@ def test_cross_timeframe_isolation_mixed_outcomes(tmp_path: Path) -> None:
         assert evals["1m"]["interval"] == "1m"
 
         # 5m: candidate omitted -> direct-strategy evaluation on its own real
-        # closed-candle slice (flat data -> truthful NO TRADE, no crossover),
+        # closed-candle slice (flat data -> truthful NO TRADE, no setup met),
         # unimpaired by 1m's authorized evaluation.
         assert evals["5m"].get("direct_signal") is True
         assert evals["5m"].get("blocked") is False
         assert evals["5m"].get("decision") == "NO TRADE"
         assert evals["5m"].get("candidate_id") is None
-        assert evals["5m"].get("reason") == "no_crossover"
+        assert evals["5m"].get("reason") == "no_setup_met"
         assert evals["5m"].get("publish_result", {}).get("status") == "SKIPPED_DISABLED"
 
 
