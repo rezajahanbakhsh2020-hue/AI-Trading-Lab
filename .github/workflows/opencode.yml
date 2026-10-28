@@ -93,9 +93,9 @@ jobs:
           agent: build
           use_github_token: true
           prompt: |
-            OWNER DIRECTIVE — COMPLETE THE SIMPLIFICATION AND MERGE WHEN PROVEN
+            OWNER DIRECTIVE — IMPLEMENT THE FOLLOW-UP FIX; NEVER MERGE AUTOMATICALLY
 
-            The repository owner explicitly authorizes you to implement the simplified live-signal architecture, commit it to the existing the simplification PR branch, and merge the simplification PR yourself once the implementation and verification gates below pass. This supersedes every earlier instruction in this workflow that prohibited merging or required manual merge. Do not stop at an audit, plan, test-only commit, or report.
+            The repository owner authorizes implementation, tests, commits, and one coherent PR, but explicitly requires MANUAL MERGE ONLY. Never merge any PR, never bypass branch protection, and do not stop at an audit, plan, test-only commit, or report.
 
             PRIMARY GOAL
             Make each canonical XAUUSD timeframe independently produce and publish its own truthful live decision through P1's existing P2 publisher:
@@ -105,14 +105,14 @@ jobs:
 
             IMPLEMENT, DON'T JUST DESCRIBE
             1. Inspect current main, recent commits, issue #100, runtime, publisher contract, and existing tests. Reuse verified findings.
-            2. Implement one transparent deterministic strategy with explicit parameters, evaluated independently on each timeframe's own data. A closed, fresh candle is mandatory. Never borrow data, candidate, signal, readiness, or health from another timeframe.
+            2. Replace crossover-only live logic with a compact deterministic multi-setup strategy: retain MA crossover, add trend-continuation-after-pullback and confirmed breakout/momentum setups with explicit parameters and invalidation. BUY and SELL must be symmetric where supported. Evaluate independently on each timeframe's own closed, fresh candles. Never borrow data, candidate, signal, readiness, or health from another timeframe. Do not merely convert NO TRADE into a direction and do not use trend direction alone as an entry.
             3. Emit BUY/SELL only when the actual rule is met. Otherwise emit NO TRADE with a machine-readable reason. Insufficient/stale/invalid data must fail closed. Never invent prices, timestamps, confidence, stability, or market data.
             4. Calculate entry, stop-loss, take-profit and risk/reward only from real candle values and explicit risk rules. NO TRADE has null trade levels.
             5. Publish through the existing P1→P2 contract. If the contract cannot represent the direct strategy safely, extend the contract and focused tests; do not falsely label a direct rule-based signal as promoted/authorized. Preserve real event time versus publication time.
             6. Isolate per-timeframe failures so one bad frame does not stop the other six. Report per-frame readiness honestly; never call the worker ready when required frames are blocked.
             7. Remove candidate-specific live-runtime configuration/dead branches only when tests prove the new path is complete. Do not delete offline research/governance.
             8. Keep publication disabled in tests; do not place broker orders or send production events. Never weaken freshness, closed-candle, data-integrity, risk, or provenance checks to make tests pass.
-            9. Add focused tests for seven-frame independence, direct decisions without candidates, BUY/SELL/NO TRADE, stale/future/invalid and unclosed candles, risk fields, publication contract, and per-frame error isolation. Run focused tests, then the broadest practical suite and relevant end-to-end entrypoint. Report exact commands and actual results.
+            9. Add focused tests for seven-frame independence, direct decisions without candidates, every entry setup for BUY/SELL/NO TRADE, stale/future/invalid and unclosed candles, risk fields, publication contract, and per-frame error isolation. Evaluate current crossover versus new setups on the committed genuine 1m/5m historical CSVs using chronological out-of-sample or walk-forward splits, no leakage, non-zero transaction costs and slippage. First verify short-trade, execution-timing, stop/TP and cost semantics in the existing backtest engine; do not report fabricated metrics. Report BUY/SELL counts, NO TRADE ratio, win rate, expectancy, net return after costs, max drawdown, trade duration, date ranges and sample sizes. Run focused tests, then the broadest practical suite and relevant end-to-end entrypoint. Report exact commands and actual results.
             10. Inspect the full diff and status. Commit functional source changes and tests to the existing the simplification PR branch only. For an Issue #100 run, create a new implementation branch and open one PR; for an existing open PR run, stay on its branch. Update the simplification PR with evidence and a per-timeframe status table.
 
             REPOSITORY / SCOPE
@@ -124,13 +124,13 @@ jobs:
             Do not change secrets, repository settings, deployment configuration, or production systems. No broker orders. No fabricated evidence. Never claim deployment delivery without direct proof.
 
             MERGE AUTHORIZATION AND EXIT GATE
-            The owner explicitly authorizes you to merge the simplification PR after all of the following are true:
+            The owner requires MANUAL MERGE ONLY. Do not merge the simplification PR or any other PR. After all of the following verification gates are satisfied:
             - Actual functional implementation is committed; a test-only change is not sufficient.
             - Focused regression tests pass, and the broad suite has been run to the extent practical. Any failure is understood and fixed or demonstrably unrelated with a precise explanation.
             - The complete diff is in scope and contains no weakened/deleted safety gates or fabricated evidence.
             - PR checks required by the repository are green and GitHub reports the PR mergeable. Verify the current head SHA before merging.
             - The PR summary states what changed, tests actually run, what remains blocked per timeframe, and what is not proven in deployment.
-            If these gates pass, merge the simplification PR using the repository's allowed merge method and verify GitHub reports merged=true with a merge commit SHA. Do not stop merely to ask for permission again. If a required check or branch rule blocks merge, do not bypass branch protection; continue fixing actionable issues and report the exact remaining blocker.
+            If these gates pass, leave the PR open for the owner to review and merge manually. Do not stop merely after tests: finish implementation and provide the evidence report. If a required check or branch rule blocks progress, do not bypass branch protection; continue fixing actionable issues and report the exact remaining blocker.
             Do not merge unrelated PRs. Do not claim success without reading the actual GitHub result.
 
             REQUIRED FINAL REPORT
@@ -139,5 +139,5 @@ jobs:
             C. Exact test commands, exit codes, and observed outcomes.
             D. Seven-frame readiness table (READY/BLOCKED with evidence-based reason).
             E. P1→P2 publication status: locally proven versus deployment-unverified.
-            F. Merge result: merged flag, merge commit SHA, or exact blocker.
+            F. PR status and manual-merge readiness; explicitly confirm no PR was merged.
             Continue iteratively until all safely actionable implementation work is complete.
