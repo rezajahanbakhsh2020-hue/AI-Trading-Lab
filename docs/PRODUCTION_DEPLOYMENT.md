@@ -83,10 +83,24 @@ When the worker starts (`run_live_execution.py --continuous`), it executes a man
 Since the simplification of the live runtime (Issue #100), each canonical
 timeframe (`1m, 5m, 15m, 30m, 1H, 4H, 1D`) no longer requires a persisted
 promoted candidate to produce a live decision. The default path is ONE
-deterministic strategy (`ma_crossover_direct`, fast=5 / slow=20 closes,
-risk/reward=2.0 with stop at the evaluated candle's low/high), evaluated
+deterministic multi-setup strategy (`multi_setup_direct` v2.0), evaluated
 independently on each timeframe's own closed, fresh candle data, and published
 through the existing P1->P2 `DirectSignalPublication` Contract v1.0 payload.
+
+Setups (fixed priority order, first met wins; BUY/SELL are exact mirrors):
+
+1. `crossover` - MA crossover of closes, fast=5 / slow=20 (retained from v1.0).
+2. `pullback_continuation` - established MA trend (fast>slow, slow rising) after
+   at least one of the previous 3 candles traded against the trend into the
+   fast-MA zone, confirmed when the candle closes back through the fast MA and
+   beyond the previous close.
+3. `breakout_momentum` - candle CLOSE beyond the highest high / lowest low of
+   the previous 10 candles, with momentum confirmation (close beats previous
+   close and the fast MA).
+
+Otherwise the timeframe honestly reports `NO TRADE` with reason `no_setup_met`
+(never a bare trend-direction entry). Risk/reward is the explicit 2.0 rule with
+stop at the evaluated candle's low/high (invalidation level).
 
 - Timeframes configured WITHOUT `--candidate-id` per-timeframe mappings run in
   direct mode (`src/evaluation/live_direct_strategy.py`); operations require no

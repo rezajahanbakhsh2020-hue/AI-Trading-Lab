@@ -1,9 +1,9 @@
 """Focused tests for the candidate-free direct live-signal path (Issue #100).
 
 Contract under test:
-- ContinuousLiveRuntime evaluates ONE transparent deterministic strategy
-  (ma_crossover_direct) independently on each canonical timeframe's OWN data
-  without any candidate_id, promotion, governance fingerprint, or research
+- ContinuousLiveRuntime evaluates ONE transparent deterministic multi-setup
+  strategy (multi_setup_direct) independently on each canonical timeframe's OWN
+  data without any candidate_id, promotion, governance fingerprint, or research
   qualification.
 - BUY/SELL only when the rule is met on a closed, fresh candle; otherwise
   NO TRADE with a machine-readable reason; all trade levels null for NO TRADE.
@@ -29,6 +29,9 @@ from src.evaluation.live_direct_strategy import (
     DIRECT_PROVENANCE_TYPE,
     DIRECT_STRATEGY_ID,
     DIRECT_STRATEGY_VERSION,
+    PULLBACK_LOOKBACK,
+    BREAKOUT_LOOKBACK,
+    SETUP_PRIORITY,
     BUY,
     SELL,
     NO_TRADE,
@@ -88,7 +91,7 @@ def test_bullish_crossover_emits_buy_from_real_candle_values() -> None:
         df, symbol="XAUUSD", timeframe="5m", reference_now=REF_NOW, max_age_seconds=3600.0,
     )
     assert signal.decision == BUY
-    assert signal.reason == "ma_crossover_bullish"
+    assert signal.reason == "crossover_bullish"
     assert signal.entry_price == 2100.0
     assert signal.stop_loss == 2095.0  # real candle low
     assert signal.take_profit == pytest.approx(2100.0 + 2.0 * 5.0)
@@ -102,19 +105,19 @@ def test_bearish_crossover_emits_sell_from_real_candle_values() -> None:
         df, symbol="XAUUSD", timeframe="5m", reference_now=REF_NOW, max_age_seconds=3600.0,
     )
     assert signal.decision == SELL
-    assert signal.reason == "ma_crossover_bearish"
+    assert signal.reason == "crossover_bearish"
     assert signal.entry_price == 1800.0
     assert signal.stop_loss == 1805.0  # real candle high
     assert signal.take_profit == pytest.approx(1790.0)
 
 
-def test_flat_market_emits_no_crossover_no_trade() -> None:
+def test_flat_market_emits_no_setup_met_no_trade() -> None:
     df = closed_candles("15m", [1990.0] * 30)
     signal = evaluate_direct_live_signal(
         df, symbol="XAUUSD", timeframe="15m", reference_now=REF_NOW, max_age_seconds=3600.0,
     )
     assert signal.decision == NO_TRADE
-    assert signal.reason == "no_crossover"
+    assert signal.reason == "no_setup_met"
     assert signal.entry_price is None
     assert signal.stop_loss is None
     assert signal.take_profit is None
@@ -130,6 +133,128 @@ def test_short_history_yields_insufficient_history_no_trade() -> None:
     assert signal.reason == "insufficient_history"
     assert signal.entry_price is None and signal.stop_loss is None
     assert signal.take_profit is None and signal.risk_reward_ratio is None
+
+
+# ---------------------------------------------------------------------------
+# Setup 2: trend-continuation after pullback (BUY/SELL symmetric)
+# ---------------------------------------------------------------------------
+
+def test_pullback_continuation_buy_uses_real_candle_levels() -> None:
+    # Established uptrend (fast > slow, slow rising), one of the previous 3
+    # candles traded back into the fast-MA zone, then the evaluation candle
+    # CONFIRMED resumption (closes above previous close and above the fast MA).
+    # Note: this candle also satisfies the breakout rule (2012 > prev 10-bar
+    # range high of 2009); fixed priority must classify it as pullback first.
+    closes = [1990.0] * 7 + [1993.0] * 3 + [1996.0] * 4 + [1999.0] * 3 + [1998.0, 1996.0, 2000.0, 2004.0, 2012.0]
+    df = closed_candles("1H", closes)
+    signal = evaluate_direct_live_signal(
+        df, symbol="XAUUSD", timeframe="1H", reference_now=REF_NOW, max_age_seconds=3600.0,
+    )
+    assert signal.decision == BUY
+    assert signal.reason == "pullback_continuation_bullish"
+    assert signal.entry_price == 2012.0
+    assert signal.stop_loss == 2007.0       # real evaluation-candle low (invalidation)
+    assert signal.take_profit == pytest.approx(2022.0)
+    assert signal.risk_reward_ratio == 2.0
+    payload = signal.to_contract_v1_payload()
+    assert payload["signal"]["invalidation"] == 2007.0
+
+
+def test_pullback_continuation_sell_uses_real_candle_levels() -> None:
+    closes = [2006.0] * 7 + [2003.0] * 3 + [2000.0] * 4 + [1997.0] * 3 + [1998.0, 2000.0, 1996.0, 1992.0, 1984.0]
+    df = closed_candles("1H", closes)
+    signal = evaluate_direct_live_signal(
+        df, symbol="XAUUSD", timeframe="1H", reference_now=REF_NOW, max_age_seconds=3600.0,
+    )
+    assert signal.decision == SELL
+    assert signal.reason == "pullback_continuation_bearish"
+    assert signal.entry_price == 1984.0
+    assert signal.stop_loss == 1989.0       # real evaluation-candle high (invalidation)
+    assert signal.take_profit == pytest.approx(1974.0)
+    assert signal.risk_reward_ratio == 2.0
+
+
+def test_pullback_without_resumption_confirmation_is_no_trade() -> None:
+    # Dip into the fast-MA zone in an established uptrend, but the evaluation
+    # candle does NOT close above the previous close / fast MA: no entry.
+    closes = [1990.0] * 7 + [1993.0] * 3 + [1996.0] * 4 + [1999.0] * 3 + [1998.0, 1996.0, 2000.0, 2004.0, 1993.0]
+    df = closed_candles("1H", closes)
+    signal = evaluate_direct_live_signal(
+        df, symbol="XAUUSD", timeframe="1H", reference_now=REF_NOW, max_age_seconds=3600.0,
+    )
+    assert signal.decision == NO_TRADE
+    assert signal.reason == "no_setup_met"
+    assert signal.entry_price is None and signal.stop_loss is None
+    assert signal.take_profit is None and signal.risk_reward_ratio is None
+
+
+# ---------------------------------------------------------------------------
+# Setup 3: confirmed breakout/momentum (BUY/SELL symmetric)
+# ---------------------------------------------------------------------------
+
+def test_breakout_momentum_buy_uses_real_candle_levels() -> None:
+    # CLOSE above the highest high of the previous 10 candles, with momentum
+    # confirmation (close above previous close and above the fast MA). No
+    # crossover (fast does not cross slow), no pullback-continuation trend
+    # regime (fast < slow): the breakout/momentum rule alone is the entry.
+    closes = [2000.0] * 20 + [1975.0, 2020.0]
+    df = closed_candles("5m", closes)
+    signal = evaluate_direct_live_signal(
+        df, symbol="XAUUSD", timeframe="5m", reference_now=REF_NOW, max_age_seconds=3600.0,
+    )
+    assert signal.decision == BUY
+    assert signal.reason == "breakout_momentum_bullish"
+    assert signal.entry_price == 2020.0
+    assert signal.stop_loss == 2015.0
+    assert signal.take_profit == pytest.approx(2030.0)
+    assert signal.risk_reward_ratio == 2.0
+
+
+def test_breakout_momentum_sell_uses_real_candle_levels() -> None:
+    # Mirror confirms symmetry: CLOSE below the lowest low of the previous 10
+    # candles with momentum confirmation; bear pullback regime is not met
+    # (fast == slow, slow steadily flat-then-rising around the capitulation).
+    closes = [2000.0] * 20 + [2100.0, 1900.0]
+    df = closed_candles("5m", closes)
+    signal = evaluate_direct_live_signal(
+        df, symbol="XAUUSD", timeframe="5m", reference_now=REF_NOW, max_age_seconds=3600.0,
+    )
+    assert signal.decision == SELL
+    assert signal.reason == "breakout_momentum_bearish"
+    assert signal.entry_price == 1900.0
+    assert signal.stop_loss == 1905.0
+    assert signal.take_profit == pytest.approx(1890.0)
+    assert signal.risk_reward_ratio == 2.0
+
+
+def test_buy_and_sell_rules_are_exact_mirrors_on_reflected_prices() -> None:
+    """For any candle series the reflected series y = C - x (high/low swapped)
+    must flip the decision BUY<->SELL with exactly mirrored trade levels."""
+    df = closed_candles("30m", [1990.0]*30 + [1997.0, 1993.0, 2001.0, 1995.0, 2004.0, 1991.0, 2007.0, 1992.0, 1998.0, 1990.0, 2015.0])
+    signal = evaluate_direct_live_signal(
+        df, symbol="XAUUSD", timeframe="30m", reference_now=REF_NOW, max_age_seconds=3600.0,
+    )
+    c = 4000.0
+    ref_df = df.copy()
+    for col_from, col_to in (("low", "high"), ("high", "low"), ("open", "open"), ("close", "close")):
+        ref_df[col_to] = c - df[col_from]
+    ref_signal = evaluate_direct_live_signal(
+        ref_df, symbol="XAUUSD", timeframe="30m", reference_now=REF_NOW, max_age_seconds=3600.0,
+    )
+    mirror_decision = {BUY: SELL, SELL: BUY, NO_TRADE: NO_TRADE}[signal.decision]
+    assert ref_signal.decision == mirror_decision
+    if signal.decision == NO_TRADE:
+        assert ref_signal.entry_price is None and ref_signal.entry_price is None
+    else:
+        assert ref_signal.entry_price == pytest.approx(c - signal.entry_price)
+        assert ref_signal.stop_loss == pytest.approx(c - signal.stop_loss)
+        assert ref_signal.take_profit == pytest.approx(c - signal.take_profit)
+        assert ref_signal.risk_reward_ratio == signal.risk_reward_ratio
+        mirror_reason = (
+            signal.reason.replace("bullish", "bearish") if signal.decision == BUY
+            else signal.reason.replace("bearish", "bullish")
+        )
+        assert ref_signal.reason == mirror_reason
 
 
 def test_stale_data_fails_closed_without_publication() -> None:
@@ -212,7 +337,7 @@ def test_publisher_accepts_direct_signal_publication_and_delivers_contract_paylo
         symbol="XAUUSD",
         timeframe="5m",
         decision="BUY",
-        reason="ma_crossover_bullish",
+        reason="crossover_bullish",
         detail="Fast MA crossed above slow MA.",
         candle_timestamp_utc=(now_utc - datetime.timedelta(minutes=5)).isoformat(),
         decision_timestamp_utc=now_utc.isoformat(),
@@ -350,7 +475,7 @@ def test_failed_publication_is_retryable_and_healthy_outcome_deduplicates(tmp_pa
 
     t1 = cont.tick(reference_now=REF_NOW)
     assert t1["evaluations"]["5m"]["publish_result"]["status"] == "FAILED"
-    dedup_key = ("XAUUSD", "5m", "2025-06-01T11:55:00+00:00", "direct:ma_crossover_direct")
+    dedup_key = ("XAUUSD", "5m", "2025-06-01T11:55:00+00:00", "direct:multi_setup_direct")
     assert dedup_key not in cont._evaluated_candles
 
     t2 = cont.tick(reference_now=REF_NOW)
@@ -413,9 +538,12 @@ def test_direct_mode_never_reads_research_and_never_borrows_across_timeframes(tm
 
 
 def test_direct_strategy_constants_are_explicit() -> None:
-    assert DIRECT_STRATEGY_ID == "ma_crossover_direct"
-    assert DIRECT_STRATEGY_VERSION == "1.0"
+    assert DIRECT_STRATEGY_ID == "multi_setup_direct"
+    assert DIRECT_STRATEGY_VERSION == "2.0"
     import src.evaluation.live_direct_strategy as m
     assert m.FAST_MA_PERIOD == 5
     assert m.SLOW_MA_PERIOD == 20
+    assert m.PULLBACK_LOOKBACK == 3
+    assert m.BREAKOUT_LOOKBACK == 10
     assert m.RISK_REWARD_RATIO == 2.0
+    assert SETUP_PRIORITY == ("crossover", "pullback_continuation", "breakout_momentum")

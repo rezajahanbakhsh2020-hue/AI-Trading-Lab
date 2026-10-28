@@ -1,16 +1,24 @@
 """Direct deterministic live-signal strategy for canonical XAUUSD timeframes.
 
-Simplification contract (Issue #100):
+Simplification contract (Issue #100, follow-up v2.0):
 - Each canonical timeframe (1m, 5m, 15m, 30m, 1H, 4H, 1D) is evaluated
-  independently against its OWN market data via ONE transparent, deterministic
-  rule: a fast/high moving-average crossover of closes.
+  independently against its OWN market data via ONE transparent, deterministic,
+  compact multi-setup rule set:
+    setup 1: MA crossover (retained from v1.0)
+    setup 2: trend-continuation after pullback
+    setup 3: confirmed breakout/momentum
+  Setups are evaluated in the fixed deterministic priority order above; the
+  first met setup wins. BUY and SELL rules are exact mirrors of each other.
 - Live signal generation requires NO candidate_id, NO persisted promotion, NO
   governance fingerprint, and NO research qualification.
-- BUY/SELL are emitted only when the rule is met on a closed, fresh candle;
-  every other outcome is NO TRADE with a machine-readable reason.
-- All trade levels (entry, stop-loss, take-profit, risk/reward) derive solely
-  from real closed-candle values and explicit risk rules. NO TRADE emits null
-  levels. No prices, timestamps, confidence, or stability values are invented.
+- BUY/SELL are emitted only when the met setup's rule is confirmed on a closed,
+  fresh candle; every other outcome is NO TRADE with a machine-readable reason.
+  No setup is a bare trend-direction assertion: every BUY requires its own
+  bullish trigger and every SELL its own bearish trigger.
+- All trade levels (entry, stop-loss=invalidation, take-profit, risk/reward)
+  derive solely from real closed-candle values and the explicit risk rules.
+  NO TRADE emits null levels. No prices, timestamps, confidence, or stability
+  values are invented.
 - Stale, unclosed, invalid, or missing market data fail closed:
   DirectSignalDataError is raised and the caller must NOT publish.
 """
@@ -30,13 +38,19 @@ from src.evaluation.live_execution_runtime import (
 )
 from src.evaluation.live_market_observation import validate_utc_iso8601
 
-DIRECT_STRATEGY_ID = "ma_crossover_direct"
-DIRECT_STRATEGY_VERSION = "1.0"
+DIRECT_STRATEGY_ID = "multi_setup_direct"
+DIRECT_STRATEGY_VERSION = "2.0"
 DIRECT_PROVENANCE_TYPE = "direct_strategy_signal"
 
 FAST_MA_PERIOD = 5
 SLOW_MA_PERIOD = 20
+PULLBACK_LOOKBACK = 3
+BREAKOUT_LOOKBACK = 10
 RISK_REWARD_RATIO = 2.0
+
+# Fixed deterministic setup priority: crossover > pullback continuation >
+# breakout momentum. The first met setup in this order wins.
+SETUP_PRIORITY = ("crossover", "pullback_continuation", "breakout_momentum")
 
 BUY = "BUY"
 SELL = "SELL"
@@ -236,18 +250,40 @@ def evaluate_direct_live_signal(
     reference_now: datetime.datetime | None = None,
     max_age_seconds: float,
 ) -> DirectSignalPublication:
-    """Evaluate the direct MA-crossover rule on ONE timeframe's own closed-candle data.
+    """Evaluate the deterministic multi-setup rule set on ONE timeframe's own closed-candle data.
 
-    Deterministic rule (explicit parameters):
-        fast_ma  = mean of the last FAST_MA_PERIOD closed-candle close prices
-        slow_ma  = mean of the last SLOW_MA_PERIOD closed-candle close prices
-        bullish crossover (BUY):  fast_ma_prev <= slow_ma_prev and fast_ma_now > slow_ma_now
-        bearish crossover (SELL): fast_ma_prev >= slow_ma_prev and fast_ma_now < slow_ma_now
-        otherwise NO TRADE with reason "no_crossover".
+    Setups are checked against the latest CLOSED candle only, in the fixed
+    deterministic priority order ("crossover", "pullback_continuation",
+    "breakout_momentum"); the first met setup wins. BUY and SELL rules are
+    exact mirrors (symmetry is symmetric by construction):
 
-    Risk rule (explicit parameters):
+        crossover (retained from v1.0, explicit parameters fast=5, slow=20):
+            fast_ma  = mean of the last FAST_MA_PERIOD closed-candle closes
+            slow_ma  = mean of the last SLOW_MA_PERIOD closed-candle closes
+            BUY:  fast_ma_prev <= slow_ma_prev and fast_ma_now > slow_ma_now
+            SELL: fast_ma_prev >= slow_ma_prev and fast_ma_now < slow_ma_now
+
+        pullback continuation (explicit parameters lookback=3, trend=MAs):
+            trend:   fast_ma_now > slow_ma_now and slow_ma_now > slow_ma_prev   (BUY side)
+                     fast_ma_now < slow_ma_now and slow_ma_now < slow_ma_prev   (SELL side)
+            pullback within the PULLBACK_LOOKBACK closed candles before the
+            evaluation candle: at least one candle LOW traded at/below
+            fast_ma_now (BUY side); mirrored HIGH at/above for SELL.
+            confirmation: evaluation candle CLOSES back above fast_ma_now and
+            above the previous close (BUY); mirrored below for SELL.
+
+        breakout momentum (explicit parameters lookback=10):
+            breakout: evaluation candle CLOSE above the highest HIGH of the
+            previous BREAKOUT_LOOKBACK closed candles (BUY); mirrored CLOSE
+            below the previous lowest LOW (SELL).
+            momentum confirmation: evaluation candle close beats the previous
+            close and the fast_ma (BUY); mirrored below for SELL.
+
+        otherwise NO TRADE with reason "no_setup_met".
+
+    Risk rule (explicit parameters, identical for BUY and SELL):
         entry  = close of the evaluated closed candle
-        stop   = candle low (BUY) or candle high (SELL)
+        stop   = candle low (BUY) or candle high (SELL)  [invalidation level]
         reward = RISK_REWARD_RATIO * risk, risk = |entry - stop|
         Degenerate zero-risk geometry yields NO TRADE ("invalid_risk_geometry").
 
@@ -280,6 +316,8 @@ def evaluate_direct_live_signal(
 
     candle = prepared.iloc[-1]
     closes = [float(v) for v in prepared["close"].tolist()]
+    lows = [float(v) for v in prepared["low"].tolist()]
+    highs = [float(v) for v in prepared["high"].tolist()]
 
     if len(closes) < SLOW_MA_PERIOD + 1:
         return DirectSignalPublication(
@@ -288,43 +326,85 @@ def evaluate_direct_live_signal(
             decision=NO_TRADE,
             reason="insufficient_history",
             detail=(
-                f"Need >= {SLOW_MA_PERIOD + 1} closed candles for the MA-crossover rule; "
+                f"Need >= {SLOW_MA_PERIOD + 1} closed candles for the multi-setup rule; "
                 f"received {len(closes)}."
             ),
             candle_timestamp_utc=_iso(candle["timestamp"]),
             decision_timestamp_utc=now_dt.isoformat(),
         )
 
-    fast_now = _ma(closes, len(closes), FAST_MA_PERIOD)
-    fast_prev = _ma(closes, len(closes) - 1, FAST_MA_PERIOD)
-    slow_now = _ma(closes, len(closes), SLOW_MA_PERIOD)
-    slow_prev = _ma(closes, len(closes) - 1, SLOW_MA_PERIOD)
+    n = len(closes)
+    fast_now = _ma(closes, n, FAST_MA_PERIOD)
+    fast_prev = _ma(closes, n - 1, FAST_MA_PERIOD)
+    slow_now = _ma(closes, n, SLOW_MA_PERIOD)
+    slow_prev = _ma(closes, n - 1, SLOW_MA_PERIOD)
 
     entry = float(candle["close"])
-    if fast_prev <= slow_prev and fast_now > slow_now:
-        decision = BUY
-        stop = float(candle["low"])
-    elif fast_prev >= slow_prev and fast_now < slow_now:
-        decision = SELL
-        stop = float(candle["high"])
-    else:
-        decision = NO_TRADE
-        stop = None
+    prev_close = closes[-2]
 
-    if decision == NO_TRADE:
+    matched_setup: str | None = None
+    decision: str = NO_TRADE
+
+    # Setup 1: MA crossover (highest priority, retained from v1.0).
+    if fast_prev <= slow_prev and fast_now > slow_now:
+        matched_setup, decision = "crossover", BUY
+    elif fast_prev >= slow_prev and fast_now < slow_now:
+        matched_setup, decision = "crossover", SELL
+
+    # Setup 2: trend-continuation after pullback.
+    if matched_setup is None:
+        pullback_window = range(n - 1 - PULLBACK_LOOKBACK, n - 1)
+        if (
+            fast_now > slow_now
+            and slow_now > slow_prev
+            and any(lows[j] <= fast_now for j in pullback_window)
+            and entry > prev_close
+            and entry > fast_now
+        ):
+            matched_setup, decision = "pullback_continuation", BUY
+        elif (
+            fast_now < slow_now
+            and slow_now < slow_prev
+            and any(highs[j] >= fast_now for j in pullback_window)
+            and entry < prev_close
+            and entry < fast_now
+        ):
+            matched_setup, decision = "pullback_continuation", SELL
+
+    # Setup 3: confirmed breakout/momentum.
+    if matched_setup is None:
+        window_start = max(0, n - 1 - BREAKOUT_LOOKBACK)
+        prev_range_high = max(highs[window_start : n - 1])
+        prev_range_low = min(lows[window_start : n - 1])
+        if (
+            entry > prev_range_high
+            and entry > prev_close
+            and entry > fast_now
+        ):
+            matched_setup, decision = "breakout_momentum", BUY
+        elif (
+            entry < prev_range_low
+            and entry < prev_close
+            and entry < fast_now
+        ):
+            matched_setup, decision = "breakout_momentum", SELL
+
+    if matched_setup is None or decision == NO_TRADE:
         return DirectSignalPublication(
             symbol=symbol_norm,
             timeframe=timeframe,
             decision=NO_TRADE,
-            reason="no_crossover",
+            reason="no_setup_met",
             detail=(
-                f"No MA crossover on {timeframe} closed candle "
-                f"(fast={fast_now:.6f}, slow={slow_now:.6f}, fast_prev={fast_prev:.6f}, slow_prev={slow_prev:.6f})."
+                f"No setup met on {timeframe} closed candle "
+                f"(fast={fast_now:.6f}, slow={slow_now:.6f}, "
+                f"fast_prev={fast_prev:.6f}, slow_prev={slow_prev:.6f})."
             ),
             candle_timestamp_utc=_iso(candle["timestamp"]),
             decision_timestamp_utc=now_dt.isoformat(),
         )
 
+    stop = float(candle["low"]) if decision == BUY else float(candle["high"])
     risk = abs(entry - stop)
     if risk <= 0:
         return DirectSignalPublication(
@@ -340,7 +420,7 @@ def evaluate_direct_live_signal(
     reward = risk * RISK_REWARD_RATIO
     take_profit = entry + reward if decision == BUY else entry - reward
 
-    reason = "ma_crossover_bullish" if decision == BUY else "ma_crossover_bearish"
+    reason = f"{matched_setup}_{'bullish' if decision == BUY else 'bearish'}"
     return DirectSignalPublication(
         symbol=symbol_norm,
         timeframe=timeframe,
@@ -348,7 +428,8 @@ def evaluate_direct_live_signal(
         reason=reason,
         detail=(
             f"{reason} on {timeframe} closed candle "
-            f"(fast={fast_now:.6f}, slow={slow_now:.6f}, fast_prev={fast_prev:.6f}, slow_prev={slow_prev:.6f})."
+            f"(fast={fast_now:.6f}, slow={slow_now:.6f}, "
+            f"fast_prev={fast_prev:.6f}, slow_prev={slow_prev:.6f})."
         ),
         candle_timestamp_utc=_iso(candle["timestamp"]),
         decision_timestamp_utc=now_dt.isoformat(),
