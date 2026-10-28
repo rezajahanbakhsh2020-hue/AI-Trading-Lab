@@ -43,6 +43,7 @@ from src.evaluation.live_direct_strategy import (
 )
 from src.evaluation.live_execution_runtime import get_canonical_timeframe_duration
 from src.evaluation.live_direct_strategy import evaluate_direct_live_signal
+from src.evaluation.direct_strategy_backtest import summarize_metrics
 
 REF_NOW = datetime.datetime(2025, 6, 1, 12, 0, tzinfo=datetime.timezone.utc)
 COST_RATE = TRANSACTION_COST + SLIPPAGE
@@ -350,6 +351,52 @@ def test_no_lookahead_decision_series_matches_truncated_inputs() -> None:
 def test_use_of_constant_parameters_is_explicit() -> None:
     assert SLOW_MA_PERIOD == 20 and FAST_MA_PERIOD == 5
     assert PULLBACK_LOOKBACK == 3 and BREAKOUT_LOOKBACK == 10
+
+
+def test_summarize_metrics_handles_zero_trade_segment() -> None:
+    """Regression: a segment with NO trades must not crash and reports honest zero metrics."""
+    df = candles(
+        opens=[100, 101, 102, 103, 104, 105],
+        highs=[101, 102, 103, 104, 105, 106],
+        lows=[99, 100, 101, 102, 103, 104],
+        closes=[100.5, 101.5, 102.5, 103.5, 104.5, 105.5],
+    )
+    summary = summarize_metrics(
+        df, flat_decisions(len(df)), pd.DataFrame(), pd.Series(0.0, index=df.index), "5m"
+    )
+    assert summary["trades"] == 0
+    assert summary["wins"] == 0
+    assert summary["win_rate"] == 0.0
+    assert summary["expectancy"] == 0.0
+    assert summary["net_return_after_costs"] == 0.0
+    assert summary["max_drawdown"] == 0.0
+    assert summary["avg_trade_bars"] == 0.0
+    assert summary["buy_signals"] == 0 and summary["sell_signals"] == 0
+    assert summary["no_trade_signals"] == len(df)
+
+
+def test_numeric_epoch_timestamp_csv_is_parsed_with_real_dates(tmp_path) -> None:
+    """Regression: the committed daily CSV format (unix epoch seconds) must yield
+    real 2025 date ranges in the report, never the 1970 epoch of ns misparse."""
+    csv = tmp_path / "daily.csv"
+    csv.write_text(
+        "timestamp,open,high,low,close\n"
+        "1735689600,2625.1,2626.0,2621.48,2623.56\n"
+        "1735776000,2623.66,2660.38,2622.45,2658.3\n"
+    )
+    prepared = pd.DataFrame({
+        "timestamp": pd.to_datetime(pd.read_csv(csv)["timestamp"], unit="s", utc=True),
+        "open": [2625.1, 2623.66],
+        "high": [2626.0, 2660.38],
+        "low": [2621.48, 2622.45],
+        "close": [2623.56, 2658.3],
+    })
+    decisions = compute_decision_series(prepared)
+    summary = summarize_metrics(
+        prepared, decisions, pd.DataFrame(), pd.Series(0.0, index=prepared.index), "1D"
+    )
+    assert summary["date_range"][0].startswith("2025-01-01")
+    assert summary["date_range"][-1].startswith("2025-01-02")
 
 
 # ---------------------------------------------------------------------------

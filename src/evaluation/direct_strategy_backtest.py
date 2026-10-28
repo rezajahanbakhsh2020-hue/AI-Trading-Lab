@@ -329,8 +329,12 @@ def summarize_metrics(
     n_sells = int((decisions["decision"] == SELL).sum())
     n_no_trade = int((decisions["decision"] == NO_TRADE).sum())
     no_trade_ratio = n_no_trade / n_evaluated if n_evaluated else 0.0
+    if "reason" in decisions.columns:
+        reason_series = decisions["reason"].astype(str)
+    else:  # plain flat decisions carry no reason channel; all count as no_setup_met
+        reason_series = pd.Series(["no_setup_met"] * n_evaluated, index=decisions.index)
     reason_counts: dict[str, int] = {}
-    for name, cnt in pd.Series(decisions["reason"]).value_counts().to_dict().items():
+    for name, cnt in reason_series.value_counts().to_dict().items():
         reason_counts[str(name)] = int(cnt)
     n_trades = len(trades)
     if n_trades:
@@ -342,6 +346,7 @@ def summarize_metrics(
         avg_bars = float(durations.mean())
         max_bars = float(durations.max())
     else:
+        wins = 0
         win_rate, expectancy, avg_bars, max_bars = 0.0, 0.0, 0.0, 0.0
     curve = np.cumprod(1.0 + net_returns.values)
     equity = float(curve[-1]) if len(curve) else 1.0
@@ -361,7 +366,7 @@ def summarize_metrics(
         "no_trade_ratio": round(no_trade_ratio, 6),
         "reason_counts": reason_counts,
         "trades": n_trades,
-        "wins": int(wins if not n_trades else wins),
+        "wins": int(wins),
         "win_rate": round(win_rate, 6),
         "expectancy": round(expectancy, 8),
         "net_return_after_costs": round(equity - 1.0, 8),
@@ -450,8 +455,14 @@ def main() -> None:
     args = parser.parse_args()
 
     raw = pd.read_csv(args.csv)
+    ts = raw["timestamp"]
+    if ts.dtype.kind in "iu":  # committed daily CSV: unix epoch integers
+        unit = "s" if ts.iloc[0] < 1e11 else ("ms" if ts.iloc[0] < 1e14 else "ns")
+        ts = pd.to_datetime(ts, unit=unit, utc=True)
+    else:
+        ts = pd.to_datetime(ts, utc=True)
     prepared = pd.DataFrame({
-        "timestamp": pd.to_datetime(raw["timestamp"], utc=True),
+        "timestamp": ts,
         "open": raw["open"].astype(float),
         "high": raw["high"].astype(float),
         "low": raw["low"].astype(float),
