@@ -117,9 +117,7 @@ jobs:
 
             REPOSITORY / SCOPE
             Repository: rezajahanbakhsh2020-hue/AI-Trading-Lab.
-            Existing the simplification PR: Repair Canonical XAUUSD Pipeline End-to-End.
-            Existing branch expected: rezajahanbakhsh2020-hue-patch-1. Verify PR head/base/SHA before writing. Work on the PR's actual head branch only.
-            Issue #100 is the specification for simplification.
+            PR #101 completed and merged the original candidate-free direct strategy, but its MA-crossover-only logic is now the subject of this follow-up. Issue #100 is being reopened only to trigger this existing OpenCode workflow for the follow-up task. For this Issue #100 run, create one new implementation branch from current main; do not check out, edit, or recreate merged PR #101 or any unrelated PR branch.
             P2 is a separate gateway/presentation layer; do not modify AI-Trading-Lab-Platform. Use P1's existing documented publication contract and existing P1 evidence only.
             Do not change secrets, repository settings, deployment configuration, or production systems. No broker orders. No fabricated evidence. Never claim deployment delivery without direct proof.
 
