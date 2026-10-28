@@ -18,38 +18,66 @@ jobs:
        github.event.pull_request.head.repo.full_name == github.repository &&
        github.actor != 'github-actions[bot]') ||
       (github.event_name == 'issue_comment' &&
-       github.event.issue.pull_request &&
        contains(github.event.comment.body, '/opencode') &&
-       github.actor == github.repository_owner)
+       github.actor == github.repository_owner &&
+       (github.event.issue.number == 100 || github.event.issue.pull_request))
     runs-on: ubuntu-latest
     timeout-minutes: 45
     steps:
-      - name: Resolve pull request head
+      - name: Resolve target branch
         id: resolve-pr
         uses: actions/github-script@v7
         with:
           script: |
-            const number = context.payload.pull_request?.number ?? context.payload.issue?.number;
-            if (!number) {
-              core.setFailed("No pull request number is available in this event.");
+            const issue = context.payload.issue;
+            const eventPr = context.payload.pull_request;
+            if (eventPr) {
+              if (eventPr.head.repo?.full_name !== `${context.repo.owner}/${context.repo.repo}`) {
+                core.setFailed("Refusing to run OpenCode on a fork-owned branch.");
+                return;
+              }
+              core.setOutput("head_ref", eventPr.head.ref);
+              core.setOutput("target_kind", "pr");
+              core.setOutput("target_number", String(eventPr.number));
               return;
             }
-            const { data: pr } = await github.rest.pulls.get({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              pull_number: number,
-            });
-            if (pr.head.repo?.full_name !== `${context.repo.owner}/${context.repo.repo}`) {
-              core.setFailed("Refusing to run OpenCode on a fork-owned branch.");
+            if (issue?.number === 100 && !issue.pull_request) {
+              core.setOutput("head_ref", "main");
+              core.setOutput("target_kind", "issue");
+              core.setOutput("target_number", "100");
               return;
             }
-            core.setOutput("head_ref", pr.head.ref);
-            core.setOutput("head_sha", pr.head.sha);
-      - name: Checkout pull request head
+            if (issue?.pull_request) {
+              const { data: pr } = await github.rest.pulls.get({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                pull_number: issue.number,
+              });
+              if (pr.merged || pr.state !== "open") {
+                core.setFailed("This PR is already closed. Trigger OpenCode from Issue #100 to create the simplification PR.");
+                return;
+              }
+              if (pr.head.repo?.full_name !== `${context.repo.owner}/${context.repo.repo}`) {
+                core.setFailed("Refusing to run OpenCode on a fork-owned branch.");
+                return;
+              }
+              core.setOutput("head_ref", pr.head.ref);
+              core.setOutput("target_kind", "pr");
+              core.setOutput("target_number", String(pr.number));
+              return;
+            }
+            core.setFailed("Use /opencode on Issue #100 or an open same-repository PR.");
+
+      - name: Checkout target branch
         uses: actions/checkout@v4
         with:
           ref: ${{ steps.resolve-pr.outputs.head_ref }}
           persist-credentials: true
+
+      - name: Create implementation branch for Issue #100
+        if: steps.resolve-pr.outputs.target_kind == 'issue'
+        run: |
+          git switch -c "opencode/simplify-live-signals-${GITHUB_RUN_ID}"
 
       - name: Configure Git identity
         run: |
@@ -67,7 +95,7 @@ jobs:
           prompt: |
             OWNER DIRECTIVE — COMPLETE THE SIMPLIFICATION AND MERGE WHEN PROVEN
 
-            The repository owner explicitly authorizes you to implement the simplified live-signal architecture, commit it to the existing PR #99 branch, and merge PR #99 yourself once the implementation and verification gates below pass. This supersedes every earlier instruction in this workflow that prohibited merging or required manual merge. Do not stop at an audit, plan, test-only commit, or report.
+            The repository owner explicitly authorizes you to implement the simplified live-signal architecture, commit it to the existing the simplification PR branch, and merge the simplification PR yourself once the implementation and verification gates below pass. This supersedes every earlier instruction in this workflow that prohibited merging or required manual merge. Do not stop at an audit, plan, test-only commit, or report.
 
             PRIMARY GOAL
             Make each canonical XAUUSD timeframe independently produce and publish its own truthful live decision through P1's existing P2 publisher:
@@ -76,7 +104,7 @@ jobs:
             Live signal generation must not require candidate_id, persisted promotion, governance fingerprints, research qualification, or candidate authorization. Keep offline research/governance modules intact where they remain useful; simplify only the live execution path.
 
             IMPLEMENT, DON'T JUST DESCRIBE
-            1. Inspect current PR #99 branch, recent commits, issue #100, runtime, publisher contract, and existing tests. Reuse verified findings.
+            1. Inspect current main, recent commits, issue #100, runtime, publisher contract, and existing tests. Reuse verified findings.
             2. Implement one transparent deterministic strategy with explicit parameters, evaluated independently on each timeframe's own data. A closed, fresh candle is mandatory. Never borrow data, candidate, signal, readiness, or health from another timeframe.
             3. Emit BUY/SELL only when the actual rule is met. Otherwise emit NO TRADE with a machine-readable reason. Insufficient/stale/invalid data must fail closed. Never invent prices, timestamps, confidence, stability, or market data.
             4. Calculate entry, stop-loss, take-profit and risk/reward only from real candle values and explicit risk rules. NO TRADE has null trade levels.
@@ -85,24 +113,24 @@ jobs:
             7. Remove candidate-specific live-runtime configuration/dead branches only when tests prove the new path is complete. Do not delete offline research/governance.
             8. Keep publication disabled in tests; do not place broker orders or send production events. Never weaken freshness, closed-candle, data-integrity, risk, or provenance checks to make tests pass.
             9. Add focused tests for seven-frame independence, direct decisions without candidates, BUY/SELL/NO TRADE, stale/future/invalid and unclosed candles, risk fields, publication contract, and per-frame error isolation. Run focused tests, then the broadest practical suite and relevant end-to-end entrypoint. Report exact commands and actual results.
-            10. Inspect the full diff and status. Commit functional source changes and tests to the existing PR #99 branch only. Do not create a new PR or branch. Update PR #99 with evidence and a per-timeframe status table.
+            10. Inspect the full diff and status. Commit functional source changes and tests to the existing the simplification PR branch only. For an Issue #100 run, create a new implementation branch and open one PR; for an existing open PR run, stay on its branch. Update the simplification PR with evidence and a per-timeframe status table.
 
             REPOSITORY / SCOPE
             Repository: rezajahanbakhsh2020-hue/AI-Trading-Lab.
-            Existing PR #99: Repair Canonical XAUUSD Pipeline End-to-End.
+            Existing the simplification PR: Repair Canonical XAUUSD Pipeline End-to-End.
             Existing branch expected: rezajahanbakhsh2020-hue-patch-1. Verify PR head/base/SHA before writing. Work on the PR's actual head branch only.
             Issue #100 is the specification for simplification.
             P2 is a separate gateway/presentation layer; do not modify AI-Trading-Lab-Platform. Use P1's existing documented publication contract and existing P1 evidence only.
             Do not change secrets, repository settings, deployment configuration, or production systems. No broker orders. No fabricated evidence. Never claim deployment delivery without direct proof.
 
             MERGE AUTHORIZATION AND EXIT GATE
-            The owner explicitly authorizes you to merge PR #99 after all of the following are true:
+            The owner explicitly authorizes you to merge the simplification PR after all of the following are true:
             - Actual functional implementation is committed; a test-only change is not sufficient.
             - Focused regression tests pass, and the broad suite has been run to the extent practical. Any failure is understood and fixed or demonstrably unrelated with a precise explanation.
             - The complete diff is in scope and contains no weakened/deleted safety gates or fabricated evidence.
             - PR checks required by the repository are green and GitHub reports the PR mergeable. Verify the current head SHA before merging.
             - The PR summary states what changed, tests actually run, what remains blocked per timeframe, and what is not proven in deployment.
-            If these gates pass, merge PR #99 using the repository's allowed merge method and verify GitHub reports merged=true with a merge commit SHA. Do not stop merely to ask for permission again. If a required check or branch rule blocks merge, do not bypass branch protection; continue fixing actionable issues and report the exact remaining blocker.
+            If these gates pass, merge the simplification PR using the repository's allowed merge method and verify GitHub reports merged=true with a merge commit SHA. Do not stop merely to ask for permission again. If a required check or branch rule blocks merge, do not bypass branch protection; continue fixing actionable issues and report the exact remaining blocker.
             Do not merge unrelated PRs. Do not claim success without reading the actual GitHub result.
 
             REQUIRED FINAL REPORT
