@@ -32,28 +32,34 @@ def test_detail_contains_per_snapshot_information() -> None:
         [1.0, 0.25, 1 / 3]
     )
 
-    assert result["details"] == pytest.approx(
-        [
-            {
-                "snapshot_index": 0,
-                "quality": 1.0,
-                "stability": 1.0,
-                "score": 1.0,
-            },
-            {
-                "snapshot_index": 1,
-                "quality": 0.5,
-                "stability": 0.0,
-                "score": 0.25,
-            },
-            {
-                "snapshot_index": 2,
-                "quality": 2 / 3,
-                "stability": 0.0,
-                "score": 1 / 3,
-            },
-        ]
-    )
+    # pytest.approx() does not support nested data structures (dicts inside
+    # lists), so per-snapshot detail records are compared field by field.
+    expected_details = [
+        {
+            "snapshot_index": 0,
+            "quality": 1.0,
+            "stability": 1.0,
+            "score": 1.0,
+        },
+        {
+            "snapshot_index": 1,
+            "quality": 0.5,
+            "stability": 0.0,
+            "score": 0.25,
+        },
+        {
+            "snapshot_index": 2,
+            "quality": 2 / 3,
+            "stability": 0.0,
+            "score": 1 / 3,
+        },
+    ]
+    assert len(result["details"]) == len(expected_details)
+    for actual, expected in zip(result["details"], expected_details):
+        assert set(actual) == set(expected)
+        assert actual["snapshot_index"] == expected["snapshot_index"]
+        for key in ("quality", "stability", "score"):
+            assert actual[key] == pytest.approx(expected[key])
 
     assert result["quality_trend"] == "down"
     assert result["stability_trend"] == "down"
