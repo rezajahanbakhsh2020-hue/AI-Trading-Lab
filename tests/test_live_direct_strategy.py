@@ -14,6 +14,7 @@ Contract under test:
   health never hides blocked frames.
 """
 import datetime
+import logging
 from typing import Any
 
 from unittest.mock import MagicMock
@@ -547,3 +548,147 @@ def test_direct_strategy_constants_are_explicit() -> None:
     assert m.BREAKOUT_LOOKBACK == 10
     assert m.RISK_REWARD_RATIO == 2.0
     assert SETUP_PRIORITY == ("crossover", "pullback_continuation", "breakout_momentum")
+
+
+# ---------------------------------------------------------------------------
+# Publication outcome diagnostics: failures must never be silently swallowed
+# into logs, and a safe correlation id must be diagnosable without credentials.
+# ---------------------------------------------------------------------------
+
+def _publication_outcome_errors(caplog) -> list[str]:
+    return [r.getMessage() for r in caplog.records if "Publication outcome" in r.getMessage()]
+
+
+def test_auth_failed_publication_is_logged_with_classification_and_safe_event_id(tmp_path, caplog) -> None:
+    """A direct BUY whose delivery fails with 401 must produce an ERROR log naming
+    the classification (authentication_failed), the status, the http code and the
+    deterministic signal id. No credentials may be logged."""
+    with caplog.at_level(logging.DEBUG, logger="src.evaluation.live_execution_runtime"):
+        failed = {
+            "status": "AUTH_FAILED",
+            "published": False,
+            "event_id": "evt123",
+            "http_code": 401,
+            "error": "HTTPError 401: Unauthorized - Service Authentication Failed",
+        }
+        pub = MagicMock()
+        pub.enabled = True
+        pub.api_key = "super-secret-value"
+        pub.publish.side_effect = lambda *a, **k: failed
+        loaders = {"5m": lambda: closed_candles("5m", [1990.0] * 24 + [2100.0])}
+        cont = run_direct_runtime(tmp_path, loaders, publish=True, publisher=pub)
+        tick = cont.tick(reference_now=REF_NOW)
+
+    errors = _publication_outcome_errors(caplog)
+    assert len(errors) == 1, errors
+    line = errors[0]
+    assert "classification=authentication_failed" in line
+    assert "status=AUTH_FAILED" in line
+    assert "http_code=401" in line
+    # Safe correlation id: the deterministic strategy signal id is logged
+    signal_id = tick["evaluations"]["5m"]["record"]["signal_id"]
+    assert "event_id=" in line and "event_id=none" not in line
+    assert signal_id in line
+    # Credentials and any strategy-reason masking of the failure are absent
+    assert "super-secret-value" not in line
+    assert "Bearer" not in line
+    assert cont._last_failure_reason == failed["error"]
+
+
+def test_transport_unavailable_publication_logged_and_observation_frame_logged(
+    tmp_path, caplog
+) -> None:
+    """UNAVAILABLE (transport) failures log transportation classification for the
+    direct frame, and the candidate-blocked observation frame logs its own
+    outcome with its own observation id."""
+    with caplog.at_level(logging.DEBUG, logger="src.evaluation.live_execution_runtime"):
+        failed = {"status": "UNAVAILABLE", "published": False, "http_code": 503, "error": "HTTP status code 503"}
+        pub = MagicMock()
+        pub.enabled = True
+        pub.publish.side_effect = lambda *a, **k: failed
+        loaders = {
+            "5m": lambda: closed_candles("5m", [1990.0] * 24 + [2100.0]),
+            "15m": lambda: closed_candles("15m", [1990.0] * 25),
+        }
+        cont = ContinuousLiveRuntime(
+            symbol="XAUUSD",
+            timeframes=["5m", "15m"],
+            market_data_loaders=loaders,
+            candidate_ids={"15m": "cand_missing"},
+            publish=True,
+            publisher=pub,
+            persist=False,
+            poll_interval=0.0,
+            max_age_seconds=3600.0,
+            store_path=tmp_path / "decision_history.json",
+            snapshot_path=tmp_path / "snapshot.json",
+        )
+        tick = cont.tick(reference_now=REF_NOW)
+
+    errors = _publication_outcome_errors(caplog)
+    assert len(errors) == 2, errors
+    assert any("timeframe=5m" in e and "classification=transport_unavailable" in e for e in errors)
+    assert any("timeframe=15m" in e and "classification=transport_unavailable" in e for e in errors)
+    # The observation id (safe correlation identifier) is included for the blocked frame
+    obs_id = tick["evaluations"]["15m"]["record"]["observation_id"]
+    assert any(obs_id in e for e in errors)
+    # Each timeframe's own failure is preserved; no cross-frame overwrite
+    assert tick["evaluations"]["5m"]["publish_result"]["status"] == "UNAVAILABLE"
+    assert tick["evaluations"]["15m"]["publish_result"]["status"] == "UNAVAILABLE"
+    # Health's worst-case reason names the actual transport failure, not the
+    # strategy reason or the candidate blocker alone
+    assert "HTTP status code 503" in tick["health"]["timeframes"]["5m"]["reason_code"]
+    assert "HTTP status code 503" in tick["health"]["timeframes"]["15m"]["reason_code"]
+
+
+def test_confirmed_publication_logs_confirmation_without_error(tmp_path, caplog) -> None:
+    """A delivered direct signal logs one INFO confirmation line carrying the
+    event id, and emits zero ERROR publication-outcome lines."""
+    with caplog.at_level(logging.DEBUG, logger="src.evaluation.live_execution_runtime"):
+        published = {
+            "status": "PUBLISHED",
+            "published": True,
+            "event_id": "e1",
+            "publication_id": "e1",
+            "remote_event_id": "e1",
+        }
+        pub = MagicMock()
+        pub.enabled = True
+        pub.publish.side_effect = lambda *a, **k: published
+        loaders = {"5m": lambda: closed_candles("5m", [1990.0] * 24 + [2100.0])}
+        cont = run_direct_runtime(tmp_path, loaders, publish=True, publisher=pub)
+        tick = cont.tick(reference_now=REF_NOW)
+
+    outcomes = _publication_outcome_errors(caplog)
+    assert len(outcomes) == 1
+    assert "classification=confirmed" in outcomes[0]
+    assert "status=PUBLISHED" in outcomes[0]
+    signal_id = tick["evaluations"]["5m"]["record"]["signal_id"]
+    assert signal_id in outcomes[0]
+    assert not any(r.levelname == "ERROR" and "Publication outcome" in r.getMessage() for r in caplog.records)
+    assert cont._last_failure_reason is None
+
+
+def test_secret_material_never_enters_publication_outcome_logs(tmp_path, caplog) -> None:
+    """If a defective publisher error echoes the configured secret, the logged
+    reason must be redacted; the secret itself must never appear in logs."""
+    with caplog.at_level(logging.DEBUG, logger="src.evaluation.live_execution_runtime"):
+        failed = {
+            "status": "AUTH_FAILED",
+            "published": False,
+            "http_code": 401,
+            "error": "bad key: LEAKY-SECRET-VALUE rejected",
+        }
+        pub = MagicMock()
+        pub.enabled = True
+        pub.api_key = "LEAKY-SECRET-VALUE"
+        pub.publish.side_effect = lambda *a, **k: failed
+        loaders = {"5m": lambda: closed_candles("5m", [1990.0] * 24 + [2100.0])}
+        cont = run_direct_runtime(tmp_path, loaders, publish=True, publisher=pub)
+        cont.tick(reference_now=REF_NOW)
+
+    lines = [r.getMessage() for r in caplog.records]
+    outcome_lines = [m for m in lines if "Publication outcome" in m]
+    assert outcome_lines, "publication outcome should be logged"
+    assert all("LEAKY-SECRET-VALUE" not in m for m in outcome_lines)
+    assert any("[REDACTED]" in m for m in outcome_lines)

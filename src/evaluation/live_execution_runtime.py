@@ -52,6 +52,7 @@ from src.evaluation.research_store import (
 )
 from src.integration.project2_publisher import (
     Project2Publisher,
+    _redact_secret,
 )
 
 logger = logging.getLogger(__name__)
@@ -72,6 +73,118 @@ PUB_FAILURE_STATUSES: tuple[str, ...] = (
     "SKIPPED_BLOCKED",
     "MISCONFIGURED",
 )
+
+# One-line, machine-readable classification for publication outcomes: a
+# deployment-only failure (e.g. AUTH_FAILED from a missing/mismatched secret)
+# must be diagnosable from worker logs, never silently swallowed.
+_PUBLICATION_FAILURE_CLASSIFICATIONS: dict[str, str] = {
+    "MISCONFIGURED": "publication_misconfigured",
+    "AUTH_FAILED": "authentication_failed",
+    "FORBIDDEN": "authorization_forbidden",
+    "REJECTED": "rejected_by_gateway",
+    "TIMED_OUT": "transport_timed_out",
+    "UNAVAILABLE": "transport_unavailable",
+    "INVALID_RESPONSE": "invalid_gateway_response",
+    "FAILED": "delivery_failed",
+    "SKIPPED_BLOCKED": "evaluation_blocked",
+}
+
+_PUBLICATION_CONFIRMED_STATUSES: tuple[str, ...] = (
+    "PUBLISHED",
+    "DELIVERED",
+    "ACCEPTED",
+    "OK",
+    "ACKNOWLEDGED",
+    "INGESTED",
+)
+
+
+def log_publication_outcome(
+    *,
+    symbol: str,
+    timeframe: str,
+    publish_result: Any,
+    event_id: str | None = None,
+    api_key: str | None = None,
+) -> None:
+    """Emit ONE safe log line per publication outcome with explicit classification.
+
+    Distinguishes confirmed publication from configuration/auth/transport
+    failures so deployment-only blockers (missing/mismatched secrets, P2
+    unavailability) are diagnosable from worker logs. A safe correlation
+    identifier (event_id) is included when available; credentials are never
+    logged and any accidental secret material in reason text is redacted.
+    """
+    if not isinstance(publish_result, dict):
+        logger.error(
+            "Publication outcome symbol=%s timeframe=%s event_id=%s status=UNKNOWN classification=unknown reason=publish_result_is_not_a_mapping",
+            symbol,
+            timeframe,
+            event_id,
+        )
+        return
+
+    status = str(publish_result.get("status") or "").strip()
+    raw_reason = publish_result.get("reason") or publish_result.get("error") or ""
+    reason_text = _redact_secret(str(raw_reason), api_key).replace("\n", " ") or "none"
+    logged_event_id = str(event_id or publish_result.get("event_id") or "none")
+
+    if publish_result.get("published") is True and status in _PUBLICATION_CONFIRMED_STATUSES:
+        logger.info(
+            "Publication outcome symbol=%s timeframe=%s event_id=%s status=%s classification=confirmed reason=%s",
+            symbol,
+            timeframe,
+            logged_event_id,
+            status,
+            reason_text,
+        )
+        return
+
+    classification = _PUBLICATION_FAILURE_CLASSIFICATIONS.get(status, "unknown")
+    if classification == "unknown" and status.startswith("SKIPPED_"):
+        classification = "publication_skipped"
+        logger.debug(
+            "Publication outcome symbol=%s timeframe=%s event_id=%s status=%s classification=%s reason=%s",
+            symbol,
+            timeframe,
+            logged_event_id,
+            status,
+            classification,
+            reason_text,
+        )
+        return
+
+    logger.error(
+        "Publication outcome symbol=%s timeframe=%s event_id=%s status=%s classification=%s http_code=%s reason=%s",
+        symbol,
+        timeframe,
+        logged_event_id,
+        status or "UNKNOWN",
+        classification,
+        publish_result.get("http_code"),
+        reason_text,
+    )
+
+
+def extract_publication_failure_reason(result: Any) -> str | None:
+    """Return the publish-result failure reason when an evaluation's publication actually failed.
+
+    Publication failures must be diagnosed in their own terms (AUTH_FAILED,
+    UNAVAILABLE, TIMED_OUT, ...) and not masked by the strategy's or candidate
+    blocker's reason. Returns None when publication is healthy/skipped-benign.
+    """
+    if not isinstance(result, dict):
+        return None
+    pub_res = result.get("publish_result")
+    if not isinstance(pub_res, dict):
+        return None
+    if pub_res.get("published") is True:
+        return None
+    status = pub_res.get("status")
+    if status not in PUB_FAILURE_STATUSES:
+        return None
+    reason_val = pub_res.get("reason") or pub_res.get("error") or pub_res.get("status")
+    return str(reason_val) if reason_val else None
 
 _UNSPECIFIED = object()
 
@@ -2227,6 +2340,13 @@ class ContinuousLiveRuntime:
                     "reason": "Market observation publication exception",
                     "error": str(exc),
                 }
+            log_publication_outcome(
+                symbol=self.symbol,
+                timeframe=canonical_tf,
+                publish_result=pub_res,
+                event_id=observation.observation_id,
+                api_key=getattr(self.publisher, "api_key", None),
+            )
         else:
             pub_res = {
                 "status": "SKIPPED_DISABLED",
@@ -2405,6 +2525,13 @@ class ContinuousLiveRuntime:
                     "reason": "Direct signal publication exception",
                     "error": str(exc),
                 }
+            log_publication_outcome(
+                symbol=self.symbol,
+                timeframe=canonical_tf,
+                publish_result=pub_res,
+                event_id=signal.signal_id,
+                api_key=getattr(self.publisher, "api_key", None),
+            )
         else:
             pub_res = {
                 "status": "SKIPPED_DISABLED",
@@ -2569,7 +2696,10 @@ class ContinuousLiveRuntime:
                             self._last_successful_publication_at_utc = ref_now.isoformat()
                     else:
                         self._last_failure_reason = (
-                            result.get("reason") or result.get("error") or "DIRECT_EVALUATION_UNHEALTHY"
+                            extract_publication_failure_reason(result)
+                            or result.get("reason")
+                            or result.get("error")
+                            or "DIRECT_EVALUATION_UNHEALTHY"
                         )
                     continue
 
@@ -2647,7 +2777,11 @@ class ContinuousLiveRuntime:
                         if pub_obs_res and pub_obs_res.get("published") is True:
                             self._last_successful_publication_at_utc = ref_now.isoformat()
                     else:
-                        self._last_failure_reason = result.get("reason") or "OBSERVATION_UNHEALTHY"
+                        self._last_failure_reason = (
+                            extract_publication_failure_reason(result)
+                            or result.get("reason")
+                            or "OBSERVATION_UNHEALTHY"
+                        )
                     continue
 
                 # 5. Deduplication check BEFORE evaluation
@@ -2702,7 +2836,12 @@ class ContinuousLiveRuntime:
                         if pub_res and pub_res.get("published") is True:
                             self._last_successful_publication_at_utc = ref_now.isoformat()
                     else:
-                        self._last_failure_reason = result.get("reason") or result.get("error") or "EVALUATION_UNHEALTHY"
+                        self._last_failure_reason = (
+                            extract_publication_failure_reason(result)
+                            or result.get("reason")
+                            or result.get("error")
+                            or "EVALUATION_UNHEALTHY"
+                        )
 
                 except Exception as exc:
                     logger.error("Recoverable failure evaluating %s %s: %s", self.symbol, canonical_tf, exc)

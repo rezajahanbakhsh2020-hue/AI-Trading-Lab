@@ -499,6 +499,16 @@ def finalize_authorized_live_runtime(
             }
 
     # 3. Update decision dictionary with final state, fingerprints, pub result, and mtf
+    if pub_result is not None:
+        from src.evaluation.live_execution_runtime import log_publication_outcome
+
+        log_publication_outcome(
+            symbol=final_cld.decision.symbol,
+            timeframe=final_cld.decision.timeframe,
+            publish_result=pub_result,
+            event_id=pub_result.get("event_id") or pub_result.get("publication_id"),
+            api_key=getattr(publisher, "api_key", None),
+        )
     dec_dict = dict(runtime_result.decision)
     dec_dict["canonical_live_decision_fingerprint"] = final_cld.canonical_live_decision_fingerprint
     dec_dict["current_lifecycle_state"] = final_cld.current_state.value
